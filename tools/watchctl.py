@@ -75,9 +75,13 @@ def snapshot(s, path):
     print(f"saved {path} ({w}x{h})")
 
 
-def goto(s, c, r):
-    s.write(f"G{c},{r}\n".encode())
-    wait_line(s, "TILE")
+def goto(s, p):
+    s.write(f"G{p}\n".encode())
+    deadline = time.time() + 2
+    while time.time() < deadline:
+        line = s.readline().decode(errors="replace").strip()
+        if line.startswith("PAGE"):
+            break
     time.sleep(0.6)
 
 
@@ -89,8 +93,8 @@ def main():
     if op == "time":
         cmd_time(s)
     elif op == "shot":
-        if len(sys.argv) >= 5:
-            goto(s, int(sys.argv[3]), int(sys.argv[4]))
+        if len(sys.argv) >= 4:
+            goto(s, int(sys.argv[3]))
         snapshot(s, sys.argv[2])
     elif op == "tour":
         out = sys.argv[2]

@@ -7,7 +7,10 @@
 #include "AudioEngine.h"
 #include "GpsManager.h"
 #include "DisplayEngine.h"
+#include "AiLimitsStore.h"
+#include "ui/Navigator.h"
 #include <esp_mac.h>
+#include <Update.h>
 
 WebServer CompanionServer::server(HTTP_PORT);
 DNSServer CompanionServer::dnsServer;
@@ -223,6 +226,34 @@ bool CompanionServer::init() {
     server.on("/api/notify", HTTP_POST, handleApiNotification);
     server.on("/api/lora", HTTP_POST, handleApiLoraSend);
     server.on("/api/find", HTTP_POST, handleApiFind);
+    server.on("/api/ailimits", HTTP_ANY, handleApiAiLimits);
+    server.on("/api/ota/status", HTTP_GET, handleApiOtaStatus);
+    server.on("/api/ota/upload", HTTP_POST, [](){
+        bool err = Update.hasError();
+        server.send(200, "application/json", err ? "{\"status\":\"error\"}" : "{\"status\":\"ok\"}");
+        if (!err) {
+            delay(500);
+            ESP.restart();
+        }
+    }, [](){
+        HTTPUpload& upload = server.upload();
+        if (upload.status == UPLOAD_FILE_START) {
+            Serial.printf("[OTA] Upload Start: %s\n", upload.filename.c_str());
+            if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+                Update.printError(Serial);
+            }
+        } else if (upload.status == UPLOAD_FILE_WRITE) {
+            if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+                Update.printError(Serial);
+            }
+        } else if (upload.status == UPLOAD_FILE_END) {
+            if (Update.end(true)) {
+                Serial.printf("[OTA] Upload Success: %u bytes\n", upload.totalSize);
+            } else {
+                Update.printError(Serial);
+            }
+        }
+    });
     // captive portal: every unknown URL (OS connectivity checks) -> the app
     server.onNotFound([]() {
         server.sendHeader("Location", String("http://") + WiFi.softAPIP().toString(), true);
@@ -362,6 +393,42 @@ void CompanionServer::handleApiFind() {
     AudioEngine::playSoundFx(SFX_ALARM);
     MotionHaptic::triggerHaptic(HAPTIC_ALERT_LONG);
     server.send(200, "application/json", "{\"status\":\"ok\"}");
+}
+
+void CompanionServer::handleApiAiLimits() {
+    if (server.method() == HTTP_POST) {
+        bool ok = false;
+        if (server.hasArg("plain")) {
+            ok = AiLimitsStore::updateFromJson(server.arg("plain").c_str());
+            if (ok) nav::markDirty(nav::PG_AI_LIMITS);
+        }
+        server.send(ok ? 200 : 400, "application/json", ok ? "{\"status\":\"ok\"}" : "{\"error\":\"invalid_json\"}");
+        return;
+    }
+
+    // GET
+    AiLimitsData d = AiLimitsStore::get();
+    String j = "{";
+    j += "\"c_5h_p\":" + String(d.claude_5h_pct) + ",\"c_5h_r\":" + String(d.claude_5h_reset) + ",";
+    j += "\"c_wk_p\":" + String(d.claude_wk_pct) + ",\"c_wk_r\":" + String(d.claude_wk_reset) + ",";
+    j += "\"ag_g_5h_p\":" + String(d.ag_gemini_5h_pct) + ",\"ag_g_5h_r\":" + String(d.ag_gemini_5h_reset) + ",";
+    j += "\"ag_g_wk_p\":" + String(d.ag_gemini_wk_pct) + ",\"ag_g_wk_r\":" + String(d.ag_gemini_wk_reset) + ",";
+    j += "\"ag_c_5h_p\":" + String(d.ag_claude_5h_pct) + ",\"ag_c_5h_r\":" + String(d.ag_claude_5h_reset) + ",";
+    j += "\"ag_c_wk_p\":" + String(d.ag_claude_wk_pct) + ",\"ag_c_wk_r\":" + String(d.ag_claude_wk_reset) + ",";
+    j += "\"gc_5h_p\":" + String(d.gc_5h_pct) + ",\"gc_5h_r\":" + String(d.gc_5h_reset) + ",";
+    j += "\"gc_d_p\":" + String(d.gc_daily_pct) + ",\"gc_d_r\":" + String(d.gc_daily_reset) + ",";
+    j += "\"gc_wk_p\":" + String(d.gc_weekly_pct) + ",\"gc_wk_r\":" + String(d.gc_weekly_reset) + ",";
+    j += "\"arg_p\":" + String(d.argon_weekly_pct) + ",\"arg_r\":" + String(d.argon_weekly_reset) + ",";
+    j += "\"sync\":" + String(d.last_sync_time) + ",\"has_data\":" + (d.has_data ? "true" : "false");
+    j += "}";
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(200, "application/json", j);
+}
+
+void CompanionServer::handleApiOtaStatus() {
+    String j = "{\"version\":\"1.0.0\",\"os\":\"KRONOS OS\",\"build\":\"2026.10\",\"repo\":\"diggaknoxville/WatchOS-Ultra\",\"release_url\":\"https://api.github.com/repos/diggaknoxville/WatchOS-Ultra/releases/latest\"}";
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(200, "application/json", j);
 }
 
 void CompanionServer::handleClient() {

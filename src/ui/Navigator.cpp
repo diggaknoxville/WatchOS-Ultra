@@ -25,7 +25,7 @@ enum Gesture : uint8_t {
     G_BACK, G_HOME, G_APP_OPEN
 };
 
-static const PageId CAROUSEL[] = {PG_LAUNCHER, PG_FACE, PG_ACTIVITY, PG_AGENDA, PG_POSITION, PG_LORA, PG_SYSTEM};
+static const PageId CAROUSEL[] = {PG_LAUNCHER, PG_FACE, PG_AI_LIMITS, PG_ACTIVITY, PG_AGENDA, PG_POSITION, PG_LORA, PG_SYSTEM};
 static const int N_CAROUSEL = sizeof(CAROUSEL) / sizeof(CAROUSEL[0]);
 
 static PageDef sPages[PG_COUNT];

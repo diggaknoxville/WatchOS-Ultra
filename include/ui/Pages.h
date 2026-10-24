@@ -5,6 +5,7 @@
 
 namespace pages {
 void buildFace(lv_obj_t* scr);
+void buildAiLimits(lv_obj_t* scr);
 void buildLauncher(lv_obj_t* scr);
 void buildActivity(lv_obj_t* scr);
 void buildAgenda(lv_obj_t* scr);

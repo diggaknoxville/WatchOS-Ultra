@@ -97,12 +97,22 @@ bool KronosDisplay::begin() {
     lv_tick_set_cb(tickCb);
 
     const uint16_t W = instance.width(), H = instance.height();
-    const size_t bytes = (size_t)W * STRIP_ROWS * sizeof(uint16_t);
+    uint16_t stripRows = STRIP_ROWS;
+    size_t bytes = (size_t)W * stripRows * sizeof(uint16_t);
     void* b1 = heap_caps_aligned_alloc(4, bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
     void* b2 = heap_caps_aligned_alloc(4, bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
     if (!b1 || !b2) {
-        Serial.println("[DISP] internal DMA buffers unavailable");
-        return false;
+        if (b1) heap_caps_free(b1);
+        if (b2) heap_caps_free(b2);
+        // Fallback to 32 rows if 48 rows contiguous chunk is unavailable
+        stripRows = 32;
+        bytes = (size_t)W * stripRows * sizeof(uint16_t);
+        b1 = heap_caps_aligned_alloc(4, bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+        b2 = heap_caps_aligned_alloc(4, bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+        if (!b1 || !b2) {
+            Serial.println("[DISP] internal DMA buffers unavailable");
+            return false;
+        }
     }
 
     sDisp = lv_display_create(W, H);
@@ -112,7 +122,7 @@ bool KronosDisplay::begin() {
     lv_display_set_flush_wait_cb(sDisp, flushWaitCb);
     lv_display_add_event_cb(sDisp, rounderCb, LV_EVENT_INVALIDATE_AREA, NULL);
 
-    Compositor::begin((uint16_t*)b1, (uint16_t*)b2, STRIP_ROWS);
+    Compositor::begin((uint16_t*)b1, (uint16_t*)b2, stripRows);
 
     sTouch = lv_indev_create();
     lv_indev_set_type(sTouch, LV_INDEV_TYPE_POINTER);

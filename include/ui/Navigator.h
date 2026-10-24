@@ -19,7 +19,7 @@ namespace nav {
 
 enum PageId : uint8_t {
     // carousel, left -> right
-    PG_LAUNCHER = 0, PG_FACE, PG_ACTIVITY, PG_AGENDA, PG_POSITION, PG_LORA, PG_SYSTEM,
+    PG_LAUNCHER = 0, PG_FACE, PG_AI_LIMITS, PG_ACTIVITY, PG_AGENDA, PG_POSITION, PG_LORA, PG_SYSTEM,
     // sheets over the watch face
     PG_CONTROL, PG_NOTIFS,
     // apps

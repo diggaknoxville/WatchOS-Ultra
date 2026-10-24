@@ -49,3 +49,4 @@ jobs:
       - name: Compile WatchOS Ultra Firmware
         run: |
           pio run
+

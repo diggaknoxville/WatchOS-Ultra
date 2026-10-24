@@ -12,6 +12,8 @@
 #include "DisplayEngine.h"
 #include "CompanionServer.h"
 #include "NotificationStore.h"
+#include "AiLimitsStore.h"
+#include "BleCompanion.h"
 
 TaskHandle_t uiTaskHandle = NULL;
 TaskHandle_t bgTaskHandle = NULL;
@@ -19,9 +21,16 @@ TaskHandle_t bgTaskHandle = NULL;
 void backgroundTask(void* parameter) {
     Serial.println("[OS] Background services running on core 0");
 
+    // Wait until UI compositor has initialized and claimed display DMA buffers
+    while (!DisplayEngine::isReady()) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    BleCompanion::init();
+
     for (;;) {
         unsigned long now = millis();
         CompanionServer::handleClient();
+        BleCompanion::loop(now);
         PowerManager::loop(now);
         MotionHaptic::updateMotion(now);
         GpsManager::loop(now);
@@ -86,6 +95,7 @@ void setup() {
     RadioLoRa::init(868.0f);      // SX1262, interrupt-driven RX
     AudioEngine::init();          // MAX98357A
     CompanionServer::init();      // phone web console (WiFi AP)
+    AiLimitsStore::init();        // AI limits persistent cache
     // The LVGL UI is built on the UI task (see uiTask).
 
     AudioEngine::playSoundFx(SFX_BOOT);

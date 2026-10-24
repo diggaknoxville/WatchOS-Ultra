@@ -288,6 +288,7 @@ bool DisplayEngine::init() {
     lv_refr_now(NULL);
 
     pages::buildFace(scr);
+    pages::buildAiLimits(scr);
     pages::buildLauncher(scr);
     pages::buildActivity(scr);
     pages::buildAgenda(scr);
@@ -394,3 +395,4 @@ void DisplayEngine::setApp(AppId app) {
 
 AppId DisplayEngine::getCurrentApp() { return APP_WATCHFACE; }
 void DisplayEngine::nextWatchface() { pages::faceNext(); }
+bool DisplayEngine::isReady() { return sReady; }

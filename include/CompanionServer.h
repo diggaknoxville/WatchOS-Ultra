@@ -32,4 +32,6 @@ private:
     static void handleApiNotification();
     static void handleApiLoraSend();
     static void handleApiFind();
+    static void handleApiAiLimits();
+    static void handleApiOtaStatus();
 };

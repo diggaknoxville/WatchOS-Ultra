@@ -102,11 +102,12 @@ Die UI basiert auf einem hochauflösenden Cyberpunk-Design mit sattem AMOLED-Sch
 Intuitive Navigation über das gesamte AMOLED-Panel:
 - **Horizontal Wischen:**
   - `Tile [0, 0]` : **Watchface** (Hauptansicht)
-  - `Tile [1, 0]` : **Aktivität & Fitness** (Schritte, Distanz, Kalorien, Zielerreichung)
-  - `Tile [2, 0]` : **Position & GNSS** (Breitengrad, Längengrad, Höhe, Satellitenanzahl, GPS-Fix)
-  - `Tile [3, 0]` : **LoRa Mesh** (Paket-Counter, RSSI/SNR-Signalstärke, Ping-Sender)
-  - `Tile [4, 0]` : **System & Hardware** (Akkuspannung, Ladestrom, RAM/PSRAM-Auslastung, Uptime)
-  - `Tile [5, 0]` : **Connect & Phone Sync** (WiFi AP Status, IP-Adresse, Web-Dashboard QR)
+  - `Tile [1, 0]` : **AI Limits & Quota** (Anthropic, Antigravity IDE & Google Cloud Limits via BLE)
+  - `Tile [2, 0]` : **Aktivität & Fitness** (Schritte, Distanz, Kalorien, Zielerreichung)
+  - `Tile [3, 0]` : **Position & GNSS** (Breitengrad, Längengrad, Höhe, Satellitenanzahl, GPS-Fix)
+  - `Tile [4, 0]` : **LoRa Mesh** (Paket-Counter, RSSI/SNR-Signalstärke, Ping-Sender)
+  - `Tile [5, 0]` : **System & Hardware** (Akkuspannung, Ladestrom, RAM/PSRAM-Auslastung, Uptime)
+  - `Tile [6, 0]` : **Connect & Phone Sync** (WiFi AP Status, IP-Adresse, Web-Dashboard QR)
 - **Vertikal nach unten wischen:**
   - `Tile [0, 1]` : **Control Center** (Quick-Toggles für Helligkeitsslider, Always-On-Display, Wrist-Wake, Haptik, WiFi-Hotspot, Sounds)
 
@@ -281,3 +282,4 @@ Entwickelt für die Open-Source-Community und Maker.
 - **Funk:** [RadioLib](https://github.com/jgromes/RadioLib) von Jan Gromes
 - **Sensoren:** [SensorLib & XPowersLib](https://github.com/lewisxhe) von Lewis He
 - **Schwesterprojekt:** [WatchOS (für T-Watch 2020)](https://github.com/diggaknoxville/WatchOS)
+

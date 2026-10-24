@@ -13,6 +13,7 @@ class DisplayEngine {
 public:
     static bool init();                 // UI task
     static void update(unsigned long now);
+    static bool isReady();
 
     // thread-safe
     static void showNotification(const String& title, const String& msg,
