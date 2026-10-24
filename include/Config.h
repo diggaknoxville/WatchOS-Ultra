@@ -31,10 +31,21 @@
 #define THEME_STEALTH_BLUE  0x3BFF   // Stealth Plasma Blue
 
 enum WatchFaceId {
-    FACE_MODULAR = 0,     // digital hero time + 3 complications
-    FACE_CHRONO  = 1,     // analog chronometer dial (lv_scale)
-    FACE_MINIMAL = 2,     // stacked oversized numerals
-    FACE_COUNT   = 3
+    FACE_MODULAR             = 0,  // digital hero time + 3 complications
+    FACE_CHRONO              = 1,  // analog chronometer dial (lv_scale)
+    FACE_MINIMAL             = 2,  // stacked oversized numerals
+    FACE_ULTRA_WAYFINDER     = 3,  // Apple Watch Ultra Wayfinder compass & adventure dial
+    FACE_SKELETON_TOURBILLON = 4,  // Haute Horlogerie skeleton dial with animated tourbillon
+    FACE_CASIO               = 5,  // Retro Casio DW-5600 Illuminator LCD
+    FACE_BAUHAUS             = 6,  // Max Bill minimalist analog dial
+    FACE_CYBERPUNK           = 7,  // Cyberpunk HUD matrix terminal
+    FACE_WORDCLOCK           = 8,  // German typographic word clock ("ES IST...")
+    FACE_NEON_HORIZON        = 9,  // Synthwave 80s sunset perspective grid
+    FACE_PILOT_FLIEGER       = 10, // B-Uhr Aviator cockpit dial
+    FACE_DIVER_PRO           = 11, // Submariner 300M Diver rotating bezel
+    FACE_RADAR_TACTICAL      = 12, // Tactical military sonar radar
+    FACE_LIFETIME            = 13, // Lifetime / Year / Month / Day progress
+    FACE_COUNT               = 14
 };
 
 enum AppId {

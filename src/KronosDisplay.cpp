@@ -1,5 +1,6 @@
 #include "KronosDisplay.h"
 #include "Compositor.h"
+#include "PowerManager.h"
 #include <Arduino.h>
 #include <LilyGoLib.h>
 #include <esp_heap_caps.h>
@@ -87,6 +88,9 @@ KronosDisplay::Touch KronosDisplay::lastTouch() { return sLast; }
 
 static void touchReadCb(lv_indev_t*, lv_indev_data_t* data) {
     KronosDisplay::Touch t = KronosDisplay::pollTouch();
+    if (t.pressed) {
+        PowerManager::handleActivity();
+    }
     data->state = t.pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
     data->point.x = t.x;
     data->point.y = t.y;

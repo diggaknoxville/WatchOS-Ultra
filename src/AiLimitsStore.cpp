@@ -35,6 +35,7 @@ AiLimitsData AiLimitsStore::currentData = {
 };
 
 bool AiLimitsStore::bleConnected = false;
+bool AiLimitsStore::showUsed = false;
 static portMUX_TYPE sLimitsMux = portMUX_INITIALIZER_UNLOCKED;
 
 void AiLimitsStore::init() {
@@ -62,6 +63,23 @@ bool AiLimitsStore::isBleConnected() {
 
 void AiLimitsStore::setBleConnected(bool connected) {
     bleConnected = connected;
+}
+
+bool AiLimitsStore::isShowUsed() {
+    return showUsed;
+}
+
+void AiLimitsStore::setShowUsed(bool used) {
+    showUsed = used;
+    Preferences p;
+    if (p.begin("ailimits", false)) {
+        p.putBool("show_used", showUsed);
+        p.end();
+    }
+}
+
+void AiLimitsStore::toggleShowUsed() {
+    setShowUsed(!showUsed);
 }
 
 bool AiLimitsStore::updateFromBleBinary(const uint8_t* payload, size_t len) {
@@ -174,6 +192,9 @@ void AiLimitsStore::loadFromNvs() {
             currentData = d;
             portEXIT_CRITICAL(&sLimitsMux);
         }
+    }
+    if (p.isKey("show_used")) {
+        showUsed = p.getBool("show_used", false);
     }
     p.end();
 }

@@ -27,6 +27,7 @@ static const lv_color_t COL_ARGON    = lv_color_hex(0x7C4DFF); // Deep Violet
 
 // Widgets: Header & Status
 static lv_obj_t *sBleDot, *sSyncTxt;
+static lv_obj_t *sModeBtn, *sModeTxt;
 
 // Sektion 1: Anthropic
 static lv_obj_t *sAnthRing5h, *sAnthRingWk;
@@ -49,50 +50,77 @@ static lv_obj_t *sArgonBar, *sArgonTxt;
 static void refresh(bool) {
     AiLimitsData d = AiLimitsStore::get();
     bool ble = BleCompanion::isConnected();
+    bool used = AiLimitsStore::isShowUsed();
     char buf[64], cdown[32];
 
-    // Header Sync & BLE status
+    auto calcPct = [used](uint8_t raw) -> uint8_t {
+        if (raw > 100) raw = 100;
+        return used ? (100 - raw) : raw;
+    };
+
+    // Header Mode Toggle Pill & Sync Status
+    if (used) {
+        setText(sModeTxt, "VERBRAUCHT");
+        setBgColorIf(sModeBtn, lv_color_hex(0x5A2000));
+        setBorderWidthIf(sModeBtn, 1);
+        setTextColorIf(sModeTxt, lv_color_hex(0xFF9800));
+    } else {
+        setText(sModeTxt, "REST %");
+        setBgColorIf(sModeBtn, lv_color_hex(0x0E3A20));
+        setBorderWidthIf(sModeBtn, 1);
+        setTextColorIf(sModeTxt, cOk());
+    }
+
     setBgColorIf(sBleDot, ble ? cOk() : cStroke());
     AiLimitsStore::formatSyncAgo(buf, sizeof(buf), d.last_sync_time);
     setText(sSyncTxt, buf);
 
     // Sektion 1: Anthropic
-    setArc(sAnthRing5h, (float)d.claude_5h_pct / 100.0f);
-    setArc(sAnthRingWk, (float)d.claude_wk_pct / 100.0f);
+    uint8_t c5h = calcPct(d.claude_5h_pct);
+    uint8_t cWk = calcPct(d.claude_wk_pct);
+    setArc(sAnthRing5h, (float)c5h / 100.0f);
+    setArc(sAnthRingWk, (float)cWk / 100.0f);
 
     AiLimitsStore::formatCountdown(cdown, sizeof(cdown), d.claude_5h_reset);
-    snprintf(buf, sizeof(buf), "5h: %2u%%  (%s)", d.claude_5h_pct, cdown);
+    snprintf(buf, sizeof(buf), "5h: %2u%%  (%s)", c5h, cdown);
     setText(sAnthTxt5h, buf);
 
     AiLimitsStore::formatCountdown(cdown, sizeof(cdown), d.claude_wk_reset);
-    snprintf(buf, sizeof(buf), "Wk: %2u%%  (%s)", d.claude_wk_pct, cdown);
+    snprintf(buf, sizeof(buf), "Wk: %2u%%  (%s)", cWk, cdown);
     setText(sAnthTxtWk, buf);
 
     // Sektion 2: Antigravity IDE
     // 2A: Gemini
-    setArc(sAgGemRing5h, (float)d.ag_gemini_5h_pct / 100.0f);
-    setArc(sAgGemRingWk, (float)d.ag_gemini_wk_pct / 100.0f);
+    uint8_t agG5h = calcPct(d.ag_gemini_5h_pct);
+    uint8_t agGWk = calcPct(d.ag_gemini_wk_pct);
+    setArc(sAgGemRing5h, (float)agG5h / 100.0f);
+    setArc(sAgGemRingWk, (float)agGWk / 100.0f);
     AiLimitsStore::formatCompactCountdown(cdown, sizeof(cdown), d.ag_gemini_5h_reset);
-    snprintf(buf, sizeof(buf), "5h %s", cdown);
+    snprintf(buf, sizeof(buf), "5h %2u%%", agG5h);
     setText(sAgGemCenter5h, buf);
     AiLimitsStore::formatCompactCountdown(cdown, sizeof(cdown), d.ag_gemini_wk_reset);
     snprintf(buf, sizeof(buf), "Wk %s", cdown);
     setText(sAgGemCenterWk, buf);
 
     // 2B: Claude / GPT
-    setArc(sAgCldRing5h, (float)d.ag_claude_5h_pct / 100.0f);
-    setArc(sAgCldRingWk, (float)d.ag_claude_wk_pct / 100.0f);
+    uint8_t agC5h = calcPct(d.ag_claude_5h_pct);
+    uint8_t agCWk = calcPct(d.ag_claude_wk_pct);
+    setArc(sAgCldRing5h, (float)agC5h / 100.0f);
+    setArc(sAgCldRingWk, (float)agCWk / 100.0f);
     AiLimitsStore::formatCompactCountdown(cdown, sizeof(cdown), d.ag_claude_5h_reset);
-    snprintf(buf, sizeof(buf), "5h %s", cdown);
+    snprintf(buf, sizeof(buf), "5h %2u%%", agC5h);
     setText(sAgCldCenter5h, buf);
     AiLimitsStore::formatCompactCountdown(cdown, sizeof(cdown), d.ag_claude_wk_reset);
     snprintf(buf, sizeof(buf), "Wk %s", cdown);
     setText(sAgCldCenterWk, buf);
 
     // Sektion 3: Google Cloud
-    setArc(sGcRingPro, (float)d.gc_5h_pct / 100.0f);
-    setArc(sGcRingFls, (float)d.gc_weekly_pct / 100.0f);
-    setArc(sGcRingDay, (float)d.gc_daily_pct / 100.0f);
+    uint8_t gcPro = calcPct(d.gc_5h_pct);
+    uint8_t gcFls = calcPct(d.gc_weekly_pct);
+    uint8_t gcDay = calcPct(d.gc_daily_pct);
+    setArc(sGcRingPro, (float)gcPro / 100.0f);
+    setArc(sGcRingFls, (float)gcFls / 100.0f);
+    setArc(sGcRingDay, (float)gcDay / 100.0f);
 
     AiLimitsStore::formatCompactCountdown(cdown, sizeof(cdown), d.gc_5h_reset);
     setText(sGcCenterPro, cdown);
@@ -102,11 +130,10 @@ static void refresh(bool) {
     setText(sGcCenterDay, cdown);
 
     // Sektion 3: Argon Weekly Bar
-    int argVal = d.argon_weekly_pct;
-    if (argVal > 100) argVal = 100;
+    uint8_t argVal = calcPct(d.argon_weekly_pct);
     if (lv_bar_get_value(sArgonBar) != argVal) lv_bar_set_value(sArgonBar, argVal, LV_ANIM_OFF);
     AiLimitsStore::formatCountdown(cdown, sizeof(cdown), d.argon_weekly_reset);
-    snprintf(buf, sizeof(buf), "ARGON WEEKLY  %u%% • %s", d.argon_weekly_pct, cdown);
+    snprintf(buf, sizeof(buf), "ARGON WEEKLY  %u%% • %s", argVal, cdown);
     setText(sArgonTxt, buf);
 }
 
@@ -116,7 +143,21 @@ void buildAiLimits(lv_obj_t* scr) {
     // Top Title & BLE Sync Status
     title(p, "AI LIMITS");
 
-    lv_obj_t* statRow = box(p, 160, 24);
+    // Mode Toggle Pill: REST % vs VERBRAUCHT %
+    sModeBtn = card(p, 92, 26);
+    lv_obj_set_pos(sModeBtn, 164, 22);
+    lv_obj_set_style_radius(sModeBtn, 13, 0);
+    lv_obj_set_style_pad_all(sModeBtn, 0, 0);
+    lv_obj_add_flag(sModeBtn, LV_OBJ_FLAG_CLICKABLE);
+    sModeTxt = label(sModeBtn, F.cap, cText(), "REST %");
+    lv_obj_center(sModeTxt);
+    lv_obj_add_event_cb(sModeBtn, [](lv_event_t*) {
+        AiLimitsStore::toggleShowUsed();
+        haptic(HAPTIC_CLICK);
+        refresh(true);
+    }, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t* statRow = box(p, 115, 24);
     lv_obj_align(statRow, LV_ALIGN_TOP_RIGHT, -M, 24);
     lv_obj_set_flex_flow(statRow, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(statRow, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);

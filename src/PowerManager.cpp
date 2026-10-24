@@ -11,8 +11,8 @@ static volatile int sKeyEvent = 0;
 // PMU events from LilyGoLib (dispatched inside instance.loop() on the bg task)
 static void onPmuEvent(DeviceEvent_t, void* params, void*) {
     switch (instance.getPMUEventType(params)) {
-        case PMU_EVENT_KEY_CLICKED:       sKeyEvent = 1; break;
-        case PMU_EVENT_KEY_LONG_PRESSED:  sKeyEvent = 2; break;
+        case PMU_EVENT_KEY_CLICKED:       sKeyEvent = 1; PowerManager::handleActivity(); break;
+        case PMU_EVENT_KEY_LONG_PRESSED:  sKeyEvent = 2; PowerManager::handleActivity(); break;
         case PMU_EVENT_USBC_INSERT:
             PowerManager::handleActivity();
             DisplayEngine::showNotification("Charging", "USB power connected", 2500, ICO_BOLT);
@@ -71,6 +71,11 @@ bool PowerManager::init() {
 void PowerManager::setBrightness(uint8_t level) {
     currentBrightness = level;
     instance.setBrightness(level);   // AMOLED brightness via LilyGoLib
+    lastActivityTime = millis();
+    if (currentState != POWER_ACTIVE) {
+        currentState = POWER_ACTIVE;
+        setCpuFrequencyMhz(240);
+    }
 }
 
 uint8_t PowerManager::getBrightness() {

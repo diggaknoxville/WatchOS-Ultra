@@ -9,13 +9,19 @@ import sys, time, datetime, struct
 import serial
 
 PORT = "/dev/ttyACM0"
-TILES = [(1, 0, "activity"), (2, 0, "position"), (3, 0, "lora"), (4, 0, "system"), (5, 0, "connect"), (0, 1, "control")]
-FACES = ["modular", "chrono", "minimal"]
+TILES = [(1, 0, "ailimits"), (2, 0, "activity"), (3, 0, "position"), (4, 0, "lora"), (5, 0, "system"), (6, 0, "connect"), (0, 1, "control")]
+FACES = [
+    "modular", "chrono", "minimal", "wayfinder", "tourbillon",
+    "casio", "bauhaus", "cyberpunk", "wordclock", "neon_horizon",
+    "flieger", "diver", "radar", "lifetime"
+]
 
 
 def open_port():
-    s = serial.Serial(PORT, 115200, timeout=0.5)
-    time.sleep(0.2)
+    s = serial.Serial(PORT, 115200, timeout=0.5, dsrdtr=False, rtscts=False)
+    s.dtr = False
+    s.rts = False
+    time.sleep(0.3)
     s.reset_input_buffer()
     return s
 

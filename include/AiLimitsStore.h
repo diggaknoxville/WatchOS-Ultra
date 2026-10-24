@@ -84,9 +84,14 @@ public:
     static bool isBleConnected();
     static void setBleConnected(bool connected);
 
+    static bool isShowUsed();
+    static void setShowUsed(bool showUsed);
+    static void toggleShowUsed();
+
 private:
     static AiLimitsData currentData;
     static bool bleConnected;
+    static bool showUsed;
     static void saveToNvs();
     static void loadFromNvs();
 };
