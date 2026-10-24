@@ -80,6 +80,8 @@ static void buildAodAndTorch() {
     lv_obj_set_style_bg_opa(sAod, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(sAod, cBg(), 0);
     lv_obj_add_flag(sAod, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(sAod, [](lv_event_t*) { PowerManager::handleActivity(); }, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(sAod, [](lv_event_t*) { PowerManager::handleActivity(); }, LV_EVENT_PRESSED, NULL);
     sAodTime = label(sAod, F.hero, cText3(), "00:00");
     lv_obj_align(sAodTime, LV_ALIGN_CENTER, 0, -20);
     sAodDate = caption(sAod, "", cText3());
@@ -334,9 +336,13 @@ void DisplayEngine::update(unsigned long now) {
 
     int key = PowerManager::takeKeyEvent();
     if (key) {
+        bool wasSleeping = (PowerManager::getPowerState() != POWER_ACTIVE);
         PowerManager::handleActivity();
-        if (torchOn()) setTorch(false);
-        else nav::sideKey(key == 2);
+        if (torchOn()) {
+            setTorch(false);
+        } else if (!wasSleeping) {
+            nav::sideKey(key == 2);
+        }
     }
 
     uint16_t acc = SettingsStorage::get().accentColor;

@@ -1,5 +1,5 @@
 // Control centre sheet (swipe down on the watch face): quick toggles and a
-// full-width brightness slider. Swipe up to close.
+// full-width brightness slider + screen timeout selector. Swipe up to close.
 #include "ui/Pages.h"
 #include "ui/UiKit.h"
 #include "ui/Navigator.h"
@@ -19,8 +19,32 @@ namespace pages {
 struct Toggle { lv_obj_t *tile, *icon, *label; };
 static Toggle sT[N_TOGGLES];
 static lv_obj_t *sSlider, *sPct, *sClock;
+static lv_obj_t *sTimeoutCard, *sTimeoutVal;
 static int sSliderY = 0;
-static int sPressBrightness = -1;     // value when the finger landed on the slider
+static int sTimeoutY = 0;
+
+static const uint16_t TIMEOUT_PRESETS[] = {15, 30, 60, 120, 0};
+static const char* TIMEOUT_LABELS[] = {"15s", "30s", "60s", "2 Min", "Nie"};
+#define N_TIMEOUT_PRESETS 5
+
+static void updateTimeoutLabel() {
+    if (!sTimeoutVal) return;
+    uint16_t cur = SettingsStorage::get().autoSleepSec;
+    const char* txt = "30s";
+    for (int i = 0; i < N_TIMEOUT_PRESETS; i++) {
+        if (TIMEOUT_PRESETS[i] == cur) {
+            txt = TIMEOUT_LABELS[i];
+            break;
+        }
+    }
+    if (cur == 0) txt = "Nie";
+    else if (cur != 15 && cur != 30 && cur != 60 && cur != 120) {
+        static char customBuf[16];
+        snprintf(customBuf, sizeof(customBuf), "%ds", cur);
+        txt = customBuf;
+    }
+    setText(sTimeoutVal, txt);
+}
 
 static bool state(int i) {
     SystemSettings& s = SettingsStorage::get();
@@ -67,6 +91,28 @@ static void onToggle(lv_event_t* e) {
     haptic(HAPTIC_CLICK);
 }
 
+static void onTimeoutClick(lv_event_t*) {
+    uint16_t cur = SettingsStorage::get().autoSleepSec;
+    int nextIdx = 1; // default to 30s
+    for (int i = 0; i < N_TIMEOUT_PRESETS; i++) {
+        if (TIMEOUT_PRESETS[i] == cur) {
+            nextIdx = (i + 1) % N_TIMEOUT_PRESETS;
+            break;
+        }
+    }
+    SettingsStorage::get().autoSleepSec = TIMEOUT_PRESETS[nextIdx];
+    SettingsStorage::save();
+    updateTimeoutLabel();
+    haptic(HAPTIC_CLICK);
+    if (SettingsStorage::get().autoSleepSec == 0) {
+        DisplayEngine::showNotification("Display Timeout", "Display bleibt dauerhaft an (Nie)", 2500, ICO_LIGHT_MODE);
+    } else {
+        char msg[48];
+        snprintf(msg, sizeof(msg), "Auto-Dim nach %s Inaktivitaet", TIMEOUT_LABELS[nextIdx]);
+        DisplayEngine::showNotification("Display Timeout", msg, 2000, ICO_TIMER);
+    }
+}
+
 static void refresh(bool) {
     for (int i = 0; i < N_TOGGLES; i++) paint(i);
     struct tm t;
@@ -79,12 +125,15 @@ static void refresh(bool) {
         lv_slider_set_value(sSlider, v, LV_ANIM_OFF);
         lv_label_set_text_fmt(sPct, "%d%%", v * 100 / 255);
     }
+    updateTimeoutLabel();
 }
 
-// A vertical swipe that starts on the slider still closes the sheet (that is
-// where the thumb naturally lands); the slider reverts the value it jumped to
-// on press when the navigator takes the touch over (INDEV_RESET).
-static bool allowGesture(int, int, int) { return true; }
+static bool allowGesture(int, int y0, int) {
+    // If the touch started inside the slider or timeout button, do not steal touch as sheet close!
+    if (y0 >= sSliderY - 8 && y0 <= sSliderY + 54) return false;
+    if (y0 >= sTimeoutY - 6 && y0 <= sTimeoutY + 48) return false;
+    return true;
+}
 
 void buildControl(lv_obj_t* scr) {
     lv_obj_t* p = pageRoot(scr);
@@ -96,24 +145,24 @@ void buildControl(lv_obj_t* scr) {
                                            ICO_WATCH, ICO_VISIBILITY, ICO_MY_LOCATION, ICO_FLASHLIGHT_ON};
     static const char* names[N_TOGGLES] = {"Haptics", "Sound", "Phone Link", "LoRa Beacon",
                                            "Always-On", "Wrist Wake", "Locate", "Torch"};
-    const int w = (CW - 12) / 2, h = 72, y0 = 86;
+    const int w = (CW - 12) / 2, h = 60, y0 = 74;
     for (int i = 0; i < N_TOGGLES; i++) {
         lv_obj_t* c = card(p, w, h);
-        lv_obj_set_style_radius(c, 24, 0);
-        lv_obj_set_pos(c, M + (i % 2) * (w + 12), y0 + (i / 2) * (h + 10));
+        lv_obj_set_style_radius(c, 22, 0);
+        lv_obj_set_pos(c, M + (i % 2) * (w + 12), y0 + (i / 2) * (h + 8));
         lv_obj_add_flag(c, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(c, onToggle, LV_EVENT_CLICKED, (void*)(intptr_t)i);
         sT[i].tile = c;
         sT[i].icon = label(c, F.icoS, cText(), icons[i]);
-        lv_obj_align(sT[i].icon, LV_ALIGN_LEFT_MID, 18, 0);
+        lv_obj_align(sT[i].icon, LV_ALIGN_LEFT_MID, 16, 0);
         sT[i].label = label(c, F.small, cText2(), names[i]);
-        lv_obj_align(sT[i].label, LV_ALIGN_LEFT_MID, 52, 0);
+        lv_obj_align(sT[i].label, LV_ALIGN_LEFT_MID, 48, 0);
         paint(i);
     }
-    sSliderY = y0 + 4 * (h + 10);
+    sSliderY = y0 + 4 * (h + 8) + 4; // 74 + 272 + 4 = 350
 
     sSlider = lv_slider_create(p);
-    lv_obj_set_size(sSlider, CW, 52);
+    lv_obj_set_size(sSlider, CW, 46);
     lv_obj_set_pos(sSlider, M, sSliderY);
     lv_slider_set_range(sSlider, 10, 255);
     lv_slider_set_value(sSlider, SettingsStorage::get().brightness, LV_ANIM_OFF);
@@ -128,38 +177,43 @@ void buildControl(lv_obj_t* scr) {
     lv_obj_set_style_bg_opa(sSlider, LV_OPA_TRANSP, LV_PART_KNOB);
     lv_obj_set_style_pad_all(sSlider, 0, LV_PART_KNOB);
     lv_obj_t* bl = label(sSlider, F.icoS, cText(), ICO_LIGHT_MODE);
-    lv_obj_align(bl, LV_ALIGN_LEFT_MID, 20, 0);
+    lv_obj_align(bl, LV_ALIGN_LEFT_MID, 18, 0);
     sPct = label(sSlider, F.small, cText(), "");
-    lv_obj_align(sPct, LV_ALIGN_RIGHT_MID, -20, 0);
+    lv_obj_align(sPct, LV_ALIGN_RIGHT_MID, -18, 0);
     lv_label_set_text_fmt(sPct, "%d%%", SettingsStorage::get().brightness * 100 / 255);
     lv_obj_add_event_cb(sSlider, [](lv_event_t* e) {
         int v = lv_slider_get_value((lv_obj_t*)lv_event_get_target(e));
         PowerManager::setBrightness(v);
-        SettingsStorage::get().brightness = v;
         lv_label_set_text_fmt(sPct, "%d%%", v * 100 / 255);
     }, LV_EVENT_VALUE_CHANGED, NULL);
     lv_obj_add_event_cb(sSlider, [](lv_event_t*) {
-        sPressBrightness = SettingsStorage::get().brightness;
-    }, LV_EVENT_PRESSED, NULL);
-    lv_obj_add_event_cb(sSlider, [](lv_event_t*) {
-        if (sPressBrightness < 0) return;
-        PowerManager::setBrightness(sPressBrightness);
-        SettingsStorage::get().brightness = sPressBrightness;
-        lv_slider_set_value(sSlider, sPressBrightness, LV_ANIM_OFF);
-        lv_label_set_text_fmt(sPct, "%d%%", sPressBrightness * 100 / 255);
-        sPressBrightness = -1;
-    }, LV_EVENT_INDEV_RESET, NULL);       // navigator took the touch over
-    lv_obj_add_event_cb(sSlider, [](lv_event_t*) {
-        sPressBrightness = -1;
         SettingsStorage::save();
     }, LV_EVENT_RELEASED, NULL);
+
+    // Timeout card: interactive pill to cycle display sleep timeout
+    sTimeoutY = sSliderY + 52; // 350 + 52 = 402
+    sTimeoutCard = card(p, CW, 40);
+    lv_obj_set_style_radius(sTimeoutCard, 20, 0);
+    lv_obj_set_pos(sTimeoutCard, M, sTimeoutY);
+    lv_obj_add_flag(sTimeoutCard, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(sTimeoutCard, onTimeoutClick, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t* tIcon = label(sTimeoutCard, F.icoS, accent(), ICO_TIMER);
+    accReg(tIcon, ACC_TEXT);
+    lv_obj_align(tIcon, LV_ALIGN_LEFT_MID, 18, 0);
+    lv_obj_t* tTitle = label(sTimeoutCard, F.small, cText(), "Screen Timeout");
+    lv_obj_align(tTitle, LV_ALIGN_LEFT_MID, 50, 0);
+    sTimeoutVal = label(sTimeoutCard, F.small, accent(), "30s");
+    accReg(sTimeoutVal, ACC_TEXT);
+    lv_obj_align(sTimeoutVal, LV_ALIGN_RIGHT_MID, -18, 0);
+    updateTimeoutLabel();
 
     // grabber: hints that the sheet closes with an upward swipe
     lv_obj_t* grab = box(p, 40, 5);
     lv_obj_set_style_radius(grab, 3, 0);
     lv_obj_set_style_bg_opa(grab, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(grab, cText3(), 0);
-    lv_obj_align(grab, LV_ALIGN_BOTTOM_MID, 0, -10);
+    lv_obj_align(grab, LV_ALIGN_BOTTOM_MID, 0, -8);
 
     nav::PageDef d;
     d.root = p;

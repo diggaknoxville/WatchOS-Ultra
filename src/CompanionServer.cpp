@@ -330,7 +330,7 @@ void CompanionServer::handleApiSettings() {
         PowerManager::setBrightness(s.brightness);
     }
     if (server.hasArg("goal"))   s.dailyStepGoal = (uint32_t)constrain(server.arg("goal").toInt(), 500, 100000);
-    if (server.hasArg("sleep"))  s.autoSleepSec = (uint16_t)constrain(server.arg("sleep").toInt(), 5, 600);
+    if (server.hasArg("sleep"))  s.autoSleepSec = (uint16_t)constrain(server.arg("sleep").toInt(), 0, 600);
     flag("haptic", s.hapticEnabled);
     flag("sound",  s.soundEnabled);
     flag("aod",    s.aodEnabled);

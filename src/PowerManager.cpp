@@ -69,6 +69,7 @@ bool PowerManager::init() {
 }
 
 void PowerManager::setBrightness(uint8_t level) {
+    SettingsStorage::get().brightness = level;
     currentBrightness = level;
     instance.setBrightness(level);   // AMOLED brightness via LilyGoLib
     lastActivityTime = millis();
@@ -89,18 +90,22 @@ void PowerManager::setPowerState(PowerState state) {
     switch (state) {
         case POWER_ACTIVE:
             setCpuFrequencyMhz(240);
-            setBrightness(SettingsStorage::get().brightness);
+            currentBrightness = SettingsStorage::get().brightness;
+            instance.setBrightness(currentBrightness);
             break;
         case POWER_DIM:
             setCpuFrequencyMhz(80);
-            setBrightness(SettingsStorage::get().brightness / 3);
+            currentBrightness = (uint8_t)max(20, (int)SettingsStorage::get().brightness / 3);
+            instance.setBrightness(currentBrightness);
             break;
         case POWER_AOD:
             setCpuFrequencyMhz(80);
-            setBrightness(18); // Ultra-low ambient glow
+            currentBrightness = 18; // Ultra-low ambient glow
+            instance.setBrightness(currentBrightness);
             break;
         case POWER_SLEEP:
-            setBrightness(0);
+            currentBrightness = 0;
+            instance.setBrightness(0);
             setCpuFrequencyMhz(40);
             break;
     }
@@ -112,7 +117,7 @@ PowerState PowerManager::getPowerState() {
 
 void PowerManager::handleActivity() {
     lastActivityTime = millis();
-    if (currentState != POWER_ACTIVE) {
+    if (currentState != POWER_ACTIVE || currentBrightness != SettingsStorage::get().brightness) {
         setPowerState(POWER_ACTIVE);
     }
 }
@@ -148,15 +153,32 @@ void PowerManager::loop(unsigned long currentMillis) {
     }
 
     // Auto Power State transitions
-    unsigned long idleTime = currentMillis - lastActivityTime;
     uint32_t sleepThresholdMs = SettingsStorage::get().autoSleepSec * 1000UL;
+    if (sleepThresholdMs == 0) {
+        // Auto-dim / auto-sleep disabled: always keep active
+        if (currentState != POWER_ACTIVE) {
+            setPowerState(POWER_ACTIVE);
+        }
+        return;
+    }
+
+    unsigned long idleTime = currentMillis - lastActivityTime;
 
     if (cachedVbus) {
-        // While charging on USB, keep in active or AOD mode without deep sleeping
-        if (idleTime > sleepThresholdMs && currentState == POWER_ACTIVE) {
-            setPowerState(POWER_AOD);
+        // While charging on USB:
+        // Dim first after sleepThresholdMs, then enter AOD if enabled or stay dimmed
+        if (idleTime > (sleepThresholdMs * 2)) {
+            if (SettingsStorage::get().aodEnabled && currentState != POWER_AOD) {
+                setPowerState(POWER_AOD);
+            } else if (!SettingsStorage::get().aodEnabled && currentState != POWER_DIM) {
+                setPowerState(POWER_DIM);
+            }
+        } else if (idleTime > sleepThresholdMs && currentState == POWER_ACTIVE) {
+            setPowerState(POWER_DIM);
         }
     } else {
+        // On battery:
+        // Dim after sleepThresholdMs, then enter AOD (if enabled) or deep sleep after 2x threshold
         if (idleTime > (sleepThresholdMs * 2)) {
             if (SettingsStorage::get().aodEnabled && currentState != POWER_AOD) {
                 setPowerState(POWER_AOD);
