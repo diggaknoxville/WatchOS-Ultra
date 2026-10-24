@@ -1,0 +1,23 @@
+#pragma once
+// Page builders. Each creates its root with ui::pageRoot(screen) and registers
+// itself with the navigator (nav::registerPage).
+#include <lvgl.h>
+
+namespace pages {
+void buildFace(lv_obj_t* scr);
+void buildLauncher(lv_obj_t* scr);
+void buildActivity(lv_obj_t* scr);
+void buildAgenda(lv_obj_t* scr);
+void buildPosition(lv_obj_t* scr);
+void buildLora(lv_obj_t* scr);
+void buildSystem(lv_obj_t* scr);
+void buildControl(lv_obj_t* scr);
+void buildNotifications(lv_obj_t* scr);
+void buildConnect(lv_obj_t* scr);
+void buildStopwatch(lv_obj_t* scr);
+void buildPower(lv_obj_t* scr);
+
+// watch face helpers used by the engine
+void faceNext();
+bool faceShowing();
+}

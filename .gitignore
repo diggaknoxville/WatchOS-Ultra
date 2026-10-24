@@ -1,0 +1,35 @@
+# --- Build output & PlatformIO ---
+.pio/
+.pioenvs/
+.piolibdeps/
+build/
+build_output/
+*.bin
+*.elf
+*.map
+*.hex
+*.a
+*.o
+*.d
+
+# --- Python caches & tools ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+
+# --- Temporary and backup files ---
+*.bak
+*.orig
+*~
+*.swp
+*.swo
+
+# --- Editor / OS cruft ---
+.vscode/
+.idea/
+.claude/
+.DS_Store
+Thumbs.db
+Desktop.ini

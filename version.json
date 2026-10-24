@@ -1,0 +1,9 @@
+{
+  "version": "1.0.0",
+  "codename": "Kronos",
+  "build_date": "2026-10-24T06:00:00Z",
+  "target": "LilyGO T-Watch Ultra (ESP32-S3)",
+  "display": "CO5300 QSPI AMOLED 410x502",
+  "framework": "LVGL 9.4 + FreeRTOS Dual-Core",
+  "release_url": "https://github.com/diggaknoxville/WatchOS-Ultra/releases/tag/latest"
+}
