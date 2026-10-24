@@ -161,6 +161,11 @@ void buildPower(lv_obj_t* scr) {
 
 // ============================================================== CONNECT
 void buildConnect(lv_obj_t* scr) {
+    if (!CompanionServer::isApActive()) {
+        CompanionServer::requestAp(true);
+        SettingsStorage::get().wifiApEnabled = true;
+        SettingsStorage::save();
+    }
     lv_obj_t* p = pageRoot(scr);
     title(p, "PHONE");
     lv_obj_t* frame = box(p, 232, 232);
@@ -209,6 +214,74 @@ void buildAgenda(lv_obj_t* scr) {
     d.refreshMs = 0xFFFF;
     d.ttlMs = 0;
     nav::registerPage(nav::PG_AGENDA, d);
+}
+
+// ============================================================== WATCHFACES SELECTOR
+static lv_obj_t* sFaceCards[FACE_COUNT];
+static lv_obj_t* sFaceChecks[FACE_COUNT];
+
+static void refreshFaces(bool) {
+    int cur = SettingsStorage::get().watchfaceIndex;
+    for (int i = 0; i < FACE_COUNT; i++) {
+        if (!sFaceCards[i]) continue;
+        bool active = (i == cur);
+        setBgColorIf(sFaceCards[i], active ? accent() : cSurf());
+        if (sFaceChecks[i]) setHidden(sFaceChecks[i], !active);
+    }
+}
+
+void buildFaces(lv_obj_t* scr) {
+    lv_obj_t* p = pageRoot(scr);
+    title(p, "WATCHFACES");
+
+    static const char* faceNames[FACE_COUNT] = {
+        "Modular", "Chronometer", "Minimal", "Wayfinder Ultra",
+        "Tourbillon Skeleton", "Casio Vintage", "Bauhaus", "Cyberpunk",
+        "Word Clock", "Neon Horizon", "Pilot Flieger", "Diver Pro",
+        "Radar Tactical", "Lifetime"
+    };
+
+    lv_obj_t* list = lv_obj_create(p);
+    lv_obj_set_size(list, CW, 380);
+    lv_obj_set_pos(list, M, 74);
+    lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(list, 0, 0);
+    lv_obj_set_style_pad_all(list, 0, 0);
+    lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(list, 8, 0);
+
+    for (int i = 0; i < FACE_COUNT; i++) {
+        lv_obj_t* c = card(list, CW, 50);
+        lv_obj_set_style_radius(c, 16, 0);
+        lv_obj_add_flag(c, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(c, [](lv_event_t* e) {
+            int idx = (int)(intptr_t)lv_event_get_user_data(e);
+            SettingsStorage::get().watchfaceIndex = idx;
+            SettingsStorage::save();
+            haptic(HAPTIC_CLICK);
+            nav::home();
+        }, LV_EVENT_CLICKED, (void*)(intptr_t)i);
+
+        sFaceCards[i] = c;
+        bool active = (SettingsStorage::get().watchfaceIndex == i);
+        setBgColorIf(c, active ? accent() : cSurf());
+
+        lv_obj_t* ic = label(c, F.icoS, cText(), ICO_WATCH);
+        lv_obj_align(ic, LV_ALIGN_LEFT_MID, 16, 0);
+        lv_obj_t* lbl = label(c, F.small, cText(), faceNames[i]);
+        lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 50, 0);
+
+        sFaceChecks[i] = label(c, F.icoS, cText(), ICO_CHECK);
+        lv_obj_align(sFaceChecks[i], LV_ALIGN_RIGHT_MID, -16, 0);
+        setHidden(sFaceChecks[i], !active);
+    }
+
+    nav::PageDef d;
+    d.root = p;
+    d.refresh = refreshFaces;
+    d.refreshMs = 500;
+    d.ttlMs = 15000;
+    nav::registerPage(nav::PG_APP_FACES, d);
 }
 
 }  // namespace pages

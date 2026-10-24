@@ -51,7 +51,7 @@ static bool state(int i) {
     switch (i) {
         case 0: return s.hapticEnabled;
         case 1: return s.soundEnabled;
-        case 2: return s.wifiApEnabled;
+        case 2: return CompanionServer::isApActive();
         case 3: return s.loraBeaconEnabled;
         case 4: return s.aodEnabled;
         case 5: return s.wristWakeEnabled;
@@ -76,7 +76,13 @@ static void onToggle(lv_event_t* e) {
         case 1: s.soundEnabled = !s.soundEnabled;
                 if (s.soundEnabled) AudioEngine::playSoundFx(SFX_CHIME);
                 break;
-        case 2: s.wifiApEnabled = !s.wifiApEnabled; CompanionServer::requestAp(s.wifiApEnabled); break;
+        case 2:
+            s.wifiApEnabled = !s.wifiApEnabled;
+            CompanionServer::requestAp(s.wifiApEnabled);
+            DisplayEngine::showNotification(s.wifiApEnabled ? "WiFi AP an" : "WiFi AP aus",
+                                            s.wifiApEnabled ? "192.168.4.1 (vortex2026)" : "Access Point gestoppt",
+                                            3000, ICO_WIFI);
+            break;
         case 3: s.loraBeaconEnabled = !s.loraBeaconEnabled; break;
         case 4: s.aodEnabled = !s.aodEnabled; break;
         case 5: s.wristWakeEnabled = !s.wristWakeEnabled; break;
@@ -141,9 +147,9 @@ void buildControl(lv_obj_t* scr) {
     sClock = label(p, F.title, cText2(), "");
     lv_obj_align(sClock, LV_ALIGN_TOP_RIGHT, -M, 22);
 
-    static const char* icons[N_TOGGLES] = {ICO_VIBRATION, ICO_VOLUME_UP, ICO_SMARTPHONE, ICO_PODCASTS,
+    static const char* icons[N_TOGGLES] = {ICO_VIBRATION, ICO_VOLUME_UP, ICO_WIFI, ICO_PODCASTS,
                                            ICO_WATCH, ICO_VISIBILITY, ICO_MY_LOCATION, ICO_FLASHLIGHT_ON};
-    static const char* names[N_TOGGLES] = {"Haptics", "Sound", "Phone Link", "LoRa Beacon",
+    static const char* names[N_TOGGLES] = {"Haptics", "Sound", "WiFi AP", "LoRa Beacon",
                                            "Always-On", "Wrist Wake", "Locate", "Torch"};
     const int w = (CW - 12) / 2, h = 60, y0 = 74;
     for (int i = 0; i < N_TOGGLES; i++) {

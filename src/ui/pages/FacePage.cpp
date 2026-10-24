@@ -25,6 +25,7 @@
 #include "CompanionServer.h"
 #include "NotificationStore.h"
 #include "GpsManager.h"
+#include "DisplayEngine.h"
 #include "Config.h"
 #include <sys/time.h>
 #include <math.h>
@@ -115,6 +116,13 @@ static lv_obj_t *ltBars[4], *ltPct[4], *ltTime, *ltDate;
 static void longPress(lv_event_t*) {
     faceNext();
     haptic(HAPTIC_DOUBLE_CLICK);
+    static const char* faceNames[FACE_COUNT] = {
+        "Modular", "Chronometer", "Minimal", "Wayfinder Ultra",
+        "Tourbillon", "Casio Vintage", "Bauhaus", "Cyberpunk",
+        "Word Clock", "Neon Horizon", "Pilot Flieger", "Diver Pro",
+        "Radar Tactical", "Lifetime"
+    };
+    DisplayEngine::showNotification("Zifferblatt", faceNames[SettingsStorage::get().watchfaceIndex], 2000, ICO_WATCH);
 }
 
 static lv_obj_t* faceRoot() {
@@ -1326,6 +1334,8 @@ void faceNext() {
     SystemSettings& s = SettingsStorage::get();
     s.watchfaceIndex = (s.watchfaceIndex + 1) % FACE_COUNT;
     SettingsStorage::save();
+    showFace(s.watchfaceIndex);
+    nav::markDirty(nav::PG_FACE);
 }
 
 bool faceShowing() { return nav::current() == nav::PG_FACE; }

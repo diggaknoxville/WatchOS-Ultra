@@ -302,6 +302,7 @@ bool DisplayEngine::init() {
     pages::buildConnect(scr);
     pages::buildStopwatch(scr);
     pages::buildPower(scr);
+    pages::buildFaces(scr);
 
     buildBanner();
     buildAodAndTorch();

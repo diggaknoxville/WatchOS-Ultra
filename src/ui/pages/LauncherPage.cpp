@@ -17,6 +17,7 @@ struct AppEntry {
 };
 
 static const AppEntry APPS[] = {
+    {"Faces",     ICO_WATCH,             0xFF9F0A, nav::PG_APP_FACES,     0},
     {"Navigate",  ICO_NAVIGATION,        0x0A84FF, nav::PG_APP_NAVI,      0},
     {"Calendar",  ICO_CALENDAR_MONTH,    0xFF453A, nav::PG_APP_CALENDAR,  0},
     {"Activity",  ICO_DIRECTIONS_RUN,    0x30D158, nav::PG_ACTIVITY,      0},

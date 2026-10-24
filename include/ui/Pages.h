@@ -17,6 +17,7 @@ void buildNotifications(lv_obj_t* scr);
 void buildConnect(lv_obj_t* scr);
 void buildStopwatch(lv_obj_t* scr);
 void buildPower(lv_obj_t* scr);
+void buildFaces(lv_obj_t* scr);
 
 // watch face helpers used by the engine
 void faceNext();

@@ -129,7 +129,7 @@ input:focus,select:focus{border-color:var(--acc)}
 <div id="toast"></div>
 <script>
 const $=id=>document.getElementById(id);
-const FACES=[["MODULAR","▦"],["CHRONO","◷"],["MINIMAL","‖"]];
+const FACES=[["MODULAR","▦"],["CHRONO","◷"],["MINIMAL","‖"],["WAYFINDER","🧭"],["TOURBILLON","⚙"],["CASIO","⌚"],["BAUHAUS","◻"],["CYBERPUNK","⚡"],["WORDCLOCK","🔤"],["NEON","🌅"],["PILOT","✈"],["DIVER","⚓"],["RADAR","📡"],["LIFETIME","⏳"]];
 const COLORS=["#00ffff","#30d158","#ffd60a","#ff9f0a","#ff453a","#ff2d92","#bf5af2","#5e5ce6","#64d2ff","#ffffff"];
 const TOG=[["haptic","Haptics"],["sound","Sound"],["aod","Always-on display"],["wrist","Raise to wake"],["beacon","LoRa beacon"]];
 let S=null,base=0,at=0;
@@ -193,13 +193,21 @@ const char* CompanionServer::getApName() { return apName; }
 void CompanionServer::requestAp(bool on) { apRequest = on ? 1 : 0; }
 
 void CompanionServer::startAp() {
+    if (apRunning) return;
+    WiFi.persistent(false);
+    WiFi.disconnect(true);
     WiFi.mode(WIFI_AP);
-    WiFi.softAP(apName, AP_PASSWORD);
-    IPAddress IP = WiFi.softAPIP();
+    IPAddress IP(192, 168, 4, 1);
+    WiFi.softAPConfig(IP, IP, IPAddress(255, 255, 255, 0));
+    bool ok = WiFi.softAP(apName, AP_PASSWORD, 1, 0, 4);
+    if (!ok) {
+        delay(100);
+        ok = WiFi.softAP(apName, AP_PASSWORD, 1, 0, 4);
+    }
     dnsServer.start(53, "*", IP);
     server.begin();
     apRunning = true;
-    Serial.printf("[WIFI] Access point '%s' up at %s\n", apName, IP.toString().c_str());
+    Serial.printf("[WIFI] Access point '%s' up at %s (ok=%d)\n", apName, IP.toString().c_str(), ok);
 }
 
 void CompanionServer::stopAp() {
@@ -260,8 +268,8 @@ bool CompanionServer::init() {
         server.send(302, "text/plain", "");
     });
 
-    if (SettingsStorage::get().wifiApEnabled) startAp();
-    else WiFi.mode(WIFI_OFF);
+    SettingsStorage::get().wifiApEnabled = true;
+    startAp();
     return true;
 }
 
@@ -323,7 +331,10 @@ void CompanionServer::handleApiSettings() {
     auto flag = [](const char* k, bool& field) {
         if (server.hasArg(k)) field = server.arg(k).toInt() != 0;
     };
-    if (server.hasArg("face"))   s.watchfaceIndex = (uint8_t)(server.arg("face").toInt() % FACE_COUNT);
+    if (server.hasArg("face")) {
+        s.watchfaceIndex = (uint8_t)(server.arg("face").toInt() % FACE_COUNT);
+        nav::markDirty(nav::PG_FACE);
+    }
     if (server.hasArg("color"))  s.accentColor = (uint16_t)server.arg("color").toInt();
     if (server.hasArg("bright")) {
         s.brightness = (uint8_t)constrain(server.arg("bright").toInt(), 10, 255);
