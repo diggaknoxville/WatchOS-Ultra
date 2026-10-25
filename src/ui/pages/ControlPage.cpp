@@ -1,5 +1,5 @@
-// Control centre sheet (swipe down on the watch face): quick toggles and a
-// full-width brightness slider + screen timeout selector. Swipe up to close.
+// Control centre sheet (swipe down from ANY screen):
+// 8 quick toggles, brightness slider, YouTube/Music BLE media controller, screen timeout selector.
 #include "ui/Pages.h"
 #include "ui/UiKit.h"
 #include "ui/Navigator.h"
@@ -22,7 +22,17 @@ struct Toggle { lv_obj_t *tile, *icon, *label; };
 static Toggle sT[N_TOGGLES];
 static lv_obj_t *sSlider, *sPct, *sClock;
 static lv_obj_t *sTimeoutCard, *sTimeoutVal;
+
+// Media Controller in Quick Menu
+static lv_obj_t *sMediaCard = nullptr;
+static lv_obj_t *sMediaTitle = nullptr;
+static lv_obj_t *sMediaArtist = nullptr;
+static lv_obj_t *sMediaPlayBtn = nullptr;
+static lv_obj_t *sMediaPlayIcon = nullptr;
+static lv_obj_t *sMediaBleDot = nullptr;
+
 static int sSliderY = 0;
+static int sMediaY = 0;
 static int sTimeoutY = 0;
 
 static const uint16_t TIMEOUT_PRESETS[] = {15, 30, 60, 120, 0};
@@ -80,7 +90,7 @@ static void onToggle(lv_event_t* e) {
             nav::markDirty(nav::PG_APP_CONNECT);
             DisplayEngine::showNotification(s.wifiApEnabled ? "WiFi AP an" : "WiFi AP aus",
                                             s.wifiApEnabled ? "192.168.4.1 (vortex2026)" : "WLAN abgeschaltet (Stromsparen)",
-                                            2500, ICO_WIFI);
+                                            2200, ICO_WIFI);
             break;
         case 1: {
             bool en = !BleCompanion::isEnabled();
@@ -88,7 +98,7 @@ static void onToggle(lv_event_t* e) {
             nav::markDirty(nav::PG_APP_CONNECT);
             DisplayEngine::showNotification(en ? "Bluetooth an" : "Bluetooth aus",
                                             en ? "BLE Companion aktiv" : "BLE abgeschaltet (Stromsparen)",
-                                            2500, ICO_SMARTPHONE);
+                                            2200, ICO_SMARTPHONE);
             break;
         }
         case 2: {
@@ -97,7 +107,7 @@ static void onToggle(lv_event_t* e) {
             nav::markDirty(nav::PG_POSITION);
             DisplayEngine::showNotification(en ? "GPS an" : "GPS aus",
                                             en ? "Satellitensuche aktiv" : "GNSS abgeschaltet (Stromsparen)",
-                                            2500, ICO_SATELLITE_ALT);
+                                            2200, ICO_SATELLITE_ALT);
             break;
         }
         case 3: {
@@ -106,7 +116,7 @@ static void onToggle(lv_event_t* e) {
             nav::markDirty(nav::PG_LORA);
             DisplayEngine::showNotification(en ? "LoRa an" : "LoRa aus",
                                             en ? "SX1262 868 MHz Empfang aktiv" : "LoRa Funk im Deep-Sleep",
-                                            2500, ICO_PODCASTS);
+                                            2200, ICO_PODCASTS);
             break;
         }
         case 4: s.aodEnabled = !s.aodEnabled; break;
@@ -148,18 +158,36 @@ static void refresh(bool) {
     char b[8];
     snprintf(b, sizeof(b), "%02d:%02d", t.tm_hour, t.tm_min);
     setText(sClock, b);
+
     int v = SettingsStorage::get().brightness;
     if (lv_slider_get_value(sSlider) != v && !lv_obj_has_state(sSlider, LV_STATE_PRESSED)) {
         lv_slider_set_value(sSlider, v, LV_ANIM_OFF);
         lv_label_set_text_fmt(sPct, "%d%%", v * 100 / 255);
     }
     updateTimeoutLabel();
+
+    // Media Controller Update
+    const MediaState& ms = BleCompanion::getMediaState();
+    bool conn = BleCompanion::isConnected();
+    if (sMediaTitle) setText(sMediaTitle, ms.title);
+    if (sMediaArtist) {
+        char ab[48];
+        snprintf(ab, sizeof(ab), "%s%s", ms.artist[0] ? ms.artist : "YouTube Music", conn ? "" : " (getrennt)");
+        setText(sMediaArtist, ab);
+    }
+    if (sMediaPlayIcon) {
+        setText(sMediaPlayIcon, ms.isPlaying ? ICO_PAUSE : ICO_PLAY_ARROW);
+    }
+    if (sMediaBleDot) {
+        setBgColorIf(sMediaBleDot, conn ? cOk() : cCrit());
+    }
 }
 
 static bool allowGesture(int, int y0, int) {
-    // If the touch started inside the slider or timeout button, do not steal touch as sheet close!
-    if (y0 >= sSliderY - 8 && y0 <= sSliderY + 54) return false;
-    if (y0 >= sTimeoutY - 6 && y0 <= sTimeoutY + 48) return false;
+    // Prevent sheet close if touch started on slider, media card, or timeout button
+    if (y0 >= sSliderY - 6 && y0 <= sSliderY + 44) return false;
+    if (y0 >= sMediaY - 6 && y0 <= sMediaY + 86) return false;
+    if (y0 >= sTimeoutY - 6 && y0 <= sTimeoutY + 44) return false;
     return true;
 }
 
@@ -167,30 +195,31 @@ void buildControl(lv_obj_t* scr) {
     lv_obj_t* p = pageRoot(scr);
     title(p, "CONTROL");
     sClock = label(p, F.title, cText2(), "");
-    lv_obj_align(sClock, LV_ALIGN_TOP_RIGHT, -M, 22);
+    lv_obj_align(sClock, LV_ALIGN_TOP_RIGHT, -M, 18);
 
     static const char* icons[N_TOGGLES] = {ICO_WIFI, ICO_SMARTPHONE, ICO_SATELLITE_ALT, ICO_PODCASTS,
                                            ICO_WATCH, ICO_VISIBILITY, ICO_VIBRATION, ICO_FLASHLIGHT_ON};
     static const char* names[N_TOGGLES] = {"WiFi AP", "Bluetooth", "GPS", "LoRa",
                                            "Always-On", "Wrist Wake", "Haptics", "Torch"};
-    const int w = (CW - 12) / 2, h = 60, y0 = 74;
+    const int w = (CW - 10) / 2, h = 48, y0 = 60;
     for (int i = 0; i < N_TOGGLES; i++) {
         lv_obj_t* c = card(p, w, h);
-        lv_obj_set_style_radius(c, 22, 0);
-        lv_obj_set_pos(c, M + (i % 2) * (w + 12), y0 + (i / 2) * (h + 8));
+        lv_obj_set_style_radius(c, 18, 0);
+        lv_obj_set_pos(c, M + (i % 2) * (w + 10), y0 + (i / 2) * (h + 6));
         lv_obj_add_flag(c, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(c, onToggle, LV_EVENT_CLICKED, (void*)(intptr_t)i);
         sT[i].tile = c;
         sT[i].icon = label(c, F.icoS, cText(), icons[i]);
-        lv_obj_align(sT[i].icon, LV_ALIGN_LEFT_MID, 16, 0);
+        lv_obj_align(sT[i].icon, LV_ALIGN_LEFT_MID, 14, 0);
         sT[i].label = label(c, F.small, cText2(), names[i]);
-        lv_obj_align(sT[i].label, LV_ALIGN_LEFT_MID, 48, 0);
+        lv_obj_align(sT[i].label, LV_ALIGN_LEFT_MID, 44, 0);
         paint(i);
     }
-    sSliderY = y0 + 4 * (h + 8) + 4; // 74 + 272 + 4 = 350
 
+    // Brightness Slider (y = 278)
+    sSliderY = y0 + 4 * (h + 6) + 2; // 60 + 216 + 2 = 278
     sSlider = lv_slider_create(p);
-    lv_obj_set_size(sSlider, CW, 46);
+    lv_obj_set_size(sSlider, CW, 38);
     lv_obj_set_pos(sSlider, M, sSliderY);
     lv_slider_set_range(sSlider, 10, 255);
     lv_slider_set_value(sSlider, SettingsStorage::get().brightness, LV_ANIM_OFF);
@@ -205,9 +234,9 @@ void buildControl(lv_obj_t* scr) {
     lv_obj_set_style_bg_opa(sSlider, LV_OPA_TRANSP, LV_PART_KNOB);
     lv_obj_set_style_pad_all(sSlider, 0, LV_PART_KNOB);
     lv_obj_t* bl = label(sSlider, F.icoS, cText(), ICO_LIGHT_MODE);
-    lv_obj_align(bl, LV_ALIGN_LEFT_MID, 18, 0);
+    lv_obj_align(bl, LV_ALIGN_LEFT_MID, 14, 0);
     sPct = label(sSlider, F.small, cText(), "");
-    lv_obj_align(sPct, LV_ALIGN_RIGHT_MID, -18, 0);
+    lv_obj_align(sPct, LV_ALIGN_RIGHT_MID, -14, 0);
     lv_label_set_text_fmt(sPct, "%d%%", SettingsStorage::get().brightness * 100 / 255);
     lv_obj_add_event_cb(sSlider, [](lv_event_t* e) {
         int v = lv_slider_get_value((lv_obj_t*)lv_event_get_target(e));
@@ -218,25 +247,94 @@ void buildControl(lv_obj_t* scr) {
         SettingsStorage::save();
     }, LV_EVENT_RELEASED, NULL);
 
-    // Timeout card: interactive pill to cycle display sleep timeout
-    sTimeoutY = sSliderY + 52; // 350 + 52 = 402
-    sTimeoutCard = card(p, CW, 40);
-    lv_obj_set_style_radius(sTimeoutCard, 20, 0);
+    // =========================================================================
+    // YouTube / Media Controller Card (y = 324, h = 84)
+    // =========================================================================
+    sMediaY = sSliderY + 44; // 278 + 44 = 322
+    sMediaCard = card(p, CW, 80);
+    lv_obj_set_style_radius(sMediaCard, 18, 0);
+    lv_obj_set_pos(sMediaCard, M, sMediaY);
+
+    lv_obj_t* mIco = label(sMediaCard, F.icoS, cCrit(), ICO_PLAY_ARROW);
+    lv_obj_set_pos(mIco, 12, 10);
+
+    sMediaTitle = label(sMediaCard, F.small, cText(), "YouTube Music");
+    lv_obj_set_pos(sMediaTitle, 38, 8);
+    lv_label_set_long_mode(sMediaTitle, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(sMediaTitle, 240);
+
+    sMediaArtist = caption(sMediaCard, "Bereit · Bluetooth", cText2());
+    lv_obj_set_pos(sMediaArtist, 38, 28);
+    lv_obj_set_width(sMediaArtist, 240);
+
+    sMediaBleDot = box(sMediaCard, 10, 10);
+    lv_obj_set_style_radius(sMediaBleDot, 5, 0);
+    lv_obj_set_style_bg_color(sMediaBleDot, cCrit(), 0);
+    lv_obj_set_style_bg_opa(sMediaBleDot, LV_OPA_COVER, 0);
+    lv_obj_align(sMediaBleDot, LV_ALIGN_TOP_RIGHT, -12, 12);
+
+    // 5 Compact Media Buttons: |<< (Prev) | > / || (Play/Pause) | >>| (Next) | Vol- | Vol+
+    auto makeMediaBtn = [&](int x, int w, const char* icon, bool isIcon, lv_event_cb_t cb) -> lv_obj_t* {
+        lv_obj_t* b = box(sMediaCard, w, 32);
+        lv_obj_set_pos(b, x, 44);
+        lv_obj_set_style_radius(b, 10, 0);
+        lv_obj_set_style_bg_color(b, cSurf2(), 0);
+        lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
+        lv_obj_add_flag(b, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_t* ic = label(b, isIcon ? F.icoS : F.small, cText(), icon);
+        lv_obj_center(ic);
+        return b;
+    };
+
+    makeMediaBtn(10, 56, ICO_CHEVRON_LEFT, true, [](lv_event_t*) {
+        BleCompanion::sendMediaCommand("CMD:MEDIA:PREV");
+        haptic(HAPTIC_TICK);
+    });
+
+    sMediaPlayBtn = makeMediaBtn(72, 78, ICO_PLAY_ARROW, true, [](lv_event_t*) {
+        BleCompanion::sendMediaCommand("CMD:MEDIA:PLAY_PAUSE");
+        const MediaState& ms = BleCompanion::getMediaState();
+        BleCompanion::setMediaState(!ms.isPlaying, ms.title, ms.artist, ms.volumePct);
+        haptic(HAPTIC_CLICK);
+        refresh(true);
+    });
+    sMediaPlayIcon = lv_obj_get_child(sMediaPlayBtn, 0);
+
+    makeMediaBtn(156, 56, ICO_SKIP_NEXT, true, [](lv_event_t*) {
+        BleCompanion::sendMediaCommand("CMD:MEDIA:NEXT");
+        haptic(HAPTIC_TICK);
+    });
+
+    makeMediaBtn(222, 68, "Vol -", false, [](lv_event_t*) {
+        BleCompanion::sendMediaCommand("CMD:MEDIA:VOL_DOWN");
+        haptic(HAPTIC_TICK);
+    });
+
+    makeMediaBtn(296, 68, "Vol +", false, [](lv_event_t*) {
+        BleCompanion::sendMediaCommand("CMD:MEDIA:VOL_UP");
+        haptic(HAPTIC_TICK);
+    });
+
+    // Screen Timeout Card (y = 410, h = 38)
+    sTimeoutY = sMediaY + 86; // 322 + 86 = 408
+    sTimeoutCard = card(p, CW, 38);
+    lv_obj_set_style_radius(sTimeoutCard, 18, 0);
     lv_obj_set_pos(sTimeoutCard, M, sTimeoutY);
     lv_obj_add_flag(sTimeoutCard, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(sTimeoutCard, onTimeoutClick, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t* tIcon = label(sTimeoutCard, F.icoS, accent(), ICO_TIMER);
     accReg(tIcon, ACC_TEXT);
-    lv_obj_align(tIcon, LV_ALIGN_LEFT_MID, 18, 0);
+    lv_obj_align(tIcon, LV_ALIGN_LEFT_MID, 14, 0);
     lv_obj_t* tTitle = label(sTimeoutCard, F.small, cText(), "Screen Timeout");
-    lv_obj_align(tTitle, LV_ALIGN_LEFT_MID, 50, 0);
+    lv_obj_align(tTitle, LV_ALIGN_LEFT_MID, 44, 0);
     sTimeoutVal = label(sTimeoutCard, F.small, accent(), "30s");
     accReg(sTimeoutVal, ACC_TEXT);
-    lv_obj_align(sTimeoutVal, LV_ALIGN_RIGHT_MID, -18, 0);
+    lv_obj_align(sTimeoutVal, LV_ALIGN_RIGHT_MID, -14, 0);
     updateTimeoutLabel();
 
-    // grabber: hints that the sheet closes with an upward swipe
+    // Bottom grabber indicator
     lv_obj_t* grab = box(p, 40, 5);
     lv_obj_set_style_radius(grab, 3, 0);
     lv_obj_set_style_bg_opa(grab, LV_OPA_COVER, 0);

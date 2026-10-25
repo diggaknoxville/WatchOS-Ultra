@@ -108,7 +108,15 @@ static void refreshAod() {
     bool shown = !lv_obj_has_flag(sAod, LV_OBJ_FLAG_HIDDEN);
     if (aod != shown) {
         setHidden(sAod, !aod);
-        if (aod) lv_obj_move_foreground(sAod);
+        if (aod) {
+            lv_obj_move_foreground(sAod);
+        } else {
+            // Immediately repaint the active screen when leaving AOD so the AOD clock
+            // never lingers on the panel or in the compositor mirror.
+            nav::markDirty(nav::current());
+            lv_obj_invalidate(lv_screen_active());
+            lv_refr_now(NULL);
+        }
     }
     if (aod) {
         struct tm t;
@@ -193,6 +201,8 @@ static void debugConsole() {
         if (!len) continue;
         line[len] = 0;
         len = 0;
+        PowerManager::handleActivity();
+        refreshAod();
         switch (line[0]) {
             case 'S': {
                 lv_draw_buf_t* snap = lv_snapshot_take(lv_screen_active(), LV_COLOR_FORMAT_RGB565);
@@ -465,6 +475,11 @@ void DisplayEngine::setTorch(bool on) {
 }
 
 bool DisplayEngine::torchOn() { return sTorch && !lv_obj_has_flag(sTorch, LV_OBJ_FLAG_HIDDEN); }
+
+bool DisplayEngine::isOverlayBlockingMirror() {
+    return (sAod && !lv_obj_has_flag(sAod, LV_OBJ_FLAG_HIDDEN)) ||
+           (sTorch && !lv_obj_has_flag(sTorch, LV_OBJ_FLAG_HIDDEN));
+}
 
 void DisplayEngine::setApp(AppId app) {
     switch (app) {

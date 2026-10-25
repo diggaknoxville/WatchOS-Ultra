@@ -67,6 +67,11 @@ static PageId neighbour(PageId id, int dir) {           // dir +1 = right, -1 = 
     int i = carouselIndex(id);
     if (i < 0) return PG_COUNT;
     for (i += dir; i >= 0 && i < N_CAROUSEL; i += dir) if (registered(CAROUSEL[i])) return CAROUSEL[i];
+    // Seamless wrap-around from the last carousel screen (PG_SYSTEM) forward (+1) to the first main screen (PG_FACE),
+    // while NOT wrapping backwards (-1) from PG_FACE/PG_LAUNCHER so the App Drawer stays on the left.
+    if (dir > 0 && id == CAROUSEL[N_CAROUSEL - 1] && registered(PG_FACE)) {
+        return PG_FACE;
+    }
     return PG_COUNT;
 }
 
@@ -360,7 +365,7 @@ static void runGesture(Gesture g, int dir, int x0, int y0, bool horizontal) {
         case G_SHEET_TOP_OPEN:  target = PG_CONTROL; ensureSurface(target); sc.to = &sSurf[target]; break;
         case G_SHEET_BOT_OPEN:  target = PG_NOTIFS;  ensureSurface(target); sc.to = &sSurf[target]; break;
         case G_SHEET_TOP_CLOSE:
-        case G_SHEET_BOT_CLOSE:
+        case G_SHEET_BOT_CLOSE: target = sBase;      ensureSurface(target); sc.to = &sSurf[target]; break;
         case G_HOME:            target = PG_FACE;    ensureSurface(target); sc.to = &sSurf[target]; break;
         case G_BACK:
             target = sDepth > 0 ? sStack[sDepth - 1] : sBase;
@@ -417,14 +422,14 @@ static void doHome();
 static void doGo(PageId id) {
     if (!registered(id) || sBusy || id == sCur) return;
     if (id == PG_CONTROL || id == PG_NOTIFS) {
-        if (sCur != PG_FACE) doHome();
+        PageId under = (sMode == M_CAROUSEL || sMode == M_APP) ? sCur : sBase;
         sBusy = true;
         prepareGlass();
         ensureSurface(id);
         Scene sc = {id == PG_CONTROL ? G_SHEET_TOP_OPEN : G_SHEET_BOT_OPEN, &sGlass, &sSurf[id], 0, (float)H};
         animate(sc);
         sMode = id == PG_CONTROL ? M_SHEET_TOP : M_SHEET_BOTTOM;
-        sBase = PG_FACE;
+        sBase = under;
         setCurrent(id, &sSurf[id]);
         sBusy = false;
         return;
@@ -442,10 +447,11 @@ static void doGo(PageId id) {
         return;
     }
     int ci = carouselIndex(sCur), ti = carouselIndex(id);
+    int dir = (sCur == CAROUSEL[N_CAROUSEL - 1] && id == PG_FACE) ? 1 : (ti > ci ? 1 : -1);
     sBusy = true;
     prepareGlass();
     ensureSurface(id);
-    Scene sc = {G_PAGE, &sGlass, &sSurf[id], ti > ci ? 1 : -1, (float)W};
+    Scene sc = {G_PAGE, &sGlass, &sSurf[id], dir, (float)W};
     animate(sc);
     finishPage(id, &sSurf[id]);
     sBusy = false;
@@ -555,6 +561,11 @@ static Gesture classify(bool horizontal, int dx, int dy, int x0, int y0, int* di
                 return G_PAGE;
             }
             if (sCur == PG_FACE) return dy > 0 ? G_SHEET_TOP_OPEN : G_SHEET_BOT_OPEN;
+            // Allow pulling down Quick Menu (PG_CONTROL) from the top of EVERY screen!
+            if (dy > 0) {
+                int maxTopY = (sCur == PG_POSITION || sCur == PG_LAUNCHER) ? 72 : 160;
+                if (y0 <= maxTopY) return G_SHEET_TOP_OPEN;
+            }
             return G_NONE;                                          // let LVGL scroll content
         case M_SHEET_TOP:
             if (!horizontal && dy < 0) {
@@ -570,6 +581,7 @@ static Gesture classify(bool horizontal, int dx, int dy, int x0, int y0, int* di
             return G_NONE;
         case M_APP:
             if (horizontal && dx > 0 && x0 < EDGE) return G_BACK;
+            if (!horizontal && dy > 0 && y0 <= 72) return G_SHEET_TOP_OPEN;
             if (!horizontal && dy < 0 && y0 > H - EDGE - 10) return G_HOME;
             return G_NONE;
     }
@@ -664,7 +676,8 @@ static void prerender(uint32_t now) {
     if (sMode == M_CAROUSEL) {
         want[n++] = neighbour(sCur, 1);
         want[n++] = neighbour(sCur, -1);
-        if (sCur == PG_FACE) { want[n++] = PG_CONTROL; want[n++] = PG_NOTIFS; }
+        want[n++] = PG_CONTROL;
+        if (sCur == PG_FACE) { want[n++] = PG_NOTIFS; }
     } else {
         want[n++] = PG_FACE;
         if (sMode == M_APP) want[n++] = sDepth > 0 ? sStack[sDepth - 1] : sBase;

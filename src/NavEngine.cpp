@@ -7,6 +7,8 @@
 #include "ui/Navigator.h"
 #include <LilyGoLib.h>
 #include <SD.h>
+#include <SPI.h>
+#include <Preferences.h>
 #include <esp_partition.h>
 #include <math.h>
 #include <vector>
@@ -21,13 +23,41 @@ static constexpr double DE_MIN_LAT = 47.20;
 static constexpr double DE_MAX_LAT = 55.10;
 static constexpr double DE_MIN_LON = 5.80;
 static constexpr double DE_MAX_LON = 15.10;
+
+// Stuttgart + all adjacent Landkreise bounding box for Tier 3 Ultra-Fine Street/Building/Landuse grid
+static constexpr double STU_MIN_LAT = 48.42;
+static constexpr double STU_MAX_LAT = 49.18;
+static constexpr double STU_MIN_LON = 8.75;
+static constexpr double STU_MAX_LON = 9.75;
+
 static constexpr int COARSE_NX = 32;
 static constexpr int COARSE_NY = 32;
 static constexpr int FINE_NX   = 256;
 static constexpr int FINE_NY   = 256;
+static constexpr int ULTRA_NX  = 128;
+static constexpr int ULTRA_NY  = 128;
+
+// Feature classes in KNAVDE02
+enum FeatureClass : uint8_t {
+    FEAT_FARMLAND    = 0,  // Filled polygon: Ackerland / Weinberge / Wiesen
+    FEAT_FOREST      = 1,  // Filled polygon: Wald / Forst
+    FEAT_PARK        = 2,  // Filled polygon: Park / Grünanlage
+    FEAT_URBAN       = 3,  // Filled polygon: Wohn-/Gewerbegebiet
+    FEAT_WATER_POLY  = 4,  // Filled polygon: See / Neckar / Flussfläche
+    FEAT_BUILDING    = 5,  // Filled polygon: Gebäude-Grundriss (3D footprint)
+    FEAT_WATER       = 6,  // Polyline: Fluss / Bach
+    FEAT_BOUNDARY    = 7,  // Polyline: Grenze
+    FEAT_RAIL        = 8,  // Polyline: S-Bahn / U-Bahn / DB-Schiene
+    FEAT_PATH        = 9,  // Polyline: Fußweg / Radweg / Waldweg
+    FEAT_RESIDENTIAL = 10, // Polyline: Wohnstraße / Anliegerstraße
+    FEAT_TERTIARY    = 11, // Polyline: Kreisstraße / Ortsverbindungsstraße
+    FEAT_SECONDARY   = 12, // Polyline: Landesstraße
+    FEAT_PRIMARY     = 13, // Polyline: Bundesstraße
+    FEAT_MOTORWAY    = 14  // Polyline: Autobahn
+};
 
 struct KnavHeader {
-    char magic[8];
+    char magic[8];          // "KNAVDE02" or "KNAVDE01"
     uint32_t numPlaces;
     uint32_t placesOffset;
     uint32_t numRouteNodes;
@@ -36,6 +66,9 @@ struct KnavHeader {
     uint32_t routeEdgesOffset;
     uint32_t coarseDirOffset;
     uint32_t fineDirOffset;
+    uint32_t ultraDirOffset;
+    uint32_t numPois;
+    uint32_t poisOffset;
 };
 
 struct DiskPlace {
@@ -44,6 +77,13 @@ struct DiskPlace {
     uint32_t pop;
     uint8_t rank;
     char name[35];
+};
+
+struct DiskPoi {
+    int32_t lat_e5;
+    int32_t lon_e5;
+    uint8_t type; // 0=Transit(S/U), 1=Parking, 2=Fuel, 3=Food/Cafe, 4=Shop/Market, 5=Health, 6=Sight, 7=StreetName
+    char name[27];
 };
 
 struct DiskRouteNode {
@@ -66,44 +106,59 @@ struct CellDirEntry {
     uint32_t length;
 };
 
-// Built-in fallback cities so search and city labels work even if SD card is empty
+struct UserWaypoint {
+    char name[24];
+    double lat;
+    double lon;
+};
+
+static constexpr int MAX_USER_WAYPOINTS = 16;
+static UserWaypoint sWaypoints[MAX_USER_WAYPOINTS];
+static int sNumWaypoints = 0;
+
+// Built-in cities (Stuttgart + all adjacent Landkreise + major German cities)
 static const NavPlace BUILTIN_CITIES[] = {
-    {"Berlin",            52.5200, 13.4050, 3769962, 1},
-    {"Hamburg",           53.5511,  9.9937, 1862565, 1},
-    {"München",           48.1351, 11.5820, 1505036, 1},
-    {"Köln",              50.9375,  6.9603, 1069200, 1},
-    {"Frankfurt am Main", 50.1109,  8.6821,  773068, 1},
-    {"Stuttgart",         48.7758,  9.1829,  632865, 1},
-    {"Düsseldorf",        51.2277,  6.7735,  653253, 1},
-    {"Leipzig",           51.3397, 12.3731,  628718, 1},
-    {"Dortmund",          51.5136,  7.4653,  600933, 1},
-    {"Essen",             51.4556,  7.0116,  586608, 1},
-    {"Bremen",            53.0793,  8.8017,  569396, 1},
-    {"Dresden",           51.0504, 13.7373,  572240, 1},
-    {"Hannover",          52.3759,  9.7320,  555372, 1},
-    {"Nürnberg",          49.4521, 11.0767,  531159, 1},
-    {"Duisburg",          51.4344,  6.7623,  502211, 1},
-    {"Bochum",            51.4818,  7.2162,  365742, 1},
-    {"Wuppertal",         51.2562,  7.1508,  358876, 1},
-    {"Bielefeld",         52.0302,  8.5325,  338332, 1},
-    {"Bonn",              50.7374,  7.0982,  336465, 1},
-    {"Münster",           51.9607,  7.6261,  320946, 1},
-    {"Mannheim",          49.4875,  8.4660,  315554, 1},
-    {"Karlsruhe",         49.0069,  8.4037,  309964, 1},
-    {"Augsburg",          48.3705, 10.8978,  301033, 1},
-    {"Wiesbaden",         50.0782,  8.2398,  283083, 1},
-    {"Kiel",              54.3233, 10.1228,  247717, 1},
-    {"Magdeburg",         52.1205, 11.6276,  239364, 1},
-    {"Freiburg",          47.9990,  7.8421,  236140, 1},
-    {"Lübeck",            53.8655, 10.6866,  218095, 1},
-    {"Erfurt",            50.9848, 11.0299,  214969, 1},
-    {"Rostock",           54.0924, 12.0991,  209920, 1},
-    {"Mainz",             49.9929,  8.2473,  220552, 1},
-    {"Kassel",            51.3127,  9.4797,  204202, 1},
+    {"Stuttgart",              48.7758,  9.1829,  632865, 1},
+    {"Esslingen am Neckar",    48.7406,  9.3108,   94941, 2},
+    {"Ludwigsburg",            48.8973,  9.1916,   94157, 2},
+    {"Böblingen",              48.6855,  9.0153,   51460, 2},
+    {"Sindelfingen",           48.7093,  9.0032,   64995, 2},
+    {"Waiblingen",             48.8302,  9.3169,   55820, 2},
+    {"Göppingen",              48.7035,  9.6528,   59053, 2},
+    {"Tübingen",               48.5216,  9.0576,   92811, 2},
+    {"Reutlingen",             48.4914,  9.2043,  117547, 1},
+    {"Heilbronn",              49.1427,  9.2109,  128334, 1},
+    {"Leonberg",               48.8014,  9.0131,   49512, 2},
+    {"Fellbach",               48.8087,  9.2764,   45951, 2},
+    {"Filderstadt",            48.6601,  9.2185,   46191, 2},
+    {"Schorndorf",             48.8055,  9.5262,   40204, 2},
+    {"Backnang",               48.9465,  9.4309,   37882, 2},
+    {"Kirchheim unter Teck",   48.6484,  9.4510,   41822, 2},
+    {"Nürtingen",              48.6267,  9.3353,   41418, 2},
+    {"Bietigheim-Bissingen",   48.9598,  9.1268,   43755, 2},
+    {"Kornwestheim",           48.8597,  9.1852,   33980, 2},
+    {"Herrenberg",             48.5955,  8.8679,   32649, 2},
+    {"Vaihingen an der Enz",   48.9329,  8.9564,   29467, 2},
+    {"Calw",                   48.7145,  8.7405,   24219, 2},
+    {"Berlin",                 52.5200, 13.4050, 3769962, 1},
+    {"Hamburg",                53.5511,  9.9937, 1862565, 1},
+    {"München",                48.1351, 11.5820, 1505036, 1},
+    {"Köln",                   50.9375,  6.9603, 1069200, 1},
+    {"Frankfurt am Main",      50.1109,  8.6821,  773068, 1},
+    {"Düsseldorf",             51.2277,  6.7735,  653253, 1},
+    {"Leipzig",                51.3397, 12.3731,  628718, 1},
+    {"Dortmund",               51.5136,  7.4653,  600933, 1},
+    {"Bremen",                 53.0793,  8.8017,  569396, 1},
+    {"Dresden",                51.0504, 13.7373,  572240, 1},
+    {"Hannover",               52.3759,  9.7320,  555372, 1},
+    {"Nürnberg",               49.4521, 11.0767,  531159, 1},
+    {"Karlsruhe",              49.0069,  8.4037,  309964, 1},
+    {"Mannheim",               49.4875,  8.4660,  315554, 1},
+    {"Ulm",                    48.4011,  9.9876,  128928, 1},
+    {"Freiburg",               47.9990,  7.8421,  236140, 1},
 };
 static constexpr int N_BUILTIN_CITIES = sizeof(BUILTIN_CITIES) / sizeof(BUILTIN_CITIES[0]);
 
-// Approximate Germany border polygon (lat_e5, lon_e5) for overview rendering even before SD load
 static const int32_t DE_BORDER_PTS[][2] = {
     {5490000,  835000}, {5480000,  945000}, {5440000, 1020000}, {5400000, 1085000},
     {5445000, 1260000}, {5410000, 1380000}, {5390000, 1425000}, {5330000, 1440000},
@@ -121,12 +176,173 @@ static constexpr int N_BORDER_PTS = sizeof(DE_BORDER_PTS) / sizeof(DE_BORDER_PTS
 
 static NavStatus sStat{};
 static KnavHeader sHdr{};
+static bool sIsV2 = false;
 static char sMapPath[48] = "/kronos/germany.knav";
 static const esp_partition_t* sFlashPart = nullptr;
 static bool sUseFlashPart = false;
 static std::vector<NavRoutePoint> sRoute;
 static std::vector<NavRoutePoint> sGpxTrail;
 static unsigned long sLastGpxMs = 0;
+
+// =============================================================================
+// SD Card Hardware Write-Protect Unlock (CMD27 PROGRAM_CSD + CMD42 UNLOCK)
+// =============================================================================
+static uint8_t sdCrc7(const uint8_t* data, size_t len) {
+    uint8_t crc = 0;
+    for (size_t i = 0; i < len; i++) {
+        uint8_t d = data[i];
+        for (int b = 0; b < 8; b++) {
+            crc <<= 1;
+            if ((d ^ crc) & 0x80) crc ^= 0x09;
+            d <<= 1;
+        }
+    }
+    return (crc << 1) | 1;
+}
+
+static bool testSdWriteCapability() {
+    digitalWrite(LORA_CS, HIGH);
+    digitalWrite(NFC_CS, HIGH);
+    File f = SD.open("/kronos_rw.tmp", FILE_WRITE, true);
+    if (!f) return false;
+    size_t w = f.write((const uint8_t*)"KRONOS", 6);
+    f.flush();
+    f.close();
+    if (w != 6) return false;
+    File r = SD.open("/kronos_rw.tmp", FILE_READ);
+    if (!r) return false;
+    char buf[8] = {0};
+    size_t nr = r.read((uint8_t*)buf, 6);
+    r.close();
+    SD.remove("/kronos_rw.tmp");
+    return (nr == 6 && memcmp(buf, "KRONOS", 6) == 0);
+}
+
+static bool tryUnlockSdCardHardware() {
+    digitalWrite(LORA_CS, HIGH);
+    digitalWrite(NFC_CS, HIGH);
+    SD.end();
+    delay(20);
+
+    SPI.beginTransaction(SPISettings(400000, MSBFIRST, SPI_MODE0));
+    digitalWrite(SD_CS, HIGH);
+    for (int i = 0; i < 10; i++) SPI.transfer(0xFF);
+
+    auto sendCmd = [&](uint8_t cmd, uint32_t arg) -> uint8_t {
+        SPI.transfer(0xFF);
+        uint8_t pkt[6] = {
+            (uint8_t)(0x40 | cmd),
+            (uint8_t)(arg >> 24),
+            (uint8_t)(arg >> 16),
+            (uint8_t)(arg >> 8),
+            (uint8_t)(arg & 0xFF),
+            0
+        };
+        pkt[5] = sdCrc7(pkt, 5);
+        for (int i = 0; i < 6; i++) SPI.transfer(pkt[i]);
+        for (int i = 0; i < 16; i++) {
+            uint8_t r = SPI.transfer(0xFF);
+            if ((r & 0x80) == 0) return r;
+        }
+        return 0xFF;
+    };
+
+    digitalWrite(SD_CS, LOW);
+    uint8_t r0 = sendCmd(0, 0); // CMD0
+    if (r0 == 0x01) {
+        sendCmd(8, 0x1AA);
+        for (int i = 0; i < 4; i++) SPI.transfer(0xFF);
+        for (int tries = 0; tries < 200; tries++) {
+            sendCmd(55, 0);
+            if (sendCmd(41, 0x40000000) == 0x00) break;
+            delay(2);
+        }
+        // Read CSD via CMD9
+        if (sendCmd(9, 0) == 0x00) {
+            uint8_t tok = 0xFF;
+            for (int i = 0; i < 200; i++) {
+                tok = SPI.transfer(0xFF);
+                if (tok == 0xFE) break;
+            }
+            if (tok == 0xFE) {
+                uint8_t csd[16];
+                for (int i = 0; i < 16; i++) csd[i] = SPI.transfer(0xFF);
+                SPI.transfer(0xFF); SPI.transfer(0xFF); // CRC16
+
+                bool wpSet = (csd[14] & 0x30) != 0;
+                Serial.printf("[SD] CSD[14]=0x%02X (PERM/TMP_WP=%d)\n", csd[14], (int)wpSet);
+                if (wpSet) {
+                    // Attempt CMD27 (PROGRAM_CSD) clearing bits 4 & 5 (TMP_WRITE_PROTECT & PERM_WRITE_PROTECT)
+                    csd[14] &= ~0x30;
+                    csd[15] = sdCrc7(csd, 15);
+                    uint8_t r27 = sendCmd(27, 0);
+                    if (r27 == 0x00) {
+                        SPI.transfer(0xFF);
+                        SPI.transfer(0xFE); // Data token
+                        for (int i = 0; i < 16; i++) SPI.transfer(csd[i]);
+                        SPI.transfer(0xFF); SPI.transfer(0xFF); // Dummy CRC16
+                        uint8_t resp = SPI.transfer(0xFF);
+                        for (int w = 0; w < 500; w++) {
+                            if (SPI.transfer(0xFF) == 0xFF) break;
+                            delay(1);
+                        }
+                        Serial.printf("[SD] CMD27 PROGRAM_CSD response=0x%02X\n", resp);
+                    }
+                }
+            }
+        }
+    }
+    digitalWrite(SD_CS, HIGH);
+    SPI.transfer(0xFF);
+    SPI.endTransaction();
+    delay(20);
+
+    bool mounted = SD.begin(SD_CS, SPI, 16000000U);
+    if (!mounted) mounted = instance.installSD();
+    if (!mounted) return false;
+    return testSdWriteCapability();
+}
+
+static void loadWaypointsFromStorage() {
+    sNumWaypoints = 0;
+    Preferences p;
+    if (p.begin("kronos_wp", true)) {
+        int n = p.getUChar("cnt", 0);
+        if (n > MAX_USER_WAYPOINTS) n = MAX_USER_WAYPOINTS;
+        for (int i = 0; i < n; i++) {
+            char kName[12], kLat[12], kLon[12];
+            snprintf(kName, sizeof(kName), "nm%d", i);
+            snprintf(kLat, sizeof(kLat), "la%d", i);
+            snprintf(kLon, sizeof(kLon), "lo%d", i);
+            String nm = p.getString(kName, "POI");
+            strncpy(sWaypoints[i].name, nm.c_str(), sizeof(sWaypoints[i].name) - 1);
+            sWaypoints[i].name[sizeof(sWaypoints[i].name) - 1] = 0;
+            sWaypoints[i].lat = p.getDouble(kLat, 48.7758);
+            sWaypoints[i].lon = p.getDouble(kLon, 9.1829);
+            sNumWaypoints++;
+        }
+        p.end();
+    }
+    sStat.savedWaypoints = (uint16_t)sNumWaypoints;
+}
+
+static void saveWaypointsToNvs() {
+    Preferences p;
+    if (p.begin("kronos_wp", false)) {
+        p.putUChar("cnt", (uint8_t)sNumWaypoints);
+        for (int i = 0; i < sNumWaypoints; i++) {
+            char kName[12], kLat[12], kLon[12];
+            snprintf(kName, sizeof(kName), "nm%d", i);
+            snprintf(kLat, sizeof(kLat), "la%d", i);
+            snprintf(kLon, sizeof(kLon), "lo%d", i);
+            p.putString(kName, sWaypoints[i].name);
+            p.putDouble(kLat, sWaypoints[i].lat);
+            p.putDouble(kLon, sWaypoints[i].lon);
+        }
+        p.end();
+    }
+    sStat.savedWaypoints = (uint16_t)sNumWaypoints;
+}
 
 struct MapReader {
     File sdFile;
@@ -140,6 +356,8 @@ struct MapReader {
             return true;
         }
         if (sStat.sdReady) {
+            digitalWrite(LORA_CS, HIGH);
+            digitalWrite(NFC_CS, HIGH);
             sdFile = SD.open(sMapPath, FILE_READ);
             valid = (bool)sdFile;
             return valid;
@@ -161,14 +379,14 @@ struct MapReader {
     }
 };
 
-// LRU Cell Cache in PSRAM so map panning doesn't re-read SD card on every frame
+// LRU Cell Cache in PSRAM (tier: 0=Coarse, 1=Fine, 2=Ultra Stuttgart)
 struct CachedCell {
-    int32_t key; // (isFine << 20) | cellIdx, -1 = unused
+    int32_t key; // (tier << 20) | cellIdx, -1 = unused
     uint32_t lastUsed;
     uint8_t* data;
     uint32_t len;
 };
-static constexpr int CELL_CACHE_SLOTS = 24;
+static constexpr int CELL_CACHE_SLOTS = 32;
 static CachedCell sCellCache[CELL_CACHE_SLOTS];
 static uint32_t sCacheClock = 0;
 
@@ -232,49 +450,93 @@ static void updateCurrentPosition() {
         return;
     }
     sStat.posSource = POS_SRC_DEFAULT;
-    strncpy(sStat.posSourceTag, "DE ZENTRUM (DEMO)", sizeof(sStat.posSourceTag));
-    if (fabs(sStat.curLat) < 1.0) {
-        sStat.curLat = 52.5200; // Berlin default
-        sStat.curLon = 13.4050;
+    strncpy(sStat.posSourceTag, "STUTTGART (LETZTE)", sizeof(sStat.posSourceTag));
+    if (fabs(sStat.curLat) < 1.0 || (fabs(sStat.curLat - 52.5200) < 0.01 && fabs(sStat.curLon - 13.4050) < 0.01)) {
+        sStat.curLat = 48.7758; // Stuttgart Schlossplatz default
+        sStat.curLon = 9.1829;
     }
 }
 
 bool NavEngine::reloadMap() {
     clearCellCache();
+    loadWaypointsFromStorage();
+
     sStat.sdReady = (instance.getDeviceProbe() & HW_SD_ONLINE) != 0 && SD.cardType() != CARD_NONE;
     if (!sStat.sdReady) {
-        // Try mounting SD card again in case it was inserted at runtime
         if (instance.installSD()) {
             sStat.sdReady = true;
         }
     }
     if (sStat.sdReady) {
+        sStat.sdWritable = testSdWriteCapability();
+        if (!sStat.sdWritable) {
+            Serial.println("[SD] Card is write-protected in CSD, attempting CMD27 hardware unlock...");
+            sStat.sdWritable = tryUnlockSdCardHardware();
+            Serial.printf("[SD] After CMD27 unlock attempt: sdWritable=%d\n", (int)sStat.sdWritable);
+        }
         sStat.sdTotalMB = (uint32_t)(SD.cardSize() / (1024ULL * 1024ULL));
         sStat.sdUsedMB  = (uint32_t)(SD.usedBytes() / (1024ULL * 1024ULL));
     } else {
+        sStat.sdWritable = false;
         sStat.sdTotalMB = sStat.sdUsedMB = 0;
     }
 
     sStat.mapLoaded = false;
+    sStat.ultraLoaded = false;
     sStat.mapPlaces = N_BUILTIN_CITIES;
     sStat.mapRouteNodes = 0;
+    sStat.mapPois = 0;
     sUseFlashPart = false;
+    sIsV2 = false;
 
+    const esp_partition_t* part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_FAT, NULL);
+
+    // If SD is writable and doesn't have /kronos/germany.knav yet, mirror Flash KNAVDE02 onto SD!
+    if (sStat.sdReady && sStat.sdWritable && !SD.exists("/kronos/germany.knav") && part) {
+        KnavHeader fh{};
+        if (esp_partition_read(part, 0, &fh, sizeof(fh)) == ESP_OK &&
+            (memcmp(fh.magic, "KNAVDE02", 8) == 0 || memcmp(fh.magic, "KNAVDE01", 8) == 0)) {
+            SD.mkdir("/kronos");
+            File out = SD.open("/kronos/germany.knav", FILE_WRITE, true);
+            if (out) {
+                Serial.println("[SD] Copying KNAVDE02 map database to SD card /kronos/germany.knav...");
+                uint8_t* copyBuf = (uint8_t*)heap_caps_malloc(32768, MALLOC_CAP_SPIRAM);
+                if (copyBuf) {
+                    uint32_t off = 0;
+                    while (off < part->size) {
+                        uint32_t chunk = min<uint32_t>(32768, part->size - off);
+                        if (esp_partition_read(part, off, copyBuf, chunk) != ESP_OK) break;
+                        if (out.write(copyBuf, chunk) != chunk) break;
+                        off += chunk;
+                    }
+                    heap_caps_free(copyBuf);
+                }
+                out.flush();
+                out.close();
+            }
+        }
+    }
+
+    // 1. Check SD card first for germany.knav (prefers KNAVDE02)
     if (sStat.sdReady) {
         const char* candidates[] = {"/kronos/germany.knav", "/germany.knav", "/map/germany.knav"};
         for (const char* path : candidates) {
             if (SD.exists(path)) {
                 File f = SD.open(path, FILE_READ);
-                if (f && f.size() > sizeof(KnavHeader)) {
+                if (f && f.size() >= 40) {
                     KnavHeader h{};
-                    if (f.read((uint8_t*)&h, sizeof(h)) == sizeof(h) && memcmp(h.magic, "KNAVDE01", 8) == 0) {
+                    size_t nr = f.read((uint8_t*)&h, sizeof(h));
+                    if (nr >= 40 && (memcmp(h.magic, "KNAVDE02", 8) == 0 || memcmp(h.magic, "KNAVDE01", 8) == 0)) {
                         sHdr = h;
+                        sIsV2 = (memcmp(h.magic, "KNAVDE02", 8) == 0);
                         strncpy(sMapPath, path, sizeof(sMapPath) - 1);
                         sStat.mapLoaded = true;
+                        sStat.ultraLoaded = sIsV2 && (h.ultraDirOffset > 0);
                         sStat.mapPlaces = h.numPlaces;
                         sStat.mapRouteNodes = h.numRouteNodes;
-                        Serial.printf("[NAV] Loaded SD %s: %u places, %u route nodes, %u edges\n",
-                                      path, h.numPlaces, h.numRouteNodes, h.numRouteEdges);
+                        sStat.mapPois = sIsV2 ? h.numPois : 0;
+                        Serial.printf("[NAV] Loaded SD %s (%s): %u places, %u route nodes, %u POIs\n",
+                                      path, sIsV2 ? "V2-ULTRA" : "V1", h.numPlaces, h.numRouteNodes, sStat.mapPois);
                         f.close();
                         return true;
                     }
@@ -284,32 +546,37 @@ bool NavEngine::reloadMap() {
         }
     }
 
-    // Check internal 9.875 MB QSPI Flash storage partition (0x610000) for KNAVDE01 database
-    const esp_partition_t* part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_FAT, NULL);
-    if (part && part->size > sizeof(KnavHeader)) {
+    // 2. Check internal 9.875 MB QSPI Flash storage partition (0x610000) for KNAVDE02 / KNAVDE01
+    if (part && part->size >= sizeof(KnavHeader)) {
         KnavHeader h{};
-        if (esp_partition_read(part, 0, &h, sizeof(h)) == ESP_OK && memcmp(h.magic, "KNAVDE01", 8) == 0) {
+        if (esp_partition_read(part, 0, &h, sizeof(h)) == ESP_OK &&
+            (memcmp(h.magic, "KNAVDE02", 8) == 0 || memcmp(h.magic, "KNAVDE01", 8) == 0)) {
             sHdr = h;
+            sIsV2 = (memcmp(h.magic, "KNAVDE02", 8) == 0);
             sFlashPart = part;
             sUseFlashPart = true;
             sStat.mapLoaded = true;
+            sStat.ultraLoaded = sIsV2 && (h.ultraDirOffset > 0);
             sStat.mapPlaces = h.numPlaces;
             sStat.mapRouteNodes = h.numRouteNodes;
-            Serial.printf("[NAV] Loaded Flash KNAVDE01 (@0x%lx): %u places, %u route nodes, %u edges\n",
-                          (unsigned long)part->address, h.numPlaces, h.numRouteNodes, h.numRouteEdges);
+            sStat.mapPois = sIsV2 ? h.numPois : 0;
+            Serial.printf("[NAV] Loaded Flash %s (@0x%lx): %u places, %u route nodes, %u POIs, ultra=%d\n",
+                          sIsV2 ? "KNAVDE02" : "KNAVDE01",
+                          (unsigned long)part->address, h.numPlaces, h.numRouteNodes, sStat.mapPois,
+                          (int)sStat.ultraLoaded);
             return true;
         }
     }
 
-    Serial.println("[NAV] Using built-in DE base map");
+    Serial.println("[NAV] Using built-in Stuttgart & DE base map");
     return false;
 }
 
 void NavEngine::init() {
     memset(&sStat, 0, sizeof(sStat));
     sStat.mode = NAV_MODE_CAR;
-    sStat.curLat = 52.5200;
-    sStat.curLon = 13.4050;
+    sStat.curLat = 48.7758; // Stuttgart Schlossplatz
+    sStat.curLon = 9.1829;
     sStat.nextTurnIcon = ICO_NAVIGATION;
     strncpy(sStat.nextTurnCmd, "BEREIT", sizeof(sStat.nextTurnCmd));
     for (int i = 0; i < CELL_CACHE_SLOTS; i++) {
@@ -324,7 +591,6 @@ void NavEngine::init() {
 static void updateTurnByTurn() {
     if (!sStat.activeRoute || sRoute.empty()) return;
 
-    // If tracking a live LoRa/Meshtastic peer, update destination coordinates from peer table
     if (sStat.mode == NAV_MODE_MESH) {
         LoraPeerNode peers[16];
         uint8_t np = RadioLoRa::getPeers(peers, 16);
@@ -337,7 +603,6 @@ static void updateTurnByTurn() {
         }
     }
 
-    // Find closest route vertex to current position
     int bestIdx = 0;
     double bestDist = 1e9;
     for (size_t i = 0; i < sRoute.size(); i++) {
@@ -348,7 +613,6 @@ static void updateTurnByTurn() {
         }
     }
 
-    // Remaining distance along route from bestIdx to end
     double remKm = bestDist;
     for (size_t i = bestIdx; i + 1 < sRoute.size(); i++) {
         remKm += haversineKm(sRoute[i].lat_e5 * 1e-5, sRoute[i].lon_e5 * 1e-5,
@@ -365,7 +629,6 @@ static void updateTurnByTurn() {
         return;
     }
 
-    // Scan forward along route to find next significant turn (> 28 deg change in bearing)
     double distToTurnKm = haversineKm(sStat.curLat, sStat.curLon,
                                       sRoute[min((int)sRoute.size() - 1, bestIdx + 1)].lat_e5 * 1e-5,
                                       sRoute[min((int)sRoute.size() - 1, bestIdx + 1)].lon_e5 * 1e-5);
@@ -431,7 +694,7 @@ void NavEngine::loop(unsigned long now) {
             if (sGpxTrail.size() < 2000) sGpxTrail.push_back(pt);
             sStat.gpxPoints = (uint32_t)sGpxTrail.size();
 
-            if (sStat.sdReady) {
+            if (sStat.sdReady && sStat.sdWritable) {
                 if (!SD.exists("/tracks")) SD.mkdir("/tracks");
                 struct tm ti;
                 RtcManager::getLocalTimeInfo(&ti);
@@ -480,7 +743,6 @@ bool NavEngine::startNavigation(const char* name, double destLat, double destLon
     sStat.destLon = destLon;
     sRoute.clear();
 
-    // Try offline A* route calculation on germany.knav if loaded (SD or QSPI Flash)
     bool routed = false;
     if (sStat.mapLoaded && sHdr.numRouteNodes > 0 && sHdr.numRouteEdges > 0 &&
         sStat.mode != NAV_MODE_MESH) {
@@ -537,13 +799,13 @@ bool NavEngine::startNavigation(const char* name, double destLat, double destLon
                         uint32_t gu = gScore[u];
                         for (uint16_t k = 0; k < nodes[u].edgeCount; k++) {
                             const DiskRouteEdge& e = edges[nodes[u].firstEdge + k];
-                            uint8_t cls = (e.flags >> 2) & 0x07;
+                            uint8_t cls = (e.flags >> 2) & 0x0F;
                             uint32_t w = e.dist_hm;
                             if (pedMode) {
-                                if (cls == 8) w *= 4; // Avoid motorway for pedestrians
+                                if (cls == FEAT_MOTORWAY || cls == 8) w *= 4;
                             } else {
-                                if (cls == 8) w = (w * 6) / 10;      // Prefer Autobahn for cars
-                                else if (cls == 7) w = (w * 8) / 10; // Bundesstraße
+                                if (cls == FEAT_MOTORWAY || cls == 8) w = (w * 6) / 10;
+                                else if (cls == FEAT_PRIMARY || cls == 7) w = (w * 8) / 10;
                             }
                             uint32_t ng = gu + max<uint32_t>(1U, w);
                             if (ng < gScore[e.toNode]) {
@@ -579,12 +841,10 @@ bool NavEngine::startNavigation(const char* name, double destLat, double destLon
         }
     }
 
-    // Fallback multi-segment route if SD map is not loaded yet or target is direct Mesh peer
     if (!routed) {
         const int steps = 16;
         for (int i = 0; i <= steps; i++) {
             double t = (double)i / steps;
-            // Slight realistic curve along Germany's corridor when simulating
             double bend = sin(t * M_PI) * 0.06 * ((sStat.mode == NAV_MODE_PED) ? -0.5 : 1.0);
             double la = sStat.curLat + (destLat - sStat.curLat) * t + bend * (destLon - sStat.curLon) * 0.25;
             double lo = sStat.curLon + (destLon - sStat.curLon) * t - bend * (destLat - sStat.curLat) * 0.25;
@@ -606,7 +866,6 @@ bool NavEngine::startNavigation(const char* name, double destLat, double destLon
 
 static bool matchPrefixCaseInsensitive(const char* hay, const char* needle) {
     if (!needle || !needle[0]) return true;
-    // Substring match case-insensitive
     for (const char* h = hay; *h; h++) {
         const char* p = h;
         const char* n = needle;
@@ -625,7 +884,7 @@ int NavEngine::searchPlaces(const char* query, NavPlace* out, int maxOut) {
     if (!out || maxOut <= 0) return 0;
     int count = 0;
 
-    // 1. Always include matching live LoRa / Meshtastic peers with coordinates first!
+    // 1. Live LoRa / Meshtastic peers with coordinates
     LoraPeerNode peers[16];
     uint8_t np = RadioLoRa::getPeers(peers, 16);
     for (uint8_t i = 0; i < np && count < maxOut; i++) {
@@ -637,24 +896,51 @@ int NavEngine::searchPlaces(const char* query, NavPlace* out, int maxOut) {
             dst.lat = peers[i].lat;
             dst.lon = peers[i].lon;
             dst.pop = 0;
-            dst.rank = 0; // 0 = LoRa/Meshtastic Peer
+            dst.rank = 0;
+        }
+    }
+    if (query && strcmp(query, "@mesh") == 0) return count;
+
+    // 2. User-saved 1-click POIs
+    for (int i = sNumWaypoints - 1; i >= 0 && count < maxOut; i--) {
+        if (matchPrefixCaseInsensitive(sWaypoints[i].name, query) ||
+            (query && strcmp(query, "@poi") == 0)) {
+            NavPlace& dst = out[count++];
+            snprintf(dst.name, sizeof(dst.name), "%s", sWaypoints[i].name);
+            dst.lat = sWaypoints[i].lat;
+            dst.lon = sWaypoints[i].lon;
+            dst.pop = 0;
+            dst.rank = 5;
         }
     }
 
-    // 2. Search `germany.knav` places table if loaded
-    if (sStat.mapLoaded && sHdr.numPlaces > 0) {
+    // 3. Built-in Stuttgart + Adjacent Landkreise priority list when query is empty (TOP view)
+    if (!query || !query[0]) {
+        for (int i = 0; i < min(18, N_BUILTIN_CITIES) && count < maxOut; i++) {
+            out[count++] = BUILTIN_CITIES[i];
+        }
+    }
+
+    // 4. Search `germany.knav` places table if loaded
+    if (sStat.mapLoaded && sHdr.numPlaces > 0 && count < maxOut) {
         MapReader mr;
         if (mr.open()) {
             uint32_t curOff = sHdr.placesOffset;
             const int batchSize = 64;
             DiskPlace batch[batchSize];
-            uint32_t rem = min<uint32_t>(sHdr.numPlaces, ( query && query[0] ) ? sHdr.numPlaces : 500);
+            uint32_t rem = min<uint32_t>(sHdr.numPlaces, (query && query[0]) ? sHdr.numPlaces : 500);
             while (rem > 0 && count < maxOut) {
                 uint32_t n = min<uint32_t>(rem, batchSize);
                 if (!mr.readAt(curOff, batch, n * sizeof(DiskPlace))) break;
                 curOff += n * sizeof(DiskPlace);
                 for (uint32_t i = 0; i < n && count < maxOut; i++) {
                     if (matchPrefixCaseInsensitive(batch[i].name, query)) {
+                        // Avoid duplicating built-in Stuttgart entries already added
+                        bool dup = false;
+                        for (int k = 0; k < count; k++) {
+                            if (strcmp(out[k].name, batch[i].name) == 0) { dup = true; break; }
+                        }
+                        if (dup) continue;
                         NavPlace& dst = out[count++];
                         strncpy(dst.name, batch[i].name, sizeof(dst.name) - 1);
                         dst.name[sizeof(dst.name) - 1] = 0;
@@ -667,14 +953,17 @@ int NavEngine::searchPlaces(const char* query, NavPlace* out, int maxOut) {
                 rem -= n;
             }
             mr.close();
-            if (count > 0) return count;
         }
     }
 
-    // 3. Built-in German cities fallback
+    // 5. Built-in German cities fallback
     for (int i = 0; i < N_BUILTIN_CITIES && count < maxOut; i++) {
         if (matchPrefixCaseInsensitive(BUILTIN_CITIES[i].name, query)) {
-            out[count++] = BUILTIN_CITIES[i];
+            bool dup = false;
+            for (int k = 0; k < count; k++) {
+                if (strcmp(out[k].name, BUILTIN_CITIES[i].name) == 0) { dup = true; break; }
+            }
+            if (!dup) out[count++] = BUILTIN_CITIES[i];
         }
     }
     return count;
@@ -688,18 +977,38 @@ bool NavEngine::isTrackRecording() { return sStat.gpxRecording; }
 
 bool NavEngine::markWaypoint(const char* label) {
     updateCurrentPosition();
-    if (!sStat.sdReady) return false;
-    File f = SD.open("/waypoints.csv", FILE_APPEND);
-    if (!f) return false;
-    f.printf("%lu,%s,%.6f,%.6f,%.1f\n",
-             (unsigned long)time(NULL), label ? label : "POI",
-             sStat.curLat, sStat.curLon, GpsManager::altitudeM());
-    f.close();
+    int idx = sNumWaypoints;
+    if (idx >= MAX_USER_WAYPOINTS) {
+        // Shift oldest out
+        for (int i = 0; i + 1 < MAX_USER_WAYPOINTS; i++) sWaypoints[i] = sWaypoints[i + 1];
+        idx = MAX_USER_WAYPOINTS - 1;
+    } else {
+        sNumWaypoints++;
+    }
+    if (label && label[0]) {
+        snprintf(sWaypoints[idx].name, sizeof(sWaypoints[idx].name), "%s #%d", label, idx + 1);
+    } else {
+        snprintf(sWaypoints[idx].name, sizeof(sWaypoints[idx].name), "POI #%d", idx + 1);
+    }
+    sWaypoints[idx].lat = sStat.curLat;
+    sWaypoints[idx].lon = sStat.curLon;
+    saveWaypointsToNvs();
+
+    if (sStat.sdReady && sStat.sdWritable) {
+        File f = SD.open("/waypoints.csv", FILE_APPEND);
+        if (f) {
+            f.printf("%lu,%s,%.6f,%.6f,%.1f\n",
+                     (unsigned long)time(NULL), sWaypoints[idx].name,
+                     sStat.curLat, sStat.curLon, GpsManager::altitudeM());
+            f.close();
+        }
+    }
+    nav::markDirty(nav::PG_POSITION);
     return true;
 }
 
 // =============================================================================
-// Fast RGB565 Software Vector Map Renderer (AMOLED Dark Tactical Theme)
+// Google-Maps-Style Vector Map Renderer (Buildings, Forests, Farmland, Streets, POIs)
 // =============================================================================
 static inline uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
     return ((uint16_t)(r & 0xF8) << 8) | ((uint16_t)(g & 0xFC) << 3) | (b >> 3);
@@ -712,14 +1021,13 @@ static inline void putPx(uint16_t* buf, int w, int h, int x, int y, uint16_t col
 }
 
 static void drawLine(uint16_t* buf, int w, int h, int x0, int y0, int x1, int y1, uint16_t col, int thickness = 1) {
-    // Trivial reject if both points are far outside viewport
-    if ((x0 < -50 && x1 < -50) || (x0 >= w + 50 && x1 >= w + 50) ||
-        (y0 < -50 && y1 < -50) || (y0 >= h + 50 && y1 >= h + 50)) return;
+    if ((x0 < -60 && x1 < -60) || (x0 >= w + 60 && x1 >= w + 60) ||
+        (y0 < -60 && y1 < -60) || (y0 >= h + 60 && y1 >= h + 60)) return;
 
     int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
     int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
     int err = dx + dy;
-    int maxSteps = w + h + 200;
+    int maxSteps = w + h + 240;
     while (maxSteps-- > 0) {
         if (thickness <= 1) {
             putPx(buf, w, h, x0, y0, col);
@@ -727,15 +1035,70 @@ static void drawLine(uint16_t* buf, int w, int h, int x0, int y0, int x1, int y1
             putPx(buf, w, h, x0, y0, col);
             putPx(buf, w, h, x0 + 1, y0, col);
             putPx(buf, w, h, x0, y0 + 1, col);
-        } else {
+        } else if (thickness == 3) {
             for (int ty = -1; ty <= 1; ty++)
                 for (int tx = -1; tx <= 1; tx++)
                     putPx(buf, w, h, x0 + tx, y0 + ty, col);
+        } else {
+            int r = thickness / 2;
+            for (int ty = -r; ty <= r; ty++)
+                for (int tx = -r; tx <= r; tx++)
+                    if (tx * tx + ty * ty <= r * r + 1)
+                        putPx(buf, w, h, x0 + tx, y0 + ty, col);
         }
         if (x0 == x1 && y0 == y1) break;
         int e2 = 2 * err;
         if (e2 >= dy) { err += dy; x0 += sx; }
         if (e2 <= dx) { err += dx; y0 += sy; }
+    }
+}
+
+// Fast Scanline Polygon Fill for Forests, Parks, Farmland, Water Bodies, and Building Footprints
+static void drawFilledPolygon(uint16_t* buf, int w, int h, const int16_t* px, const int16_t* py, int npts, uint16_t fillCol) {
+    if (npts < 3) return;
+    int minY = py[0], maxY = py[0];
+    int minX = px[0], maxX = px[0];
+    for (int i = 1; i < npts; i++) {
+        if (py[i] < minY) minY = py[i];
+        if (py[i] > maxY) maxY = py[i];
+        if (px[i] < minX) minX = px[i];
+        if (px[i] > maxX) maxX = px[i];
+    }
+    if (maxX < 0 || minX >= w || maxY < 0 || minY >= h) return;
+    minY = max(0, minY);
+    maxY = min(h - 1, maxY);
+
+    int nodes[32];
+    for (int y = minY; y <= maxY; y++) {
+        int nNodes = 0;
+        int j = npts - 1;
+        for (int i = 0; i < npts; i++) {
+            int yi = py[i], yj = py[j];
+            if ((yi < y && yj >= y) || (yj < y && yi >= y)) {
+                if (nNodes < 32) {
+                    nodes[nNodes++] = px[i] + (y - yi) * (px[j] - px[i]) / (yj - yi);
+                }
+            }
+            j = i;
+        }
+        // Insertion sort node X coordinates
+        for (int i = 1; i < nNodes; i++) {
+            int v = nodes[i];
+            int k = i - 1;
+            while (k >= 0 && nodes[k] > v) {
+                nodes[k + 1] = nodes[k];
+                k--;
+            }
+            nodes[k + 1] = v;
+        }
+        uint16_t* row = buf + y * w;
+        for (int i = 0; i + 1 < nNodes; i += 2) {
+            int x0 = max(0, nodes[i]);
+            int x1 = min(w - 1, nodes[i + 1]);
+            for (int x = x0; x <= x1; x++) {
+                row[x] = fillCol;
+            }
+        }
     }
 }
 
@@ -758,7 +1121,16 @@ static void drawRing(uint16_t* buf, int w, int h, int cx, int cy, int r, uint16_
     }
 }
 
-// Compact 5x7 uppercase/digit bitmap font for fast inline map labels
+static void drawRoundedBadge(uint16_t* buf, int w, int h, int cx, int cy, int r, uint16_t bgCol, uint16_t borderCol) {
+    for (int dy = -r; dy <= r; dy++) {
+        for (int dx = -r; dx <= r; dx++) {
+            int d2 = dx * dx + dy * dy;
+            if (d2 <= (r - 1) * (r - 1)) putPx(buf, w, h, cx + dx, cy + dy, bgCol);
+            else if (d2 <= r * r) putPx(buf, w, h, cx + dx, cy + dy, borderCol);
+        }
+    }
+}
+
 static const uint8_t MINI_FONT[][5] = {
     {0x00,0x00,0x00,0x00,0x00}, // space (32)
     {0x00,0x00,0x5F,0x00,0x00}, // ! (33)
@@ -770,7 +1142,7 @@ static const uint8_t MINI_FONT[][5] = {
     {0x00,0x00,0x07,0x00,0x00}, // '
     {0x00,0x1C,0x22,0x41,0x00}, // (
     {0x00,0x41,0x22,0x1C,0x00}, // )
-    {0x00,0x00,0x00,0x00,0x00}, // *
+    {0x2A,0x1C,0x7F,0x1C,0x2A}, // *
     {0x08,0x08,0x3E,0x08,0x08}, // +
     {0x00,0x50,0x30,0x00,0x00}, // ,
     {0x08,0x08,0x08,0x08,0x08}, // -
@@ -821,11 +1193,10 @@ static const uint8_t MINI_FONT[][5] = {
     {0x61,0x51,0x49,0x45,0x43}, // Z
 };
 
-static void drawMapText(uint16_t* buf, int w, int h, int x, int y, const char* txt, uint16_t col, uint16_t haloCol) {
+static void drawMapText(uint16_t* buf, int w, int h, int x, int y, const char* txt, uint16_t col, uint16_t haloCol, int maxChars = 18) {
     int cx = x;
-    for (int i = 0; txt[i] && i < 18; i++) {
+    for (int i = 0; txt[i] && i < maxChars; i++) {
         uint8_t c = (uint8_t)txt[i];
-        // Map UTF-8 German umlauts (0xC3 0xA4/0xB6/0xBC/etc.) to A/O/U/S
         if (c == 0xC3 && txt[i + 1]) {
             uint8_t c2 = (uint8_t)txt[++i];
             if (c2 == 0xA4 || c2 == 0x84) c = 'A';
@@ -842,6 +1213,7 @@ static void drawMapText(uint16_t* buf, int w, int h, int x, int y, const char* t
             for (int rowIdx = 0; rowIdx < 7; rowIdx++) {
                 if (bits & (1 << rowIdx)) {
                     putPx(buf, w, h, cx + colIdx + 1, y + rowIdx + 1, haloCol);
+                    putPx(buf, w, h, cx + colIdx - 1, y + rowIdx, haloCol);
                     putPx(buf, w, h, cx + colIdx, y + rowIdx, col);
                 }
             }
@@ -850,8 +1222,9 @@ static void drawMapText(uint16_t* buf, int w, int h, int x, int y, const char* t
     }
 }
 
-static const uint8_t* getCachedCellData(MapReader& mr, bool isFine, int cellIdx, uint32_t& outLen) {
-    int32_t key = ((isFine ? 1 : 0) << 20) | cellIdx;
+// Tier: 0=Coarse (32x32 DE), 1=Fine (256x256 DE), 2=Ultra (128x128 Stuttgart+Landkreise)
+static const uint8_t* getCachedCellData(MapReader& mr, int tier, int cellIdx, uint32_t& outLen) {
+    int32_t key = (tier << 20) | cellIdx;
     sCacheClock++;
     for (int i = 0; i < CELL_CACHE_SLOTS; i++) {
         if (sCellCache[i].key == key) {
@@ -861,15 +1234,17 @@ static const uint8_t* getCachedCellData(MapReader& mr, bool isFine, int cellIdx,
         }
     }
 
-    // Read directory entry
-    uint32_t dirOff = (isFine ? sHdr.fineDirOffset : sHdr.coarseDirOffset) + cellIdx * sizeof(CellDirEntry);
+    uint32_t baseDir = (tier == 2) ? sHdr.ultraDirOffset :
+                       (tier == 1) ? sHdr.fineDirOffset : sHdr.coarseDirOffset;
+    if (baseDir == 0) { outLen = 0; return nullptr; }
+
+    uint32_t dirOff = baseDir + cellIdx * sizeof(CellDirEntry);
     CellDirEntry de{};
     if (!mr.readAt(dirOff, &de, sizeof(de)) || de.length == 0 || de.length > 65536) {
         outLen = 0;
         return nullptr;
     }
 
-    // Pick LRU slot
     int victim = 0;
     for (int i = 1; i < CELL_CACHE_SLOTS; i++) {
         if (sCellCache[i].key == -1) { victim = i; break; }
@@ -899,12 +1274,11 @@ static const uint8_t* getCachedCellData(MapReader& mr, bool isFine, int cellIdx,
 void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double viewLon, int zoom) {
     if (!buf || w <= 0 || h <= 0) return;
 
-    // 1. Dark tactical background fill
-    uint16_t bgCol = rgb565(10, 14, 22);
-    uint16_t gridCol = rgb565(18, 25, 38);
+    // 1. Dark Google-Maps-Night-style base canvas
+    uint16_t bgCol = (zoom >= 13) ? rgb565(15, 20, 28) : rgb565(10, 14, 22);
+    uint16_t gridCol = rgb565(20, 27, 40);
     for (int i = 0; i < w * h; i++) buf[i] = bgCol;
 
-    // Degrees per pixel at zoom (zoom 6 = whole Germany, zoom 15 = street level)
     double lonPerPx = 360.0 / (256.0 * pow(2.0, (double)zoom));
     double cosLat = cos(viewLat * M_PI / 180.0);
     if (cosLat < 0.2) cosLat = 0.2;
@@ -915,125 +1289,343 @@ void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double vi
         sy = (int)(h * 0.5 - (lat - viewLat) / latPerPx);
     };
 
-    // Subtle tactical coordinate grid
-    for (int gx = (w / 2) % 48; gx < w; gx += 48) {
-        for (int y = 0; y < h; y += 2) buf[y * w + gx] = gridCol;
-    }
-    for (int gy = (h / 2) % 48; gy < h; gy += 48) {
-        for (int x = 0; x < w; x += 2) buf[gy * w + x] = gridCol;
-    }
-
-    // 2. Always draw Germany border outline at overview zoom levels
-    uint16_t borderCol = rgb565(56, 74, 102);
-    for (int i = 0; i + 1 < N_BORDER_PTS; i++) {
-        int x0, y0, x1, y1;
-        project(DE_BORDER_PTS[i][0] * 1e-5, DE_BORDER_PTS[i][1] * 1e-5, x0, y0);
-        project(DE_BORDER_PTS[i + 1][0] * 1e-5, DE_BORDER_PTS[i + 1][1] * 1e-5, x1, y1);
-        drawLine(buf, w, h, x0, y0, x1, y1, borderCol, 2);
+    // Subtle coordinate grid at low/medium zoom
+    if (zoom <= 13) {
+        for (int gx = (w / 2) % 48; gx < w; gx += 48) {
+            for (int y = 0; y < h; y += 2) buf[y * w + gx] = gridCol;
+        }
+        for (int gy = (h / 2) % 48; gy < h; gy += 48) {
+            for (int x = 0; x < w; x += 2) buf[gy * w + x] = gridCol;
+        }
     }
 
-    // 3. Render vector tiles from SD card `germany.knav` if loaded
-    double minLat = viewLat - (h * 0.55) * latPerPx;
-    double maxLat = viewLat + (h * 0.55) * latPerPx;
-    double minLon = viewLon - (w * 0.55) * lonPerPx;
-    double maxLon = viewLon + (w * 0.55) * lonPerPx;
+    // 2. Germany border outline at overview zoom levels
+    if (zoom <= 11) {
+        uint16_t borderCol = rgb565(56, 74, 102);
+        for (int i = 0; i + 1 < N_BORDER_PTS; i++) {
+            int x0, y0, x1, y1;
+            project(DE_BORDER_PTS[i][0] * 1e-5, DE_BORDER_PTS[i][1] * 1e-5, x0, y0);
+            project(DE_BORDER_PTS[i + 1][0] * 1e-5, DE_BORDER_PTS[i + 1][1] * 1e-5, x1, y1);
+            drawLine(buf, w, h, x0, y0, x1, y1, borderCol, 2);
+        }
+    }
 
+    double minLat = viewLat - (h * 0.58) * latPerPx;
+    double maxLat = viewLat + (h * 0.58) * latPerPx;
+    double minLon = viewLon - (w * 0.58) * lonPerPx;
+    double maxLon = viewLon + (w * 0.58) * lonPerPx;
+
+    // Helper lambda to render a cell's segments (used for Coarse, Fine, and Ultra Stuttgart tiers)
+    auto renderCellBuffer = [&](const uint8_t* cdata, uint32_t clen, double baseLat, double baseLon,
+                                double cellLatH, double cellLonW, bool passPolys) {
+        if (!cdata || clen < 2) return;
+        uint16_t nseg = *(const uint16_t*)cdata;
+        size_t pos = 2;
+        int16_t polyX[64], polyY[64];
+
+        for (uint16_t s = 0; s < nseg && pos + 2 <= clen; s++) {
+            uint8_t rawCls = cdata[pos++];
+            uint8_t npts = cdata[pos++];
+            if (pos + npts * 2 > clen) break;
+
+            // Remap legacy V1 classes (0..8) to V2 FeatureClass (6..14)
+            uint8_t cls = sIsV2 ? rawCls : (rawCls + 6);
+            bool isPoly = (cls <= FEAT_BUILDING);
+
+            if (passPolys != isPoly) {
+                pos += npts * 2;
+                continue;
+            }
+            if (!passPolys && zoom < 12 && (cls == FEAT_PATH || cls == FEAT_RESIDENTIAL)) {
+                pos += npts * 2;
+                continue;
+            }
+            if (passPolys && cls == FEAT_BUILDING && zoom < 13) {
+                pos += npts * 2;
+                continue;
+            }
+
+            int cnt = min<int>(npts, 64);
+            for (int k = 0; k < cnt; k++) {
+                uint8_t qx = cdata[pos + k * 2];
+                uint8_t qy = cdata[pos + k * 2 + 1];
+                double ptLon = baseLon + (qx / 255.0) * cellLonW;
+                double ptLat = baseLat + (qy / 255.0) * cellLatH;
+                int sx, sy;
+                project(ptLat, ptLon, sx, sy);
+                polyX[k] = (int16_t)constrain(sx, -200, w + 200);
+                polyY[k] = (int16_t)constrain(sy, -200, h + 200);
+            }
+            pos += npts * 2;
+
+            if (passPolys) {
+                if (cls == FEAT_FARMLAND) {
+                    // Agriculture / Farmland / Vineyards (warm earth-olive tint + field border)
+                    drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(26, 36, 20));
+                    for (int k = 0; k + 1 < cnt; k++) {
+                        drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], rgb565(40, 54, 30), 1);
+                    }
+                } else if (cls == FEAT_FOREST) {
+                    // Forest / Woodland (rich dark emerald green + canopy edge)
+                    drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(16, 52, 28));
+                    for (int k = 0; k + 1 < cnt; k++) {
+                        drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], rgb565(28, 78, 44), 1);
+                    }
+                } else if (cls == FEAT_PARK) {
+                    // City Park / Meadow
+                    drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(22, 68, 36));
+                } else if (cls == FEAT_URBAN) {
+                    // Urban residential/commercial block
+                    drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(22, 28, 38));
+                } else if (cls == FEAT_WATER_POLY) {
+                    // Lake / Neckar river polygon
+                    drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(20, 88, 156));
+                } else if (cls == FEAT_BUILDING) {
+                    // 3D-style Building Footprint + Roof Outline!
+                    uint16_t bFill = (zoom >= 15) ? rgb565(46, 54, 70) : rgb565(38, 45, 58);
+                    uint16_t bEdge = (zoom >= 15) ? rgb565(82, 94, 118) : rgb565(60, 70, 88);
+                    drawFilledPolygon(buf, w, h, polyX, polyY, cnt, bFill);
+                    if (zoom >= 14) {
+                        for (int k = 0; k + 1 < cnt; k++) {
+                            drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], bEdge, 1);
+                        }
+                    }
+                }
+            } else {
+                // Linear features: Roads, Paths, Railways, Waterways
+                uint16_t coreCol = rgb565(100, 112, 132);
+                uint16_t caseCol = 0;
+                int coreW = 1, caseW = 0;
+
+                switch (cls) {
+                    case FEAT_WATER:
+                        coreCol = rgb565(28, 138, 220);
+                        coreW = (zoom >= 13) ? 3 : 2;
+                        break;
+                    case FEAT_BOUNDARY:
+                        coreCol = rgb565(75, 95, 125);
+                        coreW = 1;
+                        break;
+                    case FEAT_RAIL:
+                        coreCol = rgb565(115, 125, 155);
+                        coreW = (zoom >= 14) ? 2 : 1;
+                        break;
+                    case FEAT_PATH:
+                        // Footpath / Cycleway / Forest Trail
+                        coreCol = rgb565(92, 165, 112);
+                        coreW = (zoom >= 15) ? 2 : 1;
+                        break;
+                    case FEAT_RESIDENTIAL:
+                        // Google-Maps-style Residential Street with dark casing
+                        coreCol = rgb565(132, 145, 168);
+                        caseCol = rgb565(32, 38, 50);
+                        coreW = (zoom >= 16) ? 4 : (zoom >= 15) ? 3 : (zoom >= 14) ? 2 : 1;
+                        caseW = (zoom >= 14) ? (coreW + 2) : 0;
+                        break;
+                    case FEAT_TERTIARY:
+                        coreCol = rgb565(158, 170, 192);
+                        caseCol = rgb565(34, 40, 52);
+                        coreW = (zoom >= 15) ? 4 : (zoom >= 13) ? 2 : 1;
+                        caseW = (zoom >= 13) ? (coreW + 2) : 0;
+                        break;
+                    case FEAT_SECONDARY:
+                        coreCol = rgb565(190, 202, 222);
+                        caseCol = rgb565(38, 44, 58);
+                        coreW = (zoom >= 15) ? 4 : (zoom >= 12) ? 2 : 1;
+                        caseW = (zoom >= 12) ? (coreW + 2) : 0;
+                        break;
+                    case FEAT_PRIMARY:
+                        // Bundesstraße (Google Maps warm yellow-gold)
+                        coreCol = rgb565(245, 192, 38);
+                        caseCol = rgb565(70, 52, 12);
+                        coreW = (zoom >= 14) ? 4 : 2;
+                        caseW = (zoom >= 12) ? (coreW + 2) : 0;
+                        break;
+                    case FEAT_MOTORWAY:
+                        // Autobahn (bright orange-amber)
+                        coreCol = rgb565(255, 110, 28);
+                        caseCol = rgb565(85, 34, 10);
+                        coreW = (zoom >= 13) ? 4 : (zoom >= 9) ? 2 : 1;
+                        caseW = (zoom >= 11) ? (coreW + 2) : 0;
+                        break;
+                }
+
+                if (caseW > 0) {
+                    for (int k = 0; k + 1 < cnt; k++) {
+                        drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], caseCol, caseW);
+                    }
+                }
+                for (int k = 0; k + 1 < cnt; k++) {
+                    drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], coreCol, coreW);
+                }
+            }
+        }
+    };
+
+    // 3. Render vector tiles from `germany.knav` (SD or Flash)
     if (sStat.mapLoaded) {
         MapReader mr;
         if (mr.open()) {
-            bool useFine = (zoom >= 10);
-            int nx = useFine ? FINE_NX : COARSE_NX;
-            int ny = useFine ? FINE_NY : COARSE_NY;
-            double latSpan = DE_MAX_LAT - DE_MIN_LAT;
-            double lonSpan = DE_MAX_LON - DE_MIN_LON;
+            bool inStuttgartMetro = sStat.ultraLoaded && (zoom >= 13) &&
+                                    (maxLat >= STU_MIN_LAT && minLat <= STU_MAX_LAT &&
+                                     maxLon >= STU_MIN_LON && minLon <= STU_MAX_LON);
 
-            int cy0 = std::clamp((int)((minLat - DE_MIN_LAT) / latSpan * ny), 0, ny - 1);
-            int cy1 = std::clamp((int)((maxLat - DE_MIN_LAT) / latSpan * ny), 0, ny - 1);
-            int cx0 = std::clamp((int)((minLon - DE_MIN_LON) / lonSpan * nx), 0, nx - 1);
-            int cx1 = std::clamp((int)((maxLon - DE_MIN_LON) / lonSpan * nx), 0, nx - 1);
+            if (inStuttgartMetro) {
+                double latSpan = STU_MAX_LAT - STU_MIN_LAT;
+                double lonSpan = STU_MAX_LON - STU_MIN_LON;
+                int cy0 = std::clamp((int)((minLat - STU_MIN_LAT) / latSpan * ULTRA_NY), 0, ULTRA_NY - 1);
+                int cy1 = std::clamp((int)((maxLat - STU_MIN_LAT) / latSpan * ULTRA_NY), 0, ULTRA_NY - 1);
+                int cx0 = std::clamp((int)((minLon - STU_MIN_LON) / lonSpan * ULTRA_NX), 0, ULTRA_NX - 1);
+                int cx1 = std::clamp((int)((maxLon - STU_MIN_LON) / lonSpan * ULTRA_NX), 0, ULTRA_NX - 1);
 
-            // Cap cell span per frame so wide zoom stays 60fps
-            if (useFine && (cy1 - cy0 > 5 || cx1 - cx0 > 5)) {
-                useFine = false;
-                nx = COARSE_NX; ny = COARSE_NY;
-                cy0 = std::clamp((int)((minLat - DE_MIN_LAT) / latSpan * ny), 0, ny - 1);
-                cy1 = std::clamp((int)((maxLat - DE_MIN_LAT) / latSpan * ny), 0, ny - 1);
-                cx0 = std::clamp((int)((minLon - DE_MIN_LON) / lonSpan * nx), 0, nx - 1);
-                cx1 = std::clamp((int)((maxLon - DE_MIN_LON) / lonSpan * nx), 0, nx - 1);
-            }
-
-            double cellLatH = latSpan / ny;
-            double cellLonW = lonSpan / nx;
-
-            for (int cy = cy0; cy <= cy1; cy++) {
-                for (int cx = cx0; cx <= cx1; cx++) {
-                    uint32_t clen = 0;
-                    const uint8_t* cdata = getCachedCellData(mr, useFine, cy * nx + cx, clen);
-                    if (!cdata || clen < 2) continue;
-
-                    double baseLat = DE_MIN_LAT + cy * cellLatH;
-                    double baseLon = DE_MIN_LON + cx * cellLonW;
-
-                    uint16_t nseg = *(const uint16_t*)cdata;
-                    size_t pos = 2;
-                    for (uint16_t s = 0; s < nseg && pos + 2 <= clen; s++) {
-                        uint8_t cls = cdata[pos++];
-                        uint8_t npts = cdata[pos++];
-                        if (pos + npts * 2 > clen) break;
-
-                        // Filter minor streets at low zoom
-                        if (zoom < 12 && (cls == 3 || cls == 4)) {
-                            pos += npts * 2;
-                            continue;
+                if (cy1 - cy0 <= 6 && cx1 - cx0 <= 6) {
+                    double cellLatH = latSpan / ULTRA_NY;
+                    double cellLonW = lonSpan / ULTRA_NX;
+                    // Pass 1: Filled polygons (Farmland, Forests, Parks, Water, Urban, 3D Buildings)
+                    for (int cy = cy0; cy <= cy1; cy++) {
+                        for (int cx = cx0; cx <= cx1; cx++) {
+                            uint32_t clen = 0;
+                            const uint8_t* cdata = getCachedCellData(mr, 2, cy * ULTRA_NX + cx, clen);
+                            renderCellBuffer(cdata, clen, STU_MIN_LAT + cy * cellLatH,
+                                             STU_MIN_LON + cx * cellLonW, cellLatH, cellLonW, true);
                         }
-
-                        uint16_t col = rgb565(65, 75, 92);
-                        int thick = 1;
-                        switch (cls) {
-                            case 0: col = rgb565(24, 130, 210); thick = 2; break; // Water
-                            case 1: col = rgb565(75, 95, 125);  thick = 2; break; // Boundary
-                            case 2: col = rgb565(90, 90, 115);  thick = 1; break; // Rail
-                            case 3: col = rgb565(45, 110, 68);  thick = 1; break; // Path/Trail
-                            case 4: col = rgb565(58, 66, 82);   thick = 1; break; // Residential
-                            case 5: col = rgb565(95, 105, 125); thick = 1; break; // Tertiary
-                            case 6: col = rgb565(140, 150, 175);thick = (zoom >= 12) ? 2 : 1; break; // Secondary
-                            case 7: col = rgb565(235, 175, 20); thick = 2; break; // Primary / Bundesstraße
-                            case 8: col = rgb565(255, 95, 20);  thick = (zoom >= 9) ? 2 : 1; break; // Autobahn
-                        }
-
-                        int px0 = 0, py0 = 0;
-                        for (uint8_t k = 0; k < npts; k++) {
-                            uint8_t qx = cdata[pos++];
-                            uint8_t qy = cdata[pos++];
-                            double ptLon = baseLon + (qx / 255.0) * cellLonW;
-                            double ptLat = baseLat + (qy / 255.0) * cellLatH;
-                            int sx, sy;
-                            project(ptLat, ptLon, sx, sy);
-                            if (k > 0) drawLine(buf, w, h, px0, py0, sx, sy, col, thick);
-                            px0 = sx; py0 = sy;
+                    }
+                    // Pass 2: Cased streets, footpaths, railways, waterways
+                    for (int cy = cy0; cy <= cy1; cy++) {
+                        for (int cx = cx0; cx <= cx1; cx++) {
+                            uint32_t clen = 0;
+                            const uint8_t* cdata = getCachedCellData(mr, 2, cy * ULTRA_NX + cx, clen);
+                            renderCellBuffer(cdata, clen, STU_MIN_LAT + cy * cellLatH,
+                                             STU_MIN_LON + cx * cellLonW, cellLatH, cellLonW, false);
                         }
                     }
                 }
             }
+
+            // Also render Fine (256x256) or Coarse (32x32) Germany grid if outside Ultra coverage or zoomed out
+            if (!inStuttgartMetro) {
+                bool useFine = (zoom >= 10);
+                int nx = useFine ? FINE_NX : COARSE_NX;
+                int ny = useFine ? FINE_NY : COARSE_NY;
+                double latSpan = DE_MAX_LAT - DE_MIN_LAT;
+                double lonSpan = DE_MAX_LON - DE_MIN_LON;
+
+                int cy0 = std::clamp((int)((minLat - DE_MIN_LAT) / latSpan * ny), 0, ny - 1);
+                int cy1 = std::clamp((int)((maxLat - DE_MIN_LAT) / latSpan * ny), 0, ny - 1);
+                int cx0 = std::clamp((int)((minLon - DE_MIN_LON) / lonSpan * nx), 0, nx - 1);
+                int cx1 = std::clamp((int)((maxLon - DE_MIN_LON) / lonSpan * nx), 0, nx - 1);
+
+                if (useFine && (cy1 - cy0 > 5 || cx1 - cx0 > 5)) {
+                    useFine = false;
+                    nx = COARSE_NX; ny = COARSE_NY;
+                    cy0 = std::clamp((int)((minLat - DE_MIN_LAT) / latSpan * ny), 0, ny - 1);
+                    cy1 = std::clamp((int)((maxLat - DE_MIN_LAT) / latSpan * ny), 0, ny - 1);
+                    cx0 = std::clamp((int)((minLon - DE_MIN_LON) / lonSpan * nx), 0, nx - 1);
+                    cx1 = std::clamp((int)((maxLon - DE_MIN_LON) / lonSpan * nx), 0, nx - 1);
+                }
+
+                double cellLatH = latSpan / ny;
+                double cellLonW = lonSpan / nx;
+                int tier = useFine ? 1 : 0;
+
+                for (int pass = 0; pass < 2; pass++) {
+                    bool passPolys = (pass == 0);
+                    for (int cy = cy0; cy <= cy1; cy++) {
+                        for (int cx = cx0; cx <= cx1; cx++) {
+                            uint32_t clen = 0;
+                            const uint8_t* cdata = getCachedCellData(mr, tier, cy * nx + cx, clen);
+                            renderCellBuffer(cdata, clen, DE_MIN_LAT + cy * cellLatH,
+                                             DE_MIN_LON + cx * cellLonW, cellLatH, cellLonW, passPolys);
+                        }
+                    }
+                }
+            }
+
+            // 4. Render POIs & Street Names from `poisOffset` at street zoom (zoom >= 13)!
+            if (sIsV2 && sHdr.numPois > 0 && sHdr.poisOffset > 0 && zoom >= 13) {
+                int32_t minLat5 = (int32_t)(minLat * 1e5);
+                int32_t maxLat5 = (int32_t)(maxLat * 1e5);
+                int32_t minLon5 = (int32_t)(minLon * 1e5);
+                int32_t maxLon5 = (int32_t)(maxLon * 1e5);
+
+                // Binary search first POI with lat_e5 >= minLat5
+                uint32_t lo = 0, hi = sHdr.numPois;
+                while (lo < hi) {
+                    uint32_t mid = (lo + hi) / 2;
+                    DiskPoi probe{};
+                    if (!mr.readAt(sHdr.poisOffset + mid * sizeof(DiskPoi), &probe, sizeof(probe))) break;
+                    if (probe.lat_e5 < minLat5) lo = mid + 1;
+                    else hi = mid;
+                }
+
+                // Track placed label boxes to prevent overlapping street/POI labels
+                struct LabelBox { int x0, y0, x1, y1; };
+                LabelBox placed[28];
+                int nPlaced = 0;
+
+                const int batchN = 48;
+                DiskPoi batch[batchN];
+                uint32_t idx = lo;
+                bool done = false;
+                while (idx < sHdr.numPois && !done && nPlaced < 26) {
+                    uint32_t cnt = min<uint32_t>(batchN, sHdr.numPois - idx);
+                    if (!mr.readAt(sHdr.poisOffset + idx * sizeof(DiskPoi), batch, cnt * sizeof(DiskPoi))) break;
+                    idx += cnt;
+
+                    for (uint32_t i = 0; i < cnt; i++) {
+                        const DiskPoi& p = batch[i];
+                        if (p.lat_e5 > maxLat5) { done = true; break; }
+                        if (p.lon_e5 < minLon5 || p.lon_e5 > maxLon5) continue;
+                        if (p.type == 7 && zoom < 14) continue; // Street names at zoom >= 14
+
+                        int sx, sy;
+                        project(p.lat_e5 * 1e-5, p.lon_e5 * 1e-5, sx, sy);
+                        if (sx < 14 || sx >= w - 50 || sy < 14 || sy >= h - 16) continue;
+
+                        int txtW = min<int>((int)strlen(p.name), 15) * 6 + 14;
+                        int bx0 = sx - 6, by0 = sy - 7, bx1 = sx + txtW, by1 = sy + 9;
+                        bool overlap = false;
+                        for (int b = 0; b < nPlaced; b++) {
+                            if (!(bx1 < placed[b].x0 || bx0 > placed[b].x1 ||
+                                  by1 < placed[b].y0 || by0 > placed[b].y1)) {
+                                overlap = true;
+                                break;
+                            }
+                        }
+                        if (overlap) continue;
+                        if (nPlaced < 28) placed[nPlaced++] = {bx0, by0, bx1, by1};
+
+                        if (p.type == 7) {
+                            // Street Name Label
+                            drawMapText(buf, w, h, sx, sy - 3, p.name, rgb565(185, 200, 222), rgb565(10, 14, 22), 16);
+                        } else {
+                            // Google-Maps-style POI Icon Badge + Label
+                            uint16_t badgeCol = rgb565(50, 140, 250);
+                            char sym[2] = {'*', 0};
+                            switch (p.type) {
+                                case 0: badgeCol = rgb565(30, 185, 95);  sym[0] = 'S'; break; // S-Bahn/U-Bahn/Transit
+                                case 1: badgeCol = rgb565(40, 130, 245); sym[0] = 'P'; break; // Parking
+                                case 2: badgeCol = rgb565(245, 140, 30); sym[0] = 'T'; break; // Tankstelle
+                                case 3: badgeCol = rgb565(240, 155, 45); sym[0] = 'R'; break; // Restaurant/Cafe
+                                case 4: badgeCol = rgb565(40, 185, 220); sym[0] = 'M'; break; // Supermarkt/Shop
+                                case 5: badgeCol = rgb565(245, 65, 75);  sym[0] = '+'; break; // Klinik/Apotheke
+                                case 6: badgeCol = rgb565(215, 175, 45); sym[0] = '*'; break; // Sehenswürdigkeit
+                            }
+                            drawRoundedBadge(buf, w, h, sx, sy, 6, badgeCol, rgb565(255, 255, 255));
+                            drawMapText(buf, w, h, sx - 2, sy - 3, sym, rgb565(255, 255, 255), badgeCol, 1);
+                            if (zoom >= 14 && p.name[0]) {
+                                drawMapText(buf, w, h, sx + 9, sy - 3, p.name, rgb565(230, 238, 250), rgb565(8, 12, 18), 14);
+                            }
+                        }
+                    }
+                }
+            }
+
             mr.close();
-        }
-    } else {
-        // Built-in Autobahn backbone connecting major German cities when SD map is not loaded yet
-        static const uint8_t AUTOBAHN_LINKS[][2] = {
-            {0, 1}, {0, 7}, {7, 2}, {0, 11}, {11, 2}, {1, 10}, {10, 12},
-            {12, 8}, {8, 9}, {9, 14}, {14, 6}, {6, 3}, {3, 18}, {18, 4},
-            {4, 20}, {20, 21}, {21, 26}, {4, 13}, {13, 2}, {2, 22}, {22, 5}, {5, 21}
-        };
-        uint16_t abCol = rgb565(220, 90, 25);
-        for (auto& lk : AUTOBAHN_LINKS) {
-            int x0, y0, x1, y1;
-            project(BUILTIN_CITIES[lk[0]].lat, BUILTIN_CITIES[lk[0]].lon, x0, y0);
-            project(BUILTIN_CITIES[lk[1]].lat, BUILTIN_CITIES[lk[1]].lon, x1, y1);
-            drawLine(buf, w, h, x0, y0, x1, y1, abCol, 2);
         }
     }
 
-    // 4. Draw GPX recorded breadcrumb trail (amber dotted line)
+    // 5. Draw GPX recorded breadcrumb trail (amber line)
     if (sGpxTrail.size() >= 2) {
         uint16_t gpxCol = rgb565(255, 200, 30);
         for (size_t i = 0; i + 1 < sGpxTrail.size(); i++) {
@@ -1044,7 +1636,7 @@ void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double vi
         }
     }
 
-    // 5. Draw Active Navigation Route Polyline (glowing cyan/lime)
+    // 6. Draw Active Navigation Route Polyline (glowing cyan/lime)
     if (sStat.activeRoute && sRoute.size() >= 2) {
         uint16_t routeHalo = rgb565(0, 90, 110);
         uint16_t routeCore = (sStat.mode == NAV_MODE_PED) ? rgb565(50, 235, 110) : rgb565(0, 245, 212);
@@ -1052,10 +1644,9 @@ void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double vi
             int x0, y0, x1, y1;
             project(sRoute[i].lat_e5 * 1e-5, sRoute[i].lon_e5 * 1e-5, x0, y0);
             project(sRoute[i + 1].lat_e5 * 1e-5, sRoute[i + 1].lon_e5 * 1e-5, x1, y1);
-            drawLine(buf, w, h, x0, y0, x1, y1, routeHalo, 3);
+            drawLine(buf, w, h, x0, y0, x1, y1, routeHalo, 4);
             drawLine(buf, w, h, x0, y0, x1, y1, routeCore, 2);
         }
-        // Destination Pin
         int dx, dy;
         project(sStat.destLat, sStat.destLon, dx, dy);
         drawFilledCircle(buf, w, h, dx, dy, 6, rgb565(255, 60, 60));
@@ -1063,20 +1654,30 @@ void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double vi
         drawMapText(buf, w, h, dx + 10, dy - 4, sStat.destName, rgb565(255, 120, 120), rgb565(0, 0, 0));
     }
 
-    // 6. Draw City Names & Dots
-    uint16_t cityDotCol = rgb565(220, 230, 245);
-    uint16_t cityTxtCol = rgb565(200, 215, 235);
-    int maxCities = (zoom <= 7) ? 14 : (zoom <= 9) ? 24 : N_BUILTIN_CITIES;
-    for (int i = 0; i < maxCities; i++) {
+    // 7. Draw User-Saved 1-Click POI Waypoints
+    for (int i = 0; i < sNumWaypoints; i++) {
+        int wx, wy;
+        project(sWaypoints[i].lat, sWaypoints[i].lon, wx, wy);
+        if (wx >= -10 && wx < w + 10 && wy >= -10 && wy < h + 10) {
+            drawRoundedBadge(buf, w, h, wx, wy, 5, rgb565(255, 195, 20), rgb565(255, 255, 255));
+            drawMapText(buf, w, h, wx + 8, wy - 3, sWaypoints[i].name, rgb565(255, 215, 60), rgb565(0, 0, 0), 12);
+        }
+    }
+
+    // 8. Draw City / Town Names & Dots
+    uint16_t cityDotCol = rgb565(225, 235, 250);
+    uint16_t cityTxtCol = rgb565(210, 225, 245);
+    for (int i = 0; i < N_BUILTIN_CITIES; i++) {
+        if (zoom <= 7 && BUILTIN_CITIES[i].rank > 1 && i > 0) continue;
         int sx, sy;
         project(BUILTIN_CITIES[i].lat, BUILTIN_CITIES[i].lon, sx, sy);
         if (sx >= 10 && sx < w - 45 && sy >= 10 && sy < h - 10) {
             drawFilledCircle(buf, w, h, sx, sy, 2, cityDotCol);
-            drawMapText(buf, w, h, sx + 5, sy - 3, BUILTIN_CITIES[i].name, cityTxtCol, rgb565(5, 8, 14));
+            drawMapText(buf, w, h, sx + 5, sy - 3, BUILTIN_CITIES[i].name, cityTxtCol, rgb565(5, 8, 14), 16);
         }
     }
 
-    // 7. Draw Live LoRa / Meshtastic Peer Nodes on the Map!
+    // 9. Draw Live LoRa / Meshtastic Peer Nodes on the Map!
     LoraPeerNode peers[16];
     uint8_t nPeers = RadioLoRa::getPeers(peers, 16);
     for (uint8_t i = 0; i < nPeers; i++) {
@@ -1091,7 +1692,7 @@ void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double vi
         }
     }
 
-    // 8. Draw Current Position Marker ("You are here" GPS / LoRa Mesh Assisted)
+    // 10. Draw Current Position Marker ("You are here" GPS / LoRa Mesh Assisted)
     int ux, uy;
     project(sStat.curLat, sStat.curLon, ux, uy);
     if (ux >= -12 && ux < w + 12 && uy >= -12 && uy < h + 12) {
@@ -1103,7 +1704,7 @@ void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double vi
         drawRing(buf, w, h, ux, uy, 6, rgb565(255, 255, 255));
     }
 
-    // 9. Scale bar in bottom-left corner of map canvas
+    // 11. Scale bar in bottom-left corner of map canvas
     double barKm = lonPerPx * cosLat * 111.32 * 60.0;
     char scaleTxt[20];
     if (barKm >= 10.0) snprintf(scaleTxt, sizeof(scaleTxt), "%.0f KM", barKm);
@@ -1115,20 +1716,15 @@ void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double vi
     drawMapText(buf, w, h, 16, h - 23, scaleTxt, rgb565(220, 230, 240), rgb565(0, 0, 0));
 }
 
-// =============================================================================
-// High-speed SD File Upload Support (Serial / HTTP)
-// =============================================================================
 bool NavEngine::beginSdUpload(const char* path, uint32_t totalSize) {
     if (!sStat.sdReady && !instance.installSD()) return false;
     sStat.sdReady = true;
     clearCellCache();
-    // Ensure LoRa and NFC CS pins are HIGH on the shared SPI bus before SD write
     digitalWrite(LORA_CS, HIGH);
     digitalWrite(NFC_CS, HIGH);
     SD.mkdir("/kronos");
     sUploadFile = SD.open(path, FILE_WRITE, true);
     if (!sUploadFile) {
-        // Fallback to root path /germany.knav
         sUploadFile = SD.open("/germany.knav", FILE_WRITE, true);
     }
     if (!sUploadFile) return false;

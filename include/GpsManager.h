@@ -2,6 +2,14 @@
 #include "Config.h"
 #include <time.h>
 
+struct GpsSatInfo {
+    uint8_t prn;
+    uint8_t elevation;  // 0..90 deg
+    uint16_t azimuth;   // 0..359 deg
+    uint8_t snr;        // 0..99 dB-Hz
+    bool used;
+};
+
 // u-blox GNSS on the T-Watch Ultra (instance.gps, Serial1 @ 38400).
 //
 // Power policy (GNSS draws ~25 mA):
@@ -32,4 +40,7 @@ public:
     static time_t lastFixEpoch();
     static time_t lastTimeSyncEpoch();
     static uint32_t searchSeconds();         // time since power-on without fix
+
+    // GNSS Skyplot satellite table (parsed from $GPGSV / $GLGSV / $GAGSV / $GBGSV)
+    static uint8_t getSatellitesInView(GpsSatInfo* out, uint8_t maxOut);
 };

@@ -1,5 +1,6 @@
 #include "PowerManager.h"
 #include "SettingsStorage.h"
+#include "MotionHaptic.h"
 #include <Wire.h>
 #include <esp32-hal-cpu.h>
 #include <LilyGoLib.h>      // global `instance` (AXP2101 pmu + backlight)
@@ -201,9 +202,10 @@ void PowerManager::loop(unsigned long currentMillis) {
         unlockI2C();
     }
 
-    // Auto Power State transitions
-    uint32_t sleepThresholdMs = SettingsStorage::get().autoSleepSec * 1000UL;
-    if (sleepThresholdMs == 0) {
+    // Auto Power State transitions (with Smart Sleep power-saving override)
+    bool userSleeping = MotionHaptic::isSleeping();
+    uint32_t sleepThresholdMs = userSleeping ? 5000UL : (SettingsStorage::get().autoSleepSec * 1000UL);
+    if (sleepThresholdMs == 0 && !userSleeping) {
         // Auto-dim / auto-sleep disabled: always keep active
         if (currentState != POWER_ACTIVE) {
             setPowerState(POWER_ACTIVE);
@@ -212,6 +214,16 @@ void PowerManager::loop(unsigned long currentMillis) {
     }
 
     unsigned long idleTime = currentMillis - lastActivityTime;
+
+    if (userSleeping) {
+        // While user is sleeping in bed: enter full display-off sleep after 6s (even if AOD is normally on!)
+        if (idleTime > 6000UL && currentState != POWER_SLEEP) {
+            setPowerState(POWER_SLEEP);
+        } else if (idleTime > 3000UL && currentState == POWER_ACTIVE) {
+            setPowerState(POWER_DIM);
+        }
+        return;
+    }
 
     if (cachedVbus) {
         // While charging on USB:

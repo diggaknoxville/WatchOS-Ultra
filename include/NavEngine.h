@@ -11,7 +11,7 @@ enum PosSource : uint8_t {
     POS_SRC_GPS_LIVE  = 0,  // Live GNSS 3D Fix
     POS_SRC_LORA_MESH = 1,  // Assisted position from nearest LoRa/Meshtastic node
     POS_SRC_SAVED_FIX = 2,  // Last stored GNSS fix
-    POS_SRC_DEFAULT   = 3,  // Default Germany center
+    POS_SRC_DEFAULT   = 3,  // Default Stuttgart center
 };
 
 struct NavPlace {
@@ -19,7 +19,7 @@ struct NavPlace {
     double lat;
     double lon;
     uint32_t pop;
-    uint8_t rank;        // 0 = LoRa/Meshtastic Peer, 1 = City, 2 = Town, 3 = Suburb, 4 = Village
+    uint8_t rank;        // 0 = LoRa/Meshtastic Peer, 1 = City, 2 = Town, 3 = Suburb, 4 = Village, 5 = Saved POI
 };
 
 struct NavRoutePoint {
@@ -29,11 +29,14 @@ struct NavRoutePoint {
 
 struct NavStatus {
     bool sdReady;
+    bool sdWritable;
     uint32_t sdTotalMB;
     uint32_t sdUsedMB;
     bool mapLoaded;
+    bool ultraLoaded;
     uint32_t mapPlaces;
     uint32_t mapRouteNodes;
+    uint32_t mapPois;
 
     PosSource posSource;
     char posSourceTag[24];
@@ -56,6 +59,7 @@ struct NavStatus {
 
     bool gpxRecording;
     uint32_t gpxPoints;
+    uint16_t savedWaypoints;
 };
 
 class NavEngine {
@@ -73,15 +77,15 @@ public:
     static void stopNavigation();
     static bool isNavigating();
 
-    // Place & City Search (searches SD germany.knav + built-in cities + live LoRa/Meshtastic peers)
+    // Place, Street, POI & City Search (searches germany.knav + saved POIs + live LoRa/Meshtastic peers)
     static int searchPlaces(const char* query, NavPlace* out, int maxOut);
 
-    // GPX Track Logger & Waypoint POI marking on SD card
+    // GPX Track Logger & 1-Click Waypoint POI marking (stored on SD card + NVS)
     static void setTrackRecording(bool rec);
     static bool isTrackRecording();
     static bool markWaypoint(const char* label = nullptr);
 
-    // Renders the vector map + route + LoRa/Meshtastic peers into an RGB565 buffer (w x h)
+    // Renders the Google-Maps-style vector map + buildings + forests + farmland + POIs + route into RGB565 buffer
     static void renderMap(uint16_t* buf, int w, int h, double viewLat, double viewLon, int zoom);
 
     // High-speed SD file upload helper (for streaming germany.knav over Serial or WiFi)
@@ -89,4 +93,3 @@ public:
     static bool writeSdUploadChunk(const uint8_t* data, size_t len);
     static bool endSdUpload();
 };
-

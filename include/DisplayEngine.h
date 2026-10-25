@@ -22,6 +22,7 @@ public:
     // UI task
     static void setTorch(bool on);
     static bool torchOn();
+    static bool isOverlayBlockingMirror();
 
     // compatibility with older callers
     static void setApp(AppId app);

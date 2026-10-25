@@ -1,6 +1,7 @@
 #include "KronosDisplay.h"
 #include "Compositor.h"
 #include "PowerManager.h"
+#include "DisplayEngine.h"
 #include <Arduino.h>
 #include <LilyGoLib.h>
 #include <esp_heap_caps.h>
@@ -23,7 +24,9 @@ static void flushCb(lv_display_t* disp, const lv_area_t* area, uint8_t* px) {
     const uint32_t w = lv_area_get_width(area), h = lv_area_get_height(area);
     lv_draw_sw_rgb565_swap(px, w * h);                    // panel wants big-endian RGB565
     instance.pushColorsAsync(area->x1, area->y1, w, h, (uint16_t*)px);
-    Compositor::mirrorStrip(area->x1, area->y1, w, h, (const uint16_t*)px);   // overlaps the DMA
+    if (!DisplayEngine::isOverlayBlockingMirror()) {
+        Compositor::mirrorStrip(area->x1, area->y1, w, h, (const uint16_t*)px);   // overlaps the DMA
+    }
     g_kronosFlushUs += micros() - t0;                     // CPU time spent issuing the flush
     g_kronosFlushPx += w * h;
     // flush_ready is signalled implicitly: LVGL calls flushWaitCb before it

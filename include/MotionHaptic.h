@@ -12,12 +12,17 @@ enum HapticPattern {
     HAPTIC_HEARTBEAT = 7
 };
 
-// Activity + haptics on the T-Watch Ultra.
-//  * Steps come from the BHI260AP hardware step counter (runs on the sensor
-//    hub, so counting continues while the ESP32 is busy).
-//  * Today's steps, the day key and a 7-day history are persisted in NVS and
-//    survive reboots / power loss. Day rollover follows local time.
-//  * The BHI260AP wrist-tilt gesture wakes the display.
+enum ActivityState : uint8_t {
+    ACT_STILL       = 0, // Ruhe / Stehen
+    ACT_WALKING     = 1, // Gehen (bestätigte Schritt-Kadenz)
+    ACT_RUNNING     = 2, // Laufen / Joggen
+    ACT_CYCLING     = 3, // Radfahren
+    ACT_VEHICLE     = 4, // Fahrzeug
+    ACT_HAND_MOTION = 5, // Handbewegung / Wackeln (herausgefiltert)
+    ACT_SLEEPING    = 6  // Schlaf-Modus (Nacht-/Ruhe-Stromsparen)
+};
+
+// Activity + Adaptive Step Learning + Sleep Detection + 6DoF Euler Orientation + Haptics
 class MotionHaptic {
 public:
     static bool init();
@@ -25,7 +30,17 @@ public:
     static void updateMotion(unsigned long now);
 
     static void getAccel(float &ax, float &ay, float &az);
+    static void getEuler(float &roll, float &pitch, float &yaw);
+    static float getHeadingDeg();
+    static void calibrateLevelAndCompass();
+
     static uint32_t getStepsToday();
+    static uint32_t getFilteredFalseSteps();
+    static uint16_t getLearnedCadenceSpm();
+    static ActivityState getActivityState();
+    static const char* getActivityLabel();
+    static bool isSleeping();
+
     static void resetSteps();
     static float getDistanceKm();
     static uint32_t getCalories();

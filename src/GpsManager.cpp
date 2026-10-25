@@ -19,11 +19,76 @@ static unsigned long sWindowEndAt = 0;
 static unsigned long sLastPersist = 0;
 static bool sSyncedThisWindow = false;
 
-static double sLat = 0, sLon = 0;
-static float sAlt = 0;
+static double sLat = 48.7758, sLon = 9.1829; // Default: Stuttgart Schlossplatz
+static float sAlt = 247.0f;
 static time_t sFixEpoch = 0;
 static time_t sTimeSyncEpoch = 0;
 static bool sHaveLast = false;
+
+static constexpr uint8_t MAX_SATS_VIEW = 20;
+static GpsSatInfo sSatsView[MAX_SATS_VIEW];
+static uint8_t sNumSatsView = 0;
+static char sNmeaLine[100];
+static uint8_t sNmeaPos = 0;
+
+static void parseGsvLine(const char* line) {
+    // Format: $GPGSV,numMsgs,msgNum,numSats,prn1,el1,az1,snr1,prn2,el2,az2,snr2,...*CS
+    if (strncmp(line, "$GPGSV,", 7) != 0 &&
+        strncmp(line, "$GLGSV,", 7) != 0 &&
+        strncmp(line, "$GAGSV,", 7) != 0 &&
+        strncmp(line, "$GBGSV,", 7) != 0 &&
+        strncmp(line, "$GNGSV,", 7) != 0) {
+        return;
+    }
+    // Tokenize comma-separated fields
+    char buf[100];
+    strncpy(buf, line, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = 0;
+    char* star = strchr(buf, '*');
+    if (star) *star = 0;
+
+    char* fields[24] = {nullptr};
+    int nf = 0;
+    char* p = buf;
+    while (p && nf < 24) {
+        fields[nf++] = p;
+        char* comma = strchr(p, ',');
+        if (!comma) break;
+        *comma = 0;
+        p = comma + 1;
+    }
+    if (nf < 4) return;
+    int msgNum = atoi(fields[2]);
+    if (msgNum == 1 && strncmp(line, "$GPGSV,", 7) == 0) {
+        // Decay old entries at start of GPS GSV cycle
+        if (sNumSatsView > 16) sNumSatsView = 12;
+    }
+
+    for (int i = 4; i + 3 < nf; i += 4) {
+        int prn = atoi(fields[i]);
+        int el  = atoi(fields[i + 1]);
+        int az  = atoi(fields[i + 2]);
+        int snr = atoi(fields[i + 3]);
+        if (prn <= 0) continue;
+
+        int slot = -1;
+        for (int k = 0; k < sNumSatsView; k++) {
+            if (sSatsView[k].prn == (uint8_t)prn) { slot = k; break; }
+        }
+        if (slot < 0) {
+            if (sNumSatsView < MAX_SATS_VIEW) {
+                slot = sNumSatsView++;
+            } else {
+                slot = prn % MAX_SATS_VIEW;
+            }
+        }
+        sSatsView[slot].prn = (uint8_t)prn;
+        sSatsView[slot].elevation = (uint8_t)constrain(el, 0, 90);
+        sSatsView[slot].azimuth = (uint16_t)constrain(az, 0, 359);
+        sSatsView[slot].snr = (uint8_t)constrain(snr, 0, 99);
+        sSatsView[slot].used = (snr >= 18);
+    }
+}
 
 static void persist() {
     Preferences p;
@@ -55,12 +120,13 @@ void GpsManager::init() {
     Preferences p;
     if (p.begin("kronos_gps", false)) {
         if (p.getUChar("v", 0) != 2) p.clear();   // drop unverified legacy data
-        sLat = p.getDouble("lat", 0);
-        sLon = p.getDouble("lon", 0);
-        sAlt = p.getFloat("alt", 0);
+        sLat = p.getDouble("lat", 48.7758);
+        sLon = p.getDouble("lon", 9.1829);
+        sAlt = p.getFloat("alt", 247.0f);
         sFixEpoch = (time_t)p.getUInt("fix_t", 0);
         sTimeSyncEpoch = (time_t)p.getUInt("sync_t", 0);
         sHaveLast = sFixEpoch > 0;
+        if (fabs(sLat) < 1.0) { sLat = 48.7758; sLon = 9.1829; }
         p.end();
     }
     if (sOnline) {
@@ -125,7 +191,22 @@ void GpsManager::loop(unsigned long now) {
     if (!sPowered) return;
 
     // --- NMEA ingest ---
-    while (Serial1.available()) instance.gps.encode(Serial1.read());
+    while (Serial1.available()) {
+        char ch = (char)Serial1.read();
+        instance.gps.encode(ch);
+        if (ch == '$') {
+            sNmeaPos = 0;
+            sNmeaLine[sNmeaPos++] = ch;
+        } else if (ch == '\r' || ch == '\n') {
+            if (sNmeaPos > 6) {
+                sNmeaLine[sNmeaPos] = 0;
+                parseGsvLine(sNmeaLine);
+            }
+            sNmeaPos = 0;
+        } else if (sNmeaPos > 0 && sNmeaPos < sizeof(sNmeaLine) - 1) {
+            sNmeaLine[sNmeaPos++] = ch;
+        }
+    }
 
     TinyGPSPlus& g = instance.gps;
     static unsigned long lastLog = 0;
@@ -189,3 +270,10 @@ bool GpsManager::hasLastFix()  { return sHaveLast; }
 time_t GpsManager::lastFixEpoch() { return sFixEpoch; }
 time_t GpsManager::lastTimeSyncEpoch() { return sTimeSyncEpoch; }
 uint32_t GpsManager::searchSeconds() { return sPowered ? (millis() - sPowerOnAt) / 1000 : 0; }
+
+uint8_t GpsManager::getSatellitesInView(GpsSatInfo* out, uint8_t maxOut) {
+    if (!out || maxOut == 0) return 0;
+    uint8_t n = (sNumSatsView < maxOut) ? sNumSatsView : maxOut;
+    for (uint8_t i = 0; i < n; i++) out[i] = sSatsView[i];
+    return n;
+}

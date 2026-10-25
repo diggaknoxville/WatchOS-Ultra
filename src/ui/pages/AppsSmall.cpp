@@ -1,8 +1,9 @@
-// Smaller apps: stopwatch, power menu, phone connect, agenda placeholder.
+// Smaller apps: stopwatch, power menu, phone connect, agenda & Google Calendar.
 #include "ui/Pages.h"
 #include "ui/UiKit.h"
 #include "ui/Navigator.h"
 #include "CompanionServer.h"
+#include "BleCompanion.h"
 #include "PowerManager.h"
 #include "SettingsStorage.h"
 #include "RtcManager.h"
@@ -198,7 +199,7 @@ void buildConnect(lv_obj_t* scr) {
     nav::registerPage(nav::PG_APP_CONNECT, d);
 }
 
-// ============================================================== AGENDA / CALENDAR
+// ============================================================== AGENDA / GOOGLE CALENDAR
 static lv_obj_t* sCalMonthLbl = nullptr;
 static lv_obj_t* sCalSubLbl = nullptr;
 static lv_obj_t* sCalCells[42];
@@ -206,97 +207,224 @@ static lv_obj_t* sCalCellTxts[42];
 static int sCalLastMday = -1;
 static int sCalLastMon = -1;
 
+static int sCalMode = 0; // 0 = Month Grid, 1 = Upcoming Google Calendar Agenda
+static lv_obj_t* sCalTabBtns[2] = {nullptr};
+static lv_obj_t* sMonthCard = nullptr;
+static lv_obj_t* sAgendaCard = nullptr;
+static lv_obj_t* sEventRows[6] = {nullptr};
+static lv_obj_t* sEventTime[6] = {nullptr};
+static lv_obj_t* sEventTitle[6] = {nullptr};
+static lv_obj_t* sEventLoc[6] = {nullptr};
+static lv_obj_t* sEventEmpty = nullptr;
+static lv_obj_t* sSyncBtn = nullptr;
+
 static void refreshAgenda(bool force) {
     struct tm t;
     RtcManager::getLocalTimeInfo(&t);
-    if (!force && t.tm_mday == sCalLastMday && t.tm_mon == sCalLastMon) return;
-    sCalLastMday = t.tm_mday;
-    sCalLastMon = t.tm_mon;
 
-    static const char* MONTHS_DE[12] = {
-        "JANUAR", "FEBRUAR", "MAERZ", "APRIL", "MAI", "JUNI",
-        "JULI", "AUGUST", "SEPTEMBER", "OKTOBER", "NOVEMBER", "DEZEMBER"
-    };
-    static const char* WDAYS_DE[7] = {
-        "Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"
-    };
-    int year = t.tm_year + 1900;
-    int mon = t.tm_mon; // 0..11
-    char hdr[40];
-    snprintf(hdr, sizeof(hdr), "%s %d", MONTHS_DE[mon % 12], year);
-    setText(sCalMonthLbl, hdr);
+    for (int i = 0; i < 2; i++) {
+        if (sCalTabBtns[i]) setBgColorIf(sCalTabBtns[i], (i == sCalMode) ? accent() : cSurf2());
+    }
+    setHidden(sMonthCard, sCalMode != 0);
+    setHidden(sAgendaCard, sCalMode != 1);
 
-    int kw = (t.tm_yday + 7 - ((t.tm_wday + 6) % 7)) / 7 + 1;
-    char sub[64];
-    snprintf(sub, sizeof(sub), "%s, %d.  ·  KW %d  ·  Tag %d",
-             WDAYS_DE[t.tm_wday % 7], t.tm_mday, kw, t.tm_yday + 1);
-    setText(sCalSubLbl, sub);
+    if (sCalMode == 0) {
+        if (!force && t.tm_mday == sCalLastMday && t.tm_mon == sCalLastMon) return;
+        sCalLastMday = t.tm_mday;
+        sCalLastMon = t.tm_mon;
 
-    // Days in month
-    static const int mdays[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
-    int daysInMon = mdays[mon % 12];
-    if (mon == 1 && ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0))) daysInMon = 29;
+        static const char* MONTHS_DE[12] = {
+            "JANUAR", "FEBRUAR", "MAERZ", "APRIL", "MAI", "JUNI",
+            "JULI", "AUGUST", "SEPTEMBER", "OKTOBER", "NOVEMBER", "DEZEMBER"
+        };
+        static const char* WDAYS_DE[7] = {
+            "Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"
+        };
+        int year = t.tm_year + 1900;
+        int mon = t.tm_mon;
+        char hdr[40];
+        snprintf(hdr, sizeof(hdr), "%s %d", MONTHS_DE[mon % 12], year);
+        setText(sCalMonthLbl, hdr);
 
-    // Monday-based weekday (0=Mo .. 6=So) of the 1st of the month
-    int todayWdayMon = (t.tm_wday + 6) % 7;
-    int firstWdayMon = (todayWdayMon - ((t.tm_mday - 1) % 7) + 7) % 7;
+        int kw = (t.tm_yday + 7 - ((t.tm_wday + 6) % 7)) / 7 + 1;
+        char sub[64];
+        snprintf(sub, sizeof(sub), "%s, %d. · KW %d · Tag %d",
+                 WDAYS_DE[t.tm_wday % 7], t.tm_mday, kw, t.tm_yday + 1);
+        setText(sCalSubLbl, sub);
 
-    for (int i = 0; i < 42; i++) {
-        int dayNum = i - firstWdayMon + 1;
-        if (dayNum >= 1 && dayNum <= daysInMon) {
-            char db[8];
-            snprintf(db, sizeof(db), "%d", dayNum);
-            setText(sCalCellTxts[i], db);
-            bool isToday = (dayNum == t.tm_mday);
-            bool isWeekend = ((i % 7) >= 5);
-            lv_obj_set_style_bg_opa(sCalCells[i], isToday ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-            setBgColorIf(sCalCells[i], isToday ? accent() : cSurf());
-            setTextColorIf(sCalCellTxts[i], isToday ? cBg() : (isWeekend ? cText2() : cText()));
-        } else {
-            setText(sCalCellTxts[i], "");
-            lv_obj_set_style_bg_opa(sCalCells[i], LV_OPA_TRANSP, 0);
+        static const int mdays[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
+        int daysInMon = mdays[mon % 12];
+        if (mon == 1 && ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0))) daysInMon = 29;
+
+        int todayWdayMon = (t.tm_wday + 6) % 7;
+        int firstWdayMon = (todayWdayMon - ((t.tm_mday - 1) % 7) + 7) % 7;
+
+        for (int i = 0; i < 42; i++) {
+            int dayNum = i - firstWdayMon + 1;
+            if (dayNum >= 1 && dayNum <= daysInMon) {
+                char db[8];
+                snprintf(db, sizeof(db), "%d", dayNum);
+                setText(sCalCellTxts[i], db);
+                bool isToday = (dayNum == t.tm_mday);
+                bool isWeekend = ((i % 7) >= 5);
+                lv_obj_set_style_bg_opa(sCalCells[i], isToday ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+                setBgColorIf(sCalCells[i], isToday ? accent() : cSurf());
+                setTextColorIf(sCalCellTxts[i], isToday ? cBg() : (isWeekend ? cText2() : cText()));
+            } else {
+                setText(sCalCellTxts[i], "");
+                lv_obj_set_style_bg_opa(sCalCells[i], LV_OPA_TRANSP, 0);
+            }
+        }
+    } else {
+        CalendarEvent evs[6];
+        uint8_t n = BleCompanion::getUpcomingEvents(evs, 6);
+        bool conn = BleCompanion::isConnected();
+
+        char sub[64];
+        snprintf(sub, sizeof(sub), "%u Termine synchronisiert · %s",
+                 (unsigned)n, conn ? "BLE verbunden" : "BLE getrennt");
+        setText(sCalSubLbl, sub);
+        setHidden(sEventEmpty, n != 0);
+
+        for (int i = 0; i < 6; i++) {
+            bool has = (i < n);
+            setHidden(sEventRows[i], !has);
+            if (!has) continue;
+
+            time_t st = (time_t)evs[i].startEpoch;
+            struct tm evTm;
+            localtime_r(&st, &evTm);
+
+            char timeBuf[32];
+            if (evs[i].allDay) {
+                snprintf(timeBuf, sizeof(timeBuf), "%02d.%02d. Ganztag", evTm.tm_mday, evTm.tm_mon + 1);
+            } else {
+                snprintf(timeBuf, sizeof(timeBuf), "%02d.%02d. %02d:%02d",
+                         evTm.tm_mday, evTm.tm_mon + 1, evTm.tm_hour, evTm.tm_min);
+            }
+            setText(sEventTime[i], timeBuf);
+            setText(sEventTitle[i], evs[i].title);
+            setText(sEventLoc[i], evs[i].loc[0] ? evs[i].loc : "Kein Ort");
         }
     }
 }
 
 void buildAgenda(lv_obj_t* scr) {
     lv_obj_t* p = pageRoot(scr);
-    title(p, "CALENDAR");
+    title(p, "KALENDER");
 
     sCalMonthLbl = label(p, F.body, accent(), "");
     accReg(sCalMonthLbl, ACC_TEXT);
-    lv_obj_align(sCalMonthLbl, LV_ALIGN_TOP_RIGHT, -M, 24);
+    lv_obj_align(sCalMonthLbl, LV_ALIGN_TOP_RIGHT, -M, 20);
+
+    // Mode Selector Pills: MONAT | TERMINE (Google Calendar)
+    const int pw = (CW - 10) / 2;
+    static const char* P_LABELS[2] = {"MONAT", "TERMINE (SYNC)"};
+    for (int i = 0; i < 2; i++) {
+        lv_obj_t* b = box(p, pw, 32);
+        lv_obj_set_pos(b, M + i * (pw + 10), 56);
+        lv_obj_set_style_radius(b, 10, 0);
+        lv_obj_set_style_bg_color(b, (i == 0) ? accent() : cSurf2(), 0);
+        lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
+        lv_obj_add_flag(b, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(b, [](lv_event_t* e) {
+            sCalMode = (int)(intptr_t)lv_event_get_user_data(e);
+            if (sCalMode == 1 && BleCompanion::isConnected()) {
+                BleCompanion::triggerCalendarSync();
+            }
+            haptic(HAPTIC_CLICK);
+            refreshAgenda(true);
+        }, LV_EVENT_CLICKED, (void*)(intptr_t)i);
+        lv_obj_center(caption(b, P_LABELS[i], cText()));
+        sCalTabBtns[i] = b;
+    }
 
     sCalSubLbl = caption(p, "", cText2());
-    lv_obj_set_pos(sCalSubLbl, M, 76);
+    lv_obj_set_pos(sCalSubLbl, M, 94);
 
-    lv_obj_t* c = card(p, CW, 356);
-    lv_obj_set_pos(c, M, 106);
+    // =========================================================================
+    // View 0: Month Grid Card
+    // =========================================================================
+    sMonthCard = card(p, CW, 350);
+    lv_obj_set_pos(sMonthCard, M, 116);
 
     static const char* dow[7] = {"MO", "DI", "MI", "DO", "FR", "SA", "SO"};
     const int cellW = (CW - 24) / 7;
     for (int d = 0; d < 7; d++) {
-        lv_obj_t* dl = caption(c, dow[d], d >= 5 ? accent() : cText3());
+        lv_obj_t* dl = caption(sMonthCard, dow[d], d >= 5 ? accent() : cText3());
         if (d >= 5) accReg(dl, ACC_TEXT);
-        lv_obj_set_pos(dl, 12 + d * cellW + (cellW - 22) / 2, 14);
+        lv_obj_set_pos(dl, 12 + d * cellW + (cellW - 22) / 2, 12);
     }
 
     for (int i = 0; i < 42; i++) {
         int col = i % 7;
         int row = i / 7;
-        lv_obj_t* cell = box(c, cellW - 4, 44);
-        lv_obj_set_pos(cell, 14 + col * cellW, 46 + row * 49);
+        lv_obj_t* cell = box(sMonthCard, cellW - 4, 43);
+        lv_obj_set_pos(cell, 14 + col * cellW, 42 + row * 48);
         lv_obj_set_style_radius(cell, 12, 0);
         sCalCells[i] = cell;
         sCalCellTxts[i] = label(cell, F.small, cText(), "");
         lv_obj_center(sCalCellTxts[i]);
     }
 
+    // =========================================================================
+    // View 1: Google Calendar Agenda List Card
+    // =========================================================================
+    sAgendaCard = card(p, CW, 350);
+    lv_obj_set_pos(sAgendaCard, M, 116);
+
+    sEventEmpty = label(sAgendaCard, F.small, cText2(),
+                        "Keine Termine empfangen.\nHandy über BLE mit der App verbinden.");
+    lv_obj_set_pos(sEventEmpty, 16, 40);
+
+    for (int i = 0; i < 6; i++) {
+        lv_obj_t* r = box(sAgendaCard, CW - 24, 46);
+        lv_obj_set_pos(r, 12, 10 + i * 50);
+        lv_obj_set_style_radius(r, 10, 0);
+        lv_obj_set_style_bg_color(r, cSurf2(), 0);
+        lv_obj_set_style_bg_opa(r, LV_OPA_60, 0);
+
+        sEventTime[i] = label(r, F.small, accent(), "");
+        accReg(sEventTime[i], ACC_TEXT);
+        lv_obj_set_pos(sEventTime[i], 10, 4);
+
+        sEventTitle[i] = label(r, F.small, cText(), "");
+        lv_obj_set_pos(sEventTitle[i], 120, 4);
+        lv_label_set_long_mode(sEventTitle[i], LV_LABEL_LONG_DOT);
+        lv_obj_set_width(sEventTitle[i], 210);
+
+        sEventLoc[i] = caption(r, "", cText3());
+        lv_obj_set_pos(sEventLoc[i], 10, 26);
+        sEventRows[i] = r;
+    }
+
+    sSyncBtn = box(sAgendaCard, CW - 24, 38);
+    lv_obj_set_pos(sSyncBtn, 12, 304);
+    lv_obj_set_style_radius(sSyncBtn, 12, 0);
+    lv_obj_set_style_bg_color(sSyncBtn, accent(), 0);
+    lv_obj_set_style_bg_opa(sSyncBtn, LV_OPA_COVER, 0);
+    accReg(sSyncBtn, ACC_BG);
+    lv_obj_add_flag(sSyncBtn, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(sSyncBtn, [](lv_event_t*) {
+        BleCompanion::triggerCalendarSync();
+        haptic(HAPTIC_CLICK);
+        DisplayEngine::showNotification("Kalender Sync", "Synchronisierungsanfrage per BLE gesendet", 2000, "sync");
+        refreshAgenda(true);
+    }, LV_EVENT_CLICKED, NULL);
+    lv_obj_center(label(sSyncBtn, F.small, cBg(), "GOOGLE KALENDER JETZT SYNCHRONISIEREN"));
+
+    setHidden(sAgendaCard, true);
+
     nav::PageDef d;
     d.root = p;
     d.refresh = refreshAgenda;
     d.refreshMs = 5000;
     d.ttlMs = 60000;
+    d.onShow = [] {
+        if (BleCompanion::isConnected()) {
+            BleCompanion::triggerCalendarSync();
+        }
+    };
     nav::registerPage(nav::PG_AGENDA, d);
 }
 
