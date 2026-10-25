@@ -198,26 +198,112 @@ void buildConnect(lv_obj_t* scr) {
     nav::registerPage(nav::PG_APP_CONNECT, d);
 }
 
-// ============================================================== AGENDA (placeholder)
+// ============================================================== AGENDA / CALENDAR
+static lv_obj_t* sCalMonthLbl = nullptr;
+static lv_obj_t* sCalSubLbl = nullptr;
+static lv_obj_t* sCalCells[42];
+static lv_obj_t* sCalCellTxts[42];
+static int sCalLastMday = -1;
+static int sCalLastMon = -1;
+
+static void refreshAgenda(bool force) {
+    struct tm t;
+    RtcManager::getLocalTimeInfo(&t);
+    if (!force && t.tm_mday == sCalLastMday && t.tm_mon == sCalLastMon) return;
+    sCalLastMday = t.tm_mday;
+    sCalLastMon = t.tm_mon;
+
+    static const char* MONTHS_DE[12] = {
+        "JANUAR", "FEBRUAR", "MAERZ", "APRIL", "MAI", "JUNI",
+        "JULI", "AUGUST", "SEPTEMBER", "OKTOBER", "NOVEMBER", "DEZEMBER"
+    };
+    static const char* WDAYS_DE[7] = {
+        "Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"
+    };
+    int year = t.tm_year + 1900;
+    int mon = t.tm_mon; // 0..11
+    char hdr[40];
+    snprintf(hdr, sizeof(hdr), "%s %d", MONTHS_DE[mon % 12], year);
+    setText(sCalMonthLbl, hdr);
+
+    int kw = (t.tm_yday + 7 - ((t.tm_wday + 6) % 7)) / 7 + 1;
+    char sub[64];
+    snprintf(sub, sizeof(sub), "%s, %d.  ·  KW %d  ·  Tag %d",
+             WDAYS_DE[t.tm_wday % 7], t.tm_mday, kw, t.tm_yday + 1);
+    setText(sCalSubLbl, sub);
+
+    // Days in month
+    static const int mdays[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
+    int daysInMon = mdays[mon % 12];
+    if (mon == 1 && ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0))) daysInMon = 29;
+
+    // Monday-based weekday (0=Mo .. 6=So) of the 1st of the month
+    int todayWdayMon = (t.tm_wday + 6) % 7;
+    int firstWdayMon = (todayWdayMon - ((t.tm_mday - 1) % 7) + 7) % 7;
+
+    for (int i = 0; i < 42; i++) {
+        int dayNum = i - firstWdayMon + 1;
+        if (dayNum >= 1 && dayNum <= daysInMon) {
+            char db[8];
+            snprintf(db, sizeof(db), "%d", dayNum);
+            setText(sCalCellTxts[i], db);
+            bool isToday = (dayNum == t.tm_mday);
+            bool isWeekend = ((i % 7) >= 5);
+            lv_obj_set_style_bg_opa(sCalCells[i], isToday ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+            setBgColorIf(sCalCells[i], isToday ? accent() : cSurf());
+            setTextColorIf(sCalCellTxts[i], isToday ? cBg() : (isWeekend ? cText2() : cText()));
+        } else {
+            setText(sCalCellTxts[i], "");
+            lv_obj_set_style_bg_opa(sCalCells[i], LV_OPA_TRANSP, 0);
+        }
+    }
+}
+
 void buildAgenda(lv_obj_t* scr) {
     lv_obj_t* p = pageRoot(scr);
-    title(p, "AGENDA");
-    lv_obj_t* ic = label(p, F.icoXL, cText3(), ICO_CALENDAR_MONTH);
-    lv_obj_align(ic, LV_ALIGN_CENTER, 0, -40);
-    lv_obj_t* t = label(p, F.body, cText2(), "No calendar connected");
-    lv_obj_align(t, LV_ALIGN_CENTER, 0, 30);
-    lv_obj_t* s = caption(p, "ADD AN ICS LINK IN THE PHONE APP", cText3());
-    lv_obj_align(s, LV_ALIGN_CENTER, 0, 66);
+    title(p, "CALENDAR");
+
+    sCalMonthLbl = label(p, F.body, accent(), "");
+    accReg(sCalMonthLbl, ACC_TEXT);
+    lv_obj_align(sCalMonthLbl, LV_ALIGN_TOP_RIGHT, -M, 24);
+
+    sCalSubLbl = caption(p, "", cText2());
+    lv_obj_set_pos(sCalSubLbl, M, 76);
+
+    lv_obj_t* c = card(p, CW, 356);
+    lv_obj_set_pos(c, M, 106);
+
+    static const char* dow[7] = {"MO", "DI", "MI", "DO", "FR", "SA", "SO"};
+    const int cellW = (CW - 24) / 7;
+    for (int d = 0; d < 7; d++) {
+        lv_obj_t* dl = caption(c, dow[d], d >= 5 ? accent() : cText3());
+        if (d >= 5) accReg(dl, ACC_TEXT);
+        lv_obj_set_pos(dl, 12 + d * cellW + (cellW - 22) / 2, 14);
+    }
+
+    for (int i = 0; i < 42; i++) {
+        int col = i % 7;
+        int row = i / 7;
+        lv_obj_t* cell = box(c, cellW - 4, 44);
+        lv_obj_set_pos(cell, 14 + col * cellW, 46 + row * 49);
+        lv_obj_set_style_radius(cell, 12, 0);
+        sCalCells[i] = cell;
+        sCalCellTxts[i] = label(cell, F.small, cText(), "");
+        lv_obj_center(sCalCellTxts[i]);
+    }
 
     nav::PageDef d;
     d.root = p;
-    d.refreshMs = 0xFFFF;
-    d.ttlMs = 0;
+    d.refresh = refreshAgenda;
+    d.refreshMs = 5000;
+    d.ttlMs = 60000;
     nav::registerPage(nav::PG_AGENDA, d);
 }
 
 // ============================================================== WATCHFACES SELECTOR
 static lv_obj_t* sFaceCards[FACE_COUNT];
+static lv_obj_t* sFaceIcons[FACE_COUNT];
+static lv_obj_t* sFaceLabels[FACE_COUNT];
 static lv_obj_t* sFaceChecks[FACE_COUNT];
 
 static void refreshFaces(bool) {
@@ -226,7 +312,13 @@ static void refreshFaces(bool) {
         if (!sFaceCards[i]) continue;
         bool active = (i == cur);
         setBgColorIf(sFaceCards[i], active ? accent() : cSurf());
-        if (sFaceChecks[i]) setHidden(sFaceChecks[i], !active);
+        setBorderWidthIf(sFaceCards[i], active ? 0 : 1);
+        if (sFaceIcons[i])  setTextColorIf(sFaceIcons[i],  active ? cBg() : accent());
+        if (sFaceLabels[i]) setTextColorIf(sFaceLabels[i], active ? cBg() : cText());
+        if (sFaceChecks[i]) {
+            setTextColorIf(sFaceChecks[i], cBg());
+            setHidden(sFaceChecks[i], !active);
+        }
     }
 }
 
@@ -242,39 +334,39 @@ void buildFaces(lv_obj_t* scr) {
     };
 
     lv_obj_t* list = lv_obj_create(p);
-    lv_obj_set_size(list, CW, 380);
+    lv_obj_set_size(list, CW, 390);
     lv_obj_set_pos(list, M, 74);
     lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(list, 0, 0);
     lv_obj_set_style_pad_all(list, 0, 0);
+    lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(list, 8, 0);
 
     for (int i = 0; i < FACE_COUNT; i++) {
-        lv_obj_t* c = card(list, CW, 50);
-        lv_obj_set_style_radius(c, 16, 0);
+        lv_obj_t* c = card(list, CW, 52);
+        lv_obj_set_style_radius(c, 18, 0);
         lv_obj_add_flag(c, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(c, [](lv_event_t* e) {
             int idx = (int)(intptr_t)lv_event_get_user_data(e);
             SettingsStorage::get().watchfaceIndex = idx;
             SettingsStorage::save();
+            refreshFaces(true);
+            nav::markDirty(nav::PG_FACE);
             haptic(HAPTIC_CLICK);
             nav::home();
         }, LV_EVENT_CLICKED, (void*)(intptr_t)i);
 
         sFaceCards[i] = c;
-        bool active = (SettingsStorage::get().watchfaceIndex == i);
-        setBgColorIf(c, active ? accent() : cSurf());
+        sFaceIcons[i] = label(c, F.icoS, accent(), ICO_WATCH);
+        lv_obj_align(sFaceIcons[i], LV_ALIGN_LEFT_MID, 16, 0);
+        sFaceLabels[i] = label(c, F.small, cText(), faceNames[i]);
+        lv_obj_align(sFaceLabels[i], LV_ALIGN_LEFT_MID, 50, 0);
 
-        lv_obj_t* ic = label(c, F.icoS, cText(), ICO_WATCH);
-        lv_obj_align(ic, LV_ALIGN_LEFT_MID, 16, 0);
-        lv_obj_t* lbl = label(c, F.small, cText(), faceNames[i]);
-        lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 50, 0);
-
-        sFaceChecks[i] = label(c, F.icoS, cText(), ICO_CHECK);
+        sFaceChecks[i] = label(c, F.icoS, cBg(), ICO_CHECK);
         lv_obj_align(sFaceChecks[i], LV_ALIGN_RIGHT_MID, -16, 0);
-        setHidden(sFaceChecks[i], !active);
     }
+    refreshFaces(true);
 
     nav::PageDef d;
     d.root = p;
@@ -282,6 +374,131 @@ void buildFaces(lv_obj_t* scr) {
     d.refreshMs = 500;
     d.ttlMs = 15000;
     nav::registerPage(nav::PG_APP_FACES, d);
+}
+
+// ============================================================== SETTINGS APP
+static const uint16_t ACCENT_PALETTE[6] = {
+    THEME_CYBER_CYAN, THEME_ELECTRIC_LIME, THEME_NEON_AMBER,
+    THEME_MAGENTA_PULSE, THEME_CRIMSON_WAR, THEME_STEALTH_BLUE
+};
+static lv_obj_t* sColorDots[6];
+static lv_obj_t* sSetSoundVal = nullptr;
+static lv_obj_t* sSetBeaconVal = nullptr;
+static lv_obj_t* sSetGoalVal = nullptr;
+
+static lv_color_t colorFrom565(uint16_t c) {
+    uint8_t r = ((c >> 11) & 0x1F) << 3; r |= r >> 5;
+    uint8_t g = ((c >> 5) & 0x3F) << 2;  g |= g >> 6;
+    uint8_t b = (c & 0x1F) << 3;         b |= b >> 5;
+    return lv_color_make(r, g, b);
+}
+
+static void refreshSettings(bool) {
+    SystemSettings& s = SettingsStorage::get();
+    for (int i = 0; i < 6; i++) {
+        if (!sColorDots[i]) continue;
+        bool sel = (s.accentColor == ACCENT_PALETTE[i]);
+        lv_obj_set_style_border_width(sColorDots[i], sel ? 3 : 0, 0);
+    }
+    if (sSetSoundVal)  setText(sSetSoundVal, s.soundEnabled ? "ON" : "OFF");
+    if (sSetBeaconVal) setText(sSetBeaconVal, s.loraBeaconEnabled ? "ON" : "OFF");
+    if (sSetGoalVal) {
+        char b[24];
+        snprintf(b, sizeof(b), "%lu", (unsigned long)s.dailyStepGoal);
+        setText(sSetGoalVal, b);
+    }
+}
+
+void buildSettings(lv_obj_t* scr) {
+    lv_obj_t* p = pageRoot(scr);
+    title(p, "SETTINGS");
+
+    // Accent color card
+    lv_obj_t* cc = card(p, CW, 92);
+    lv_obj_set_pos(cc, M, 76);
+    lv_obj_t* cl = caption(cc, "ACCENT COLOR", cText2());
+    lv_obj_set_pos(cl, 18, 12);
+    const int dotSpacing = (CW - 36) / 6;
+    for (int i = 0; i < 6; i++) {
+        lv_obj_t* dot = box(cc, 40, 40);
+        lv_obj_set_pos(dot, 22 + i * dotSpacing, 38);
+        lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(dot, colorFrom565(ACCENT_PALETTE[i]), 0);
+        lv_obj_set_style_border_color(dot, lv_color_white(), 0);
+        lv_obj_add_flag(dot, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(dot, [](lv_event_t* e) {
+            int idx = (int)(intptr_t)lv_event_get_user_data(e);
+            SettingsStorage::get().accentColor = ACCENT_PALETTE[idx];
+            SettingsStorage::save();
+            refreshSettings(true);
+            haptic(HAPTIC_CLICK);
+        }, LV_EVENT_CLICKED, (void*)(intptr_t)i);
+        sColorDots[i] = dot;
+    }
+
+    auto makeOptionRow = [&](int y, const char* ic, const char* txt, lv_obj_t** valOut, lv_event_cb_t cb) {
+        lv_obj_t* r = card(p, CW, 56);
+        lv_obj_set_style_radius(r, 18, 0);
+        lv_obj_set_pos(r, M, y);
+        lv_obj_add_flag(r, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(r, cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_t* iObj = label(r, F.icoS, accent(), ic);
+        accReg(iObj, ACC_TEXT);
+        lv_obj_align(iObj, LV_ALIGN_LEFT_MID, 16, 0);
+        lv_obj_t* tObj = label(r, F.small, cText(), txt);
+        lv_obj_align(tObj, LV_ALIGN_LEFT_MID, 50, 0);
+        if (valOut) {
+            *valOut = label(r, F.small, accent(), "");
+            accReg(*valOut, ACC_TEXT);
+            lv_obj_align(*valOut, LV_ALIGN_RIGHT_MID, -18, 0);
+        }
+    };
+
+    makeOptionRow(178, ICO_VOLUME_UP, "Sound Effects", &sSetSoundVal, [](lv_event_t*) {
+        SystemSettings& s = SettingsStorage::get();
+        s.soundEnabled = !s.soundEnabled;
+        SettingsStorage::save();
+        if (s.soundEnabled) AudioEngine::playSoundFx(SFX_CHIME);
+        refreshSettings(true);
+        haptic(HAPTIC_CLICK);
+    });
+
+    makeOptionRow(242, ICO_PODCASTS, "LoRa Auto-Beacon", &sSetBeaconVal, [](lv_event_t*) {
+        SystemSettings& s = SettingsStorage::get();
+        s.loraBeaconEnabled = !s.loraBeaconEnabled;
+        SettingsStorage::save();
+        refreshSettings(true);
+        haptic(HAPTIC_CLICK);
+    });
+
+    makeOptionRow(306, ICO_FOOTPRINT, "Daily Step Goal", &sSetGoalVal, [](lv_event_t*) {
+        SystemSettings& s = SettingsStorage::get();
+        static const uint32_t goals[] = {5000, 8000, 10000, 12000, 15000, 20000};
+        int next = 2;
+        for (int i = 0; i < 6; i++) {
+            if (s.dailyStepGoal == goals[i]) { next = (i + 1) % 6; break; }
+        }
+        s.dailyStepGoal = goals[next];
+        SettingsStorage::save();
+        nav::markDirty(nav::PG_ACTIVITY);
+        refreshSettings(true);
+        haptic(HAPTIC_CLICK);
+    });
+
+    makeOptionRow(370, ICO_POWER_SETTINGS_NEW, "Power & Restart Menu", nullptr, [](lv_event_t*) {
+        haptic(HAPTIC_CLICK);
+        nav::openApp(nav::PG_APP_POWER);
+    });
+
+    refreshSettings(true);
+
+    nav::PageDef d;
+    d.root = p;
+    d.refresh = refreshSettings;
+    d.refreshMs = 1000;
+    d.ttlMs = 15000;
+    nav::registerPage(nav::PG_APP_SETTINGS, d);
 }
 
 }  // namespace pages

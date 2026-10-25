@@ -404,6 +404,7 @@ void LilyGoDispQSPI::pushColors(uint16_t x1, uint16_t y1, uint16_t x2, uint16_t 
 
 void LilyGoDispQSPI::writeCommand(uint32_t cmd, uint8_t *pdat, uint32_t length)
 {
+    waitPushComplete();
     digitalWrite(_cs, LOW);
     spi_transaction_t t;
     memset(&t, 0, sizeof(t));

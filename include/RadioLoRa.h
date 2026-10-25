@@ -21,6 +21,8 @@ public:
     static bool pollPacket(String& outMsg, float& outRssi, float& outSnr);  // legacy no-op
 
     static bool isReady();
+    static void setEnabled(bool en);
+    static bool isEnabled();
     static uint32_t getSentCount();
     static uint32_t getRecvCount();
     static float getLastRssi();

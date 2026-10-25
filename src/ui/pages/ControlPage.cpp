@@ -7,7 +7,9 @@
 #include "PowerManager.h"
 #include "AudioEngine.h"
 #include "CompanionServer.h"
+#include "BleCompanion.h"
 #include "GpsManager.h"
+#include "RadioLoRa.h"
 #include "DisplayEngine.h"
 #include "RtcManager.h"
 
@@ -49,13 +51,13 @@ static void updateTimeoutLabel() {
 static bool state(int i) {
     SystemSettings& s = SettingsStorage::get();
     switch (i) {
-        case 0: return s.hapticEnabled;
-        case 1: return s.soundEnabled;
-        case 2: return CompanionServer::isApActive();
-        case 3: return s.loraBeaconEnabled;
+        case 0: return CompanionServer::isApActive();
+        case 1: return BleCompanion::isEnabled();
+        case 2: return GpsManager::isEnabled();
+        case 3: return RadioLoRa::isEnabled();
         case 4: return s.aodEnabled;
         case 5: return s.wristWakeEnabled;
-        case 6: return GpsManager::isPowered();
+        case 6: return s.hapticEnabled;
         default: return DisplayEngine::torchOn();
     }
 }
@@ -72,24 +74,40 @@ static void onToggle(lv_event_t* e) {
     int i = (int)(intptr_t)lv_event_get_user_data(e);
     SystemSettings& s = SettingsStorage::get();
     switch (i) {
-        case 0: s.hapticEnabled = !s.hapticEnabled; break;
-        case 1: s.soundEnabled = !s.soundEnabled;
-                if (s.soundEnabled) AudioEngine::playSoundFx(SFX_CHIME);
-                break;
-        case 2:
+        case 0:
             s.wifiApEnabled = !s.wifiApEnabled;
             CompanionServer::requestAp(s.wifiApEnabled);
             DisplayEngine::showNotification(s.wifiApEnabled ? "WiFi AP an" : "WiFi AP aus",
-                                            s.wifiApEnabled ? "192.168.4.1 (vortex2026)" : "Access Point gestoppt",
-                                            3000, ICO_WIFI);
+                                            s.wifiApEnabled ? "192.168.4.1 (vortex2026)" : "WLAN abgeschaltet (Stromsparen)",
+                                            2500, ICO_WIFI);
             break;
-        case 3: s.loraBeaconEnabled = !s.loraBeaconEnabled; break;
+        case 1: {
+            bool en = !BleCompanion::isEnabled();
+            BleCompanion::setEnabled(en);
+            DisplayEngine::showNotification(en ? "Bluetooth an" : "Bluetooth aus",
+                                            en ? "BLE Companion aktiv" : "BLE abgeschaltet (Stromsparen)",
+                                            2500, ICO_SMARTPHONE);
+            break;
+        }
+        case 2: {
+            bool en = !GpsManager::isEnabled();
+            GpsManager::setEnabled(en);
+            DisplayEngine::showNotification(en ? "GPS an" : "GPS aus",
+                                            en ? "Satellitensuche aktiv" : "GNSS abgeschaltet (Stromsparen)",
+                                            2500, ICO_SATELLITE_ALT);
+            break;
+        }
+        case 3: {
+            bool en = !RadioLoRa::isEnabled();
+            RadioLoRa::setEnabled(en);
+            DisplayEngine::showNotification(en ? "LoRa an" : "LoRa aus",
+                                            en ? "SX1262 868 MHz Empfang aktiv" : "LoRa Funk im Deep-Sleep",
+                                            2500, ICO_PODCASTS);
+            break;
+        }
         case 4: s.aodEnabled = !s.aodEnabled; break;
         case 5: s.wristWakeEnabled = !s.wristWakeEnabled; break;
-        case 6: GpsManager::requestFix();
-                DisplayEngine::showNotification("GNSS", "Acquiring satellites for time and position");
-                haptic(HAPTIC_CLICK);
-                return;
+        case 6: s.hapticEnabled = !s.hapticEnabled; break;
         case 7: DisplayEngine::setTorch(true); haptic(HAPTIC_CLICK); return;
     }
     SettingsStorage::save();
@@ -147,10 +165,10 @@ void buildControl(lv_obj_t* scr) {
     sClock = label(p, F.title, cText2(), "");
     lv_obj_align(sClock, LV_ALIGN_TOP_RIGHT, -M, 22);
 
-    static const char* icons[N_TOGGLES] = {ICO_VIBRATION, ICO_VOLUME_UP, ICO_WIFI, ICO_PODCASTS,
-                                           ICO_WATCH, ICO_VISIBILITY, ICO_MY_LOCATION, ICO_FLASHLIGHT_ON};
-    static const char* names[N_TOGGLES] = {"Haptics", "Sound", "WiFi AP", "LoRa Beacon",
-                                           "Always-On", "Wrist Wake", "Locate", "Torch"};
+    static const char* icons[N_TOGGLES] = {ICO_WIFI, ICO_SMARTPHONE, ICO_SATELLITE_ALT, ICO_PODCASTS,
+                                           ICO_WATCH, ICO_VISIBILITY, ICO_VIBRATION, ICO_FLASHLIGHT_ON};
+    static const char* names[N_TOGGLES] = {"WiFi AP", "Bluetooth", "GPS", "LoRa",
+                                           "Always-On", "Wrist Wake", "Haptics", "Torch"};
     const int w = (CW - 12) / 2, h = 60, y0 = 74;
     for (int i = 0; i < N_TOGGLES; i++) {
         lv_obj_t* c = card(p, w, h);

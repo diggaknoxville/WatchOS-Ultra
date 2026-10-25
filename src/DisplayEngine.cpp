@@ -303,6 +303,7 @@ bool DisplayEngine::init() {
     pages::buildStopwatch(scr);
     pages::buildPower(scr);
     pages::buildFaces(scr);
+    pages::buildSettings(scr);
 
     buildBanner();
     buildAodAndTorch();
@@ -357,6 +358,7 @@ void DisplayEngine::update(unsigned long now) {
     if (now - lastAod >= 250) { lastAod = now; refreshAod(); }
     nav::setGesturesEnabled(lv_obj_has_flag(sAod, LV_OBJ_FLAG_HIDDEN) && !torchOn());
     nav::update(now);
+    PowerManager::applyBrightnessOnUiThread();
 }
 
 void DisplayEngine::showNotification(const String& title, const String& msg, uint32_t durationMs, const char* icon) {
@@ -376,13 +378,13 @@ void DisplayEngine::showNotification(const String& title, const String& msg, uin
 
 void DisplayEngine::setTorch(bool on) {
     if (on) {
-        sTorchPrevBrightness = PowerManager::getBrightness();
+        sTorchPrevBrightness = SettingsStorage::get().brightness;
         setHidden(sTorch, false);
         lv_obj_move_foreground(sTorch);
         PowerManager::setBrightness(255);
     } else {
         setHidden(sTorch, true);
-        PowerManager::setBrightness(sTorchPrevBrightness ? sTorchPrevBrightness : SettingsStorage::get().brightness);
+        PowerManager::setBrightness(sTorchPrevBrightness ? sTorchPrevBrightness : 220);
     }
 }
 

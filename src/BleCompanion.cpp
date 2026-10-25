@@ -1,5 +1,6 @@
 #include "BleCompanion.h"
 #include "AiLimitsStore.h"
+#include "SettingsStorage.h"
 #include "ui/Navigator.h"
 #include <NimBLEDevice.h>
 
@@ -26,9 +27,12 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     void onDisconnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo, int reason) override {
         sConnected = false;
         AiLimitsStore::setBleConnected(false);
-        Serial.printf("[BLE] Client disconnected (reason=%d), restarting advertising...\n", reason);
+        Serial.printf("[BLE] Client disconnected (reason=%d)\n", reason);
         nav::markDirty(nav::PG_AI_LIMITS);
-        NimBLEDevice::startAdvertising();
+        nav::markDirty(nav::PG_CONTROL);
+        if (sBleEnabled) {
+            NimBLEDevice::startAdvertising();
+        }
     }
 };
 
@@ -88,9 +92,14 @@ bool BleCompanion::init() {
     pAdvertising->setName(BLE_DEVICE_NAME);
     pAdvertising->addServiceUUID(SERVICE_AI_LIMITS_UUID);
     pAdvertising->enableScanResponse(true);
-    pAdvertising->start();
 
-    Serial.println("[BLE] NimBLE advertising started as 'WatchOS Ultra'");
+    sBleEnabled = SettingsStorage::get().bleEnabled;
+    if (sBleEnabled) {
+        pAdvertising->start();
+        Serial.println("[BLE] NimBLE advertising started as 'WatchOS Ultra'");
+    } else {
+        Serial.println("[BLE] NimBLE initialized (disabled by user)");
+    }
     return true;
 }
 
@@ -106,16 +115,35 @@ void BleCompanion::loop(unsigned long now) {
 }
 
 bool BleCompanion::isConnected() {
-    return sConnected;
+    return sConnected && sBleEnabled;
 }
 
 void BleCompanion::setEnabled(bool en) {
     sBleEnabled = en;
-    if (!en && NimBLEDevice::getAdvertising()->isAdvertising()) {
-        NimBLEDevice::stopAdvertising();
-    } else if (en && !sConnected && !NimBLEDevice::getAdvertising()->isAdvertising()) {
-        NimBLEDevice::startAdvertising();
+    SettingsStorage::get().bleEnabled = en;
+    SettingsStorage::save();
+    if (!en) {
+        if (NimBLEDevice::getAdvertising()->isAdvertising()) {
+            NimBLEDevice::stopAdvertising();
+        }
+        if (sConnected && sServer) {
+            std::vector<uint16_t> peers = sServer->getPeerDevices();
+            for (uint16_t connId : peers) {
+                sServer->disconnect(connId);
+            }
+            sConnected = false;
+            AiLimitsStore::setBleConnected(false);
+        }
+        Serial.println("[BLE] Disabled");
+    } else {
+        if (!sConnected && !NimBLEDevice::getAdvertising()->isAdvertising()) {
+            NimBLEDevice::startAdvertising();
+        }
+        Serial.println("[BLE] Enabled (advertising)");
     }
+    nav::markDirty(nav::PG_CONTROL);
+    nav::markDirty(nav::PG_AI_LIMITS);
+    nav::markDirty(nav::PG_SYSTEM);
 }
 
 bool BleCompanion::isEnabled() {

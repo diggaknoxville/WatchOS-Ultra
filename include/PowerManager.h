@@ -20,6 +20,7 @@ public:
 
     static void handleActivity();
     static void loop(unsigned long currentMillis);
+    static void applyBrightnessOnUiThread();
 
     // side (power) key: 0 = none, 1 = click, 2 = long press. Consumed by the UI task.
     static int takeKeyEvent();

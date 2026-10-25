@@ -15,6 +15,8 @@ public:
     static void loop(unsigned long now);     // background task
     static void setLive(bool on);            // thread-safe, from UI task
     static void requestFix();                // open an acquisition window now (thread-safe)
+    static void setEnabled(bool en);         // master power enable/disable
+    static bool isEnabled();
 
     static bool isOnline();                  // module detected at boot
     static bool isPowered();

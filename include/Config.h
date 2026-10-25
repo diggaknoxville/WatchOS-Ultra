@@ -77,6 +77,9 @@ struct SystemSettings {
     bool aodEnabled;
     bool soundEnabled;
     bool wifiApEnabled;
+    bool bleEnabled;
+    bool gpsEnabled;
+    bool loraEnabled;
     bool loraBeaconEnabled;
     int32_t timezoneOffsetSec;  // e.g. 7200 for UTC+2 (informational / fallback)
     char tzPosix[48];           // POSIX TZ rule incl. DST, e.g. "CET-1CEST,M3.5.0,M10.5.0/3"

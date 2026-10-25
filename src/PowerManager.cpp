@@ -7,6 +7,18 @@
 #include "ui/Icons.h"
 
 static volatile int sKeyEvent = 0;
+static volatile uint8_t sTargetBrightness = 220;
+static uint8_t sAppliedHwBrightness = 0xFF;
+
+static uint8_t toHardwareBrightness(uint8_t uiLevel) {
+    if (uiLevel == 0) return 0;
+    // Scale UI 1..255 -> 8..215 to prevent AXP2101 ALDO (300mA limit) overcurrent/brownout
+    // on the 1.75" CO5300 AMOLED at full white/high duty while preserving full visual range.
+    int hw = 8 + ((int)uiLevel * 207) / 255;
+    if (hw < 8) hw = 8;
+    if (hw > 215) hw = 215;
+    return (uint8_t)hw;
+}
 
 // PMU events from LilyGoLib (dispatched inside instance.loop() on the bg task)
 static void onPmuEvent(DeviceEvent_t, void* params, void*) {
@@ -56,11 +68,21 @@ float PowerManager::cachedTemp = 28.0f;
 bool PowerManager::init() {
     // On the T-Watch Ultra the AXP2101 PMU, power rails, charger and the display
     // backlight are all brought up by LilyGoLib's instance.begin() (called in
-    // setup() before this). We simply adopt that state here.
+    // setup() before this). Configure safe VBUS/system limits and disable unused rails.
     Serial.println("[PMU] Using LilyGoLib AXP2101 (brought up by instance.begin)...");
     pmuReady = true;
+
+    instance.pmu.setVbusVoltageLimit(XPOWERS_AXP2101_VBUS_VOL_LIM_4V36);
+    instance.pmu.setVbusCurrentLimit(XPOWERS_AXP2101_VBUS_CUR_LIM_1500MA);
+    instance.pmu.setSysPowerDownVoltage(2600);
+    // Disable unused NFC power rail (DLDO1) to reduce LDO thermal load and save battery
+    instance.pmu.disableDLDO1();
+
     instance.onEvent(onPmuEvent, POWER_EVENT, nullptr);
-    setBrightness(SettingsStorage::get().brightness);
+    currentBrightness = SettingsStorage::get().brightness;
+    sTargetBrightness = currentBrightness;
+    sAppliedHwBrightness = toHardwareBrightness(currentBrightness);
+    instance.setBrightness(sAppliedHwBrightness);
     updateTelemetry();
     lastActivityTime = millis();
     Serial.printf("[PMU] Battery %d%%  %.2fV  vbus=%d charging=%d\n",
@@ -71,11 +93,10 @@ bool PowerManager::init() {
 void PowerManager::setBrightness(uint8_t level) {
     SettingsStorage::get().brightness = level;
     currentBrightness = level;
-    instance.setBrightness(level);   // AMOLED brightness via LilyGoLib
+    sTargetBrightness = level;
     lastActivityTime = millis();
     if (currentState != POWER_ACTIVE) {
         currentState = POWER_ACTIVE;
-        setCpuFrequencyMhz(240);
     }
 }
 
@@ -87,27 +108,35 @@ void PowerManager::setPowerState(PowerState state) {
     if (currentState == state) return;
     currentState = state;
 
+    // NOTE: Never call setCpuFrequencyMhz(80/40) while WiFi/BLE/QSPI DMA are active
+    // (causes APB clock divider glitches and watchdog reboots on ESP32-S3), and never
+    // call instance.setBrightness() directly from Core 0 (causes QSPI bus collision
+    // with Core 1 pushColorsAsync DMA). Target brightness is applied on Core 1.
     switch (state) {
         case POWER_ACTIVE:
-            setCpuFrequencyMhz(240);
             currentBrightness = SettingsStorage::get().brightness;
-            instance.setBrightness(currentBrightness);
+            sTargetBrightness = currentBrightness;
             break;
         case POWER_DIM:
-            setCpuFrequencyMhz(80);
-            currentBrightness = (uint8_t)max(20, (int)SettingsStorage::get().brightness / 3);
-            instance.setBrightness(currentBrightness);
+            currentBrightness = (uint8_t)max(24, (int)SettingsStorage::get().brightness / 3);
+            sTargetBrightness = currentBrightness;
             break;
         case POWER_AOD:
-            setCpuFrequencyMhz(80);
             currentBrightness = 18; // Ultra-low ambient glow
-            instance.setBrightness(currentBrightness);
+            sTargetBrightness = currentBrightness;
             break;
         case POWER_SLEEP:
             currentBrightness = 0;
-            instance.setBrightness(0);
-            setCpuFrequencyMhz(40);
+            sTargetBrightness = 0;
             break;
+    }
+}
+
+void PowerManager::applyBrightnessOnUiThread() {
+    uint8_t targetHw = toHardwareBrightness(sTargetBrightness);
+    if (targetHw != sAppliedHwBrightness) {
+        sAppliedHwBrightness = targetHw;
+        instance.setBrightness(targetHw);
     }
 }
 
@@ -118,7 +147,9 @@ PowerState PowerManager::getPowerState() {
 void PowerManager::handleActivity() {
     lastActivityTime = millis();
     if (currentState != POWER_ACTIVE || currentBrightness != SettingsStorage::get().brightness) {
-        setPowerState(POWER_ACTIVE);
+        currentState = POWER_ACTIVE;
+        currentBrightness = SettingsStorage::get().brightness;
+        sTargetBrightness = currentBrightness;
     }
 }
 

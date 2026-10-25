@@ -23,6 +23,9 @@ void SettingsStorage::init() {
         settings.aodEnabled = prefs.getBool("aod", true);
         settings.soundEnabled = prefs.getBool("sound", true);
         settings.wifiApEnabled = prefs.getBool("wifi_ap", true);
+        settings.bleEnabled = prefs.getBool("ble_en", true);
+        settings.gpsEnabled = prefs.getBool("gps_en", true);
+        settings.loraEnabled = prefs.getBool("lora_en", true);
         settings.loraBeaconEnabled = prefs.getBool("lora_bcn", false);
         settings.timezoneOffsetSec = prefs.getInt("tz_sec", 7200); // Default UTC+2
         settings.dailyStepGoal = prefs.getUInt("step_goal", 10000);
@@ -49,6 +52,9 @@ void SettingsStorage::save() {
     prefs.putBool("aod", settings.aodEnabled);
     prefs.putBool("sound", settings.soundEnabled);
     prefs.putBool("wifi_ap", settings.wifiApEnabled);
+    prefs.putBool("ble_en", settings.bleEnabled);
+    prefs.putBool("gps_en", settings.gpsEnabled);
+    prefs.putBool("lora_en", settings.loraEnabled);
     prefs.putBool("lora_bcn", settings.loraBeaconEnabled);
     prefs.putInt("tz_sec", settings.timezoneOffsetSec);
     prefs.putUInt("step_goal", settings.dailyStepGoal);
@@ -66,6 +72,9 @@ void SettingsStorage::resetDefaults() {
     settings.aodEnabled = true;
     settings.soundEnabled = true;
     settings.wifiApEnabled = true;
+    settings.bleEnabled = true;
+    settings.gpsEnabled = true;
+    settings.loraEnabled = true;
     settings.loraBeaconEnabled = false;
     settings.timezoneOffsetSec = 7200;
     settings.dailyStepGoal = 10000;

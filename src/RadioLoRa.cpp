@@ -5,6 +5,7 @@
 #include "DisplayEngine.h"
 #include "AudioEngine.h"
 #include "CompanionServer.h"
+#include "ui/Navigator.h"
 #include <RadioLib.h>
 #include <LilyGoLib.h>   // provides the global `radio` (SX1262), begun by instance
 #include <Preferences.h>
@@ -13,6 +14,7 @@
 #define BEACON_MS 60000UL
 
 static bool ready = false;
+static bool sSleeping = false;
 static uint32_t sentCount = 0, recvCount = 0;
 static float lastRssi = 0, lastSnr = 0;
 
@@ -70,9 +72,16 @@ bool RadioLoRa::init(float freq) {
         return false;
     }
     radio.setPacketReceivedAction(onDio1);
-    radio.startReceive();
     ready = true;
-    Serial.printf("[LORA] SX1262 listening @ %.1f MHz SF9/BW125 (%u stored messages)\n", freq, inboxCount);
+    if (SettingsStorage::get().loraEnabled) {
+        radio.startReceive();
+        sSleeping = false;
+        Serial.printf("[LORA] SX1262 listening @ %.1f MHz SF9/BW125 (%u stored messages)\n", freq, inboxCount);
+    } else {
+        radio.sleep();
+        sSleeping = true;
+        Serial.println("[LORA] SX1262 initialized in sleep mode (disabled by user)");
+    }
     return true;
 }
 
@@ -102,6 +111,22 @@ static void doTransmit(const char* text) {
 
 void RadioLoRa::loop(unsigned long now) {
     if (!ready) return;
+
+    bool wantEn = SettingsStorage::get().loraEnabled;
+    if (!wantEn) {
+        if (!sSleeping) {
+            rxFlag = false;
+            radio.sleep();
+            sSleeping = true;
+            Serial.println("[LORA] SX1262 sleep (disabled)");
+        }
+        return;
+    } else if (sSleeping) {
+        sSleeping = false;
+        radio.standby();
+        radio.startReceive();
+        Serial.println("[LORA] SX1262 wake (receiving)");
+    }
 
     if (rxFlag) {
         rxFlag = false;
@@ -142,6 +167,9 @@ void RadioLoRa::loop(unsigned long now) {
 
 bool RadioLoRa::sendPacket(const String& msg) {
     if (!ready || !txQueue) return false;
+    if (!SettingsStorage::get().loraEnabled) {
+        RadioLoRa::setEnabled(true);
+    }
     TxReq r;
     strncpy(r.text, msg.c_str(), sizeof(r.text) - 1);
     r.text[sizeof(r.text) - 1] = 0;
@@ -159,7 +187,15 @@ bool RadioLoRa::sendSosBeacon() {
 }
 
 bool RadioLoRa::pollPacket(String&, float&, float&) { return false; }
-bool RadioLoRa::isReady() { return ready; }
+bool RadioLoRa::isReady() { return ready && SettingsStorage::get().loraEnabled; }
+void RadioLoRa::setEnabled(bool en) {
+    SettingsStorage::get().loraEnabled = en;
+    SettingsStorage::save();
+    nav::markDirty(nav::PG_LORA);
+    nav::markDirty(nav::PG_CONTROL);
+    nav::markDirty(nav::PG_SYSTEM);
+}
+bool RadioLoRa::isEnabled() { return SettingsStorage::get().loraEnabled; }
 uint32_t RadioLoRa::getSentCount() { return sentCount; }
 uint32_t RadioLoRa::getRecvCount() { return recvCount; }
 float RadioLoRa::getLastRssi() { return lastRssi; }

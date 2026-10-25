@@ -13,10 +13,10 @@ using Compositor::Layer;
 
 static const int W = Compositor::W;
 static const int H = Compositor::H;
-static const int SLOP = 12;                 // px before a drag is classified
+static const int SLOP = 10;                 // px before a drag is classified
 static const int EDGE = 30;                 // edge zone for back / home gestures
-static const float SPRING_RESPONSE = 0.30f; // s, critically damped
-static const float PROJECTION_S = 0.16f;    // velocity projection for commit decisions
+static const float SPRING_RESPONSE = 0.18f; // s, snappy critically damped spring
+static const float PROJECTION_S = 0.18f;    // velocity projection for commit decisions
 
 enum Mode : uint8_t { M_CAROUSEL, M_SHEET_TOP, M_SHEET_BOTTOM, M_APP };
 
@@ -44,7 +44,10 @@ static Surface sGlass;                      // capture of the glass at gesture s
 
 // gesture tracking (fed by LVGL's touch sampling)
 static bool sTracking = false;
+static bool sTriggered = false;
 static int16_t sX0 = 0, sY0 = 0;
+static int16_t sLx = 0, sLy = 0;
+static uint32_t sT0 = 0;
 static uint32_t sLastTouchMs = 0, sLastPrerender = 0;
 
 // ------------------------------------------------------------------ helpers
@@ -200,13 +203,22 @@ static void statsReport(const char* what, uint32_t prepUs) {
 static void settle(const Scene& sc, float pos, float vel, float target) {
     const float w = 2.0f * (float)M_PI / SPRING_RESPONSE;
     float x0 = pos - target;
+    if (fabsf(x0) < 2.0f) {
+        frame(sc, target);
+        return;
+    }
     uint32_t t0 = micros();
+    bool seenRelease = !KronosDisplay::lastTouch().pressed;
     for (;;) {
         float t = (micros() - t0) / 1e6f;
         float e = expf(-w * t);
         float x = (x0 + (vel + w * x0) * t) * e;
-        float v = (vel - (vel + w * x0) * w * t) * e;
-        if ((fabsf(x) < 0.5f && fabsf(v) < 40.0f) || t > 0.9f) break;
+        // Stop immediately when within 3 px of target or upon crossing target (overshoot is clamped)
+        if (fabsf(x) < 3.0f || (x0 * x <= 0.0f) || t > 0.30f) break;
+        // Allow user to interrupt settle tail with a new touch for chained swipes
+        KronosDisplay::Touch tc = KronosDisplay::pollTouch();
+        if (!tc.pressed) seenRelease = true;
+        else if (seenRelease && target > 0 && fabsf(x) < sc.full * 0.65f) break;
         frame(sc, target + x);
     }
     frame(sc, target);
@@ -337,12 +349,22 @@ static void runGesture(Gesture g, int dir, int x0, int y0, bool horizontal) {
                 break;
             default: break;
         }
-        sSurf[target].renderedAt = 0;                       // refreshed from LVGL next time
+        sSurf[target].renderedAt = millis();                // keep target surface valid for fast chained swipes
     } else {
         Compositor::setMirror(sGlass);                      // glass back to the original page
     }
     statsReport(commit ? "gesture" : "gesture (cancelled)", tPrep);
     sBusy = false;
+    sTracking = false;
+    sTriggered = false;
+    // If finger is already touching the screen (chained swipe), immediately begin tracking new gesture
+    KronosDisplay::Touch tc = KronosDisplay::pollTouch();
+    if (tc.pressed) {
+        sTracking = true;
+        sX0 = sLx = tc.x;
+        sY0 = sLy = tc.y;
+        sT0 = millis();
+    }
 }
 
 // programmatic transition (no finger): animate 0 -> full with the spring
@@ -494,18 +516,20 @@ static void flick(int dx, int dy) {
     }
 }
 
-static bool sTriggered = false;
-static int16_t sLx = 0, sLy = 0;
-static uint32_t sT0 = 0;
-
 static void trackGestures() {
     KronosDisplay::Touch t = KronosDisplay::lastTouch();
-    if (t.pressed) sLastTouchMs = millis();
+    if (millis() - t.ms >= 8) {
+        t = KronosDisplay::pollTouch();
+    }
+    if (t.pressed) {
+        sLastTouchMs = millis();
+        PowerManager::handleActivity();
+    }
     if (!t.pressed) {
         // finger lifted before any gesture ran: a quick flick still navigates
         if (sTracking && !sTriggered && sGestures && !sBusy && millis() - sT0 < 450) {
             int dx = sLx - sX0, dy = sLy - sY0;
-            if (abs(dx) > 28 || abs(dy) > 28) { sTriggered = true; flick(dx, dy); }
+            if (abs(dx) > 22 || abs(dy) > 22) { sTriggered = true; flick(dx, dy); }
         }
         sTracking = false;
         sTriggered = false;
@@ -551,13 +575,16 @@ static void trackGestures() {
 static void prerender(uint32_t now) {
     if (sBusy || KronosDisplay::lastTouch().pressed) return;
     if (Compositor::renderBusy()) {
-        if (Compositor::renderStep()) {
-            sDirty[sJobPage] = false;
-            sJobPage = PG_COUNT;
+        for (int step = 0; step < 3; step++) {
+            if (Compositor::renderStep()) {
+                sDirty[sJobPage] = false;
+                sJobPage = PG_COUNT;
+                break;
+            }
         }
         return;
     }
-    if (now - sLastTouchMs < 250 || now - sLastPrerender < 60) return;
+    if (now - sLastTouchMs < 20 || now - sLastPrerender < 15) return;
     PageId want[6];
     int n = 0;
     if (sMode == M_CAROUSEL) {
@@ -583,6 +610,11 @@ static void prerender(uint32_t now) {
 void registerPage(PageId id, const PageDef& def) {
     if (id >= PG_COUNT) return;
     sPages[id] = def;
+    // Keep carousel surfaces warm in PSRAM for instant back-to-back swiping;
+    // pages still re-render immediately whenever markDirty() is called.
+    if (isCarousel(id) && sPages[id].ttlMs > 0 && sPages[id].ttlMs < 60000) {
+        sPages[id].ttlMs = 60000;
+    }
     sDirty[id] = true;
 }
 

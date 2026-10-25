@@ -1,5 +1,7 @@
 #include "GpsManager.h"
 #include "RtcManager.h"
+#include "SettingsStorage.h"
+#include "ui/Navigator.h"
 #include <LilyGoLib.h>
 #include <Preferences.h>
 
@@ -58,19 +60,50 @@ void GpsManager::init() {
         p.end();
     }
     if (sOnline) {
-        sWindowEndAt = millis() + WINDOW_MS;   // boot acquisition window
-        sNextWindowAt = millis() + PERIOD_MS;
+        if (SettingsStorage::get().gpsEnabled) {
+            sWindowEndAt = millis() + WINDOW_MS;   // boot acquisition window
+            sNextWindowAt = millis() + PERIOD_MS;
+        } else {
+            power(false);
+        }
     }
-    Serial.printf("[GPS] u-blox %s, last fix %s\n", sOnline ? "online" : "NOT FOUND",
-                  sHaveLast ? "stored" : "none");
+    Serial.printf("[GPS] u-blox %s (enabled=%d), last fix %s\n", sOnline ? "online" : "NOT FOUND",
+                  (int)SettingsStorage::get().gpsEnabled, sHaveLast ? "stored" : "none");
 }
 
 static volatile bool sFixRequest = false;
 void GpsManager::setLive(bool on) { sLive = on; }
-void GpsManager::requestFix() { sFixRequest = true; }
+void GpsManager::requestFix() {
+    if (!SettingsStorage::get().gpsEnabled) {
+        SettingsStorage::get().gpsEnabled = true;
+        SettingsStorage::save();
+    }
+    sFixRequest = true;
+}
+
+void GpsManager::setEnabled(bool en) {
+    SettingsStorage::get().gpsEnabled = en;
+    SettingsStorage::save();
+    if (en) {
+        sFixRequest = true;
+    } else {
+        sFixRequest = false;
+    }
+    nav::markDirty(nav::PG_POSITION);
+    nav::markDirty(nav::PG_CONTROL);
+    nav::markDirty(nav::PG_SYSTEM);
+}
+
+bool GpsManager::isEnabled() {
+    return SettingsStorage::get().gpsEnabled;
+}
 
 void GpsManager::loop(unsigned long now) {
     if (!sOnline) return;
+    if (!SettingsStorage::get().gpsEnabled) {
+        power(false);
+        return;
+    }
 
     // --- power scheduling ---
     if (sFixRequest) {

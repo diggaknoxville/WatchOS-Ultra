@@ -14,11 +14,12 @@ static lv_obj_t *pPill, *pPillTxt, *pLat, *pLon, *pVal[6];
 
 static void refresh(bool) {
     char b[48];
+    bool en = GpsManager::isEnabled();
     bool online = GpsManager::isOnline(), fix = GpsManager::hasFix(), pw = GpsManager::isPowered();
-    lv_color_t pc = !online ? cCrit() : fix ? cOk() : pw ? cWarn() : cText3();
+    lv_color_t pc = !en ? cCrit() : !online ? cCrit() : fix ? cOk() : pw ? cWarn() : cText3();
     setBgColorIf(pPill, pc);
     setTextColorIf(pPillTxt, pc);
-    setText(pPillTxt, !online ? "NO GNSS" : fix ? "3D FIX" : pw ? "SEARCHING" : "STANDBY");
+    setText(pPillTxt, !en ? "GPS OFF" : !online ? "NO GNSS" : fix ? "3D FIX" : pw ? "SEARCHING" : "STANDBY");
     if (GpsManager::hasLastFix()) {
         double la = GpsManager::latitude(), lo = GpsManager::longitude();
         snprintf(b, sizeof(b), "%.5f° %c", fabs(la), la >= 0 ? 'N' : 'S'); setText(pLat, b);
@@ -27,7 +28,7 @@ static void refresh(bool) {
         setTextColorIf(pLon, fix ? cText() : cText2());
     } else {
         setText(pLat, "No position yet");
-        setText(pLon, pw ? "Looking for satellites..." : "");
+        setText(pLon, !en ? "GPS disabled (tap pill to enable)" : pw ? "Looking for satellites..." : "");
     }
     snprintf(b, sizeof(b), "%u", GpsManager::satellites());          setText(pVal[0], b);
     snprintf(b, sizeof(b), "%.0f m", GpsManager::altitudeM());       setText(pVal[1], b);
@@ -46,6 +47,12 @@ void buildPosition(lv_obj_t* scr) {
     lv_obj_align(pPill, LV_ALIGN_TOP_RIGHT, -M, 26);
     lv_obj_set_style_radius(pPill, 15, 0);
     lv_obj_set_style_bg_opa(pPill, LV_OPA_30, 0);
+    lv_obj_add_flag(pPill, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(pPill, [](lv_event_t*) {
+        GpsManager::setEnabled(!GpsManager::isEnabled());
+        haptic(HAPTIC_CLICK);
+        refresh(true);
+    }, LV_EVENT_CLICKED, NULL);
     pPillTxt = caption(pPill, "", cText2());
     lv_obj_center(pPillTxt);
 

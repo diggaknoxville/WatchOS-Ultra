@@ -6,6 +6,7 @@
 #include "RadioLoRa.h"
 #include "AudioEngine.h"
 #include "GpsManager.h"
+#include "BleCompanion.h"
 #include "DisplayEngine.h"
 #include "AiLimitsStore.h"
 #include "ui/Navigator.h"
@@ -104,7 +105,7 @@ input:focus,select:focus{border-color:var(--acc)}
  <div class="cap lbl">Daily step goal</div>
  <input type="number" id="goal" min="1000" max="50000" step="500" onchange="set('goal',this.value)">
  <div class="cap" style="margin:4px 0 8px">Screen timeout</div>
- <select id="sleep" onchange="set('sleep',this.value)"><option value="10">10 s</option><option value="15">15 s</option><option value="25">25 s</option><option value="45">45 s</option><option value="60">1 min</option><option value="120">2 min</option></select>
+ <select id="sleep" onchange="set('sleep',this.value)"><option value="10">10 s</option><option value="15">15 s</option><option value="25">25 s</option><option value="45">45 s</option><option value="60">1 min</option><option value="120">2 min</option><option value="0">Never (Always On)</option></select>
 </div>
 
 <div class="card"><h2>Position</h2>
@@ -131,7 +132,7 @@ input:focus,select:focus{border-color:var(--acc)}
 const $=id=>document.getElementById(id);
 const FACES=[["MODULAR","▦"],["CHRONO","◷"],["MINIMAL","‖"],["WAYFINDER","🧭"],["TOURBILLON","⚙"],["CASIO","⌚"],["BAUHAUS","◻"],["CYBERPUNK","⚡"],["WORDCLOCK","🔤"],["NEON","🌅"],["PILOT","✈"],["DIVER","⚓"],["RADAR","📡"],["LIFETIME","⏳"]];
 const COLORS=["#00ffff","#30d158","#ffd60a","#ff9f0a","#ff453a","#ff2d92","#bf5af2","#5e5ce6","#64d2ff","#ffffff"];
-const TOG=[["haptic","Haptics"],["sound","Sound"],["aod","Always-on display"],["wrist","Raise to wake"],["beacon","LoRa beacon"]];
+const TOG=[["ble","Bluetooth (BLE)"],["gps_en","GPS / GNSS"],["lora_en","LoRa Radio"],["haptic","Haptics"],["sound","Sound"],["aod","Always-on display"],["wrist","Raise to wake"],["beacon","LoRa beacon"]];
 let S=null,base=0,at=0;
 function toast(m){const t=$('toast');t.textContent=m;t.classList.add('show');clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('show'),2200)}
 function post(u){return fetch(u,{method:'POST'})}
@@ -268,8 +269,12 @@ bool CompanionServer::init() {
         server.send(302, "text/plain", "");
     });
 
-    SettingsStorage::get().wifiApEnabled = true;
-    startAp();
+    if (SettingsStorage::get().wifiApEnabled) {
+        startAp();
+    } else {
+        WiFi.mode(WIFI_OFF);
+        Serial.println("[WIFI] Access point disabled by user settings");
+    }
     return true;
 }
 
@@ -309,6 +314,9 @@ void CompanionServer::handleApiStatus() {
     j += ",\"aod\":";         j += s.aodEnabled ? 1 : 0;
     j += ",\"wrist\":";       j += s.wristWakeEnabled ? 1 : 0;
     j += ",\"beacon\":";      j += s.loraBeaconEnabled ? 1 : 0;
+    j += ",\"ble\":";         j += s.bleEnabled ? 1 : 0;
+    j += ",\"gps_en\":";      j += s.gpsEnabled ? 1 : 0;
+    j += ",\"lora_en\":";     j += s.loraEnabled ? 1 : 0;
     j += ",\"gps\":{\"online\":"; j += GpsManager::isOnline() ? "true" : "false";
     j += ",\"powered\":";     j += GpsManager::isPowered() ? "true" : "false";
     j += ",\"fix\":";         j += GpsManager::hasFix() ? "true" : "false";
@@ -347,6 +355,9 @@ void CompanionServer::handleApiSettings() {
     flag("aod",    s.aodEnabled);
     flag("wrist",  s.wristWakeEnabled);
     flag("beacon", s.loraBeaconEnabled);
+    if (server.hasArg("ble"))     BleCompanion::setEnabled(server.arg("ble").toInt() != 0);
+    if (server.hasArg("gps_en"))  GpsManager::setEnabled(server.arg("gps_en").toInt() != 0);
+    if (server.hasArg("lora_en")) RadioLoRa::setEnabled(server.arg("lora_en").toInt() != 0);
     SettingsStorage::save();
     PowerManager::handleActivity();
     MotionHaptic::triggerHaptic(HAPTIC_CLICK);

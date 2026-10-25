@@ -13,10 +13,11 @@ static lv_obj_t *lPill, *lPillTxt, *lCounts, *lMsg[3], *lMeta[3], *lEmpty;
 
 static void refresh(bool) {
     char b[64];
+    bool en = RadioLoRa::isEnabled();
     bool on = RadioLoRa::isReady();
     setBgColorIf(lPill, on ? cOk() : cCrit());
     setTextColorIf(lPillTxt, on ? cOk() : cCrit());
-    setText(lPillTxt, on ? "LISTENING" : "OFFLINE");
+    setText(lPillTxt, !en ? "LORA OFF" : on ? "LISTENING" : "OFFLINE");
     snprintf(b, sizeof(b), "868 MHz  SF9  ·  TX %lu  RX %lu", (unsigned long)RadioLoRa::getSentCount(),
              (unsigned long)RadioLoRa::getRecvCount());
     setText(lCounts, b);
@@ -44,6 +45,12 @@ void buildLora(lv_obj_t* scr) {
     lv_obj_align(lPill, LV_ALIGN_TOP_RIGHT, -M, 26);
     lv_obj_set_style_radius(lPill, 15, 0);
     lv_obj_set_style_bg_opa(lPill, LV_OPA_30, 0);
+    lv_obj_add_flag(lPill, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(lPill, [](lv_event_t*) {
+        RadioLoRa::setEnabled(!RadioLoRa::isEnabled());
+        haptic(HAPTIC_CLICK);
+        refresh(true);
+    }, LV_EVENT_CLICKED, NULL);
     lPillTxt = caption(lPill, "", cOk());
     lv_obj_center(lPillTxt);
     lCounts = caption(p, "", cText3());
