@@ -409,26 +409,52 @@ void buildPosition(lv_obj_t* scr) {
     lv_image_set_src(sMapImg, &sMapDsc);
     lv_obj_set_pos(sMapImg, 0, 0);
 
-    // Tap on map canvas: edges pan N/S/W/E, center snaps back to live position + Speed Auto-Zoom
+    // Smooth 2D Drag-and-Drop Map Panning + Tap to Center
+    static lv_point_t sDragStart = {0, 0};
+    static double sDragStartLat = 0, sDragStartLon = 0;
+    static bool sIsDragging = false;
+
     lv_obj_add_flag(sMapCard, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(sMapCard, [](lv_event_t*) {
+    lv_obj_add_event_cb(sMapCard, [](lv_event_t* e) {
+        lv_event_code_t code = lv_event_get_code(e);
         lv_point_t pt;
         lv_indev_get_point(lv_indev_active(), &pt);
-        int rx = pt.x - M;
-        int ry = pt.y - 76;
-        double step = 360.0 / (256.0 * pow(2.0, (double)sZoom)) * 70.0;
-        if (ry < 52) { sManualPan = true; sManualInteractMs = millis(); sViewLat += step * 0.7; }
-        else if (ry > MAP_H - 52) { sManualPan = true; sManualInteractMs = millis(); sViewLat -= step * 0.7; }
-        else if (rx < 70) { sManualPan = true; sManualInteractMs = millis(); sViewLon -= step; }
-        else if (rx > MAP_W - 70) { sManualPan = true; sManualInteractMs = millis(); sViewLon += step; }
-        else {
-            sManualPan = false;
-            sAutoZoom = true;
+
+        if (code == LV_EVENT_PRESSED) {
+            sDragStart = pt;
+            sDragStartLat = sViewLat;
+            sDragStartLon = sViewLon;
+            sIsDragging = false;
+        } else if (code == LV_EVENT_PRESSING) {
+            int dx = pt.x - sDragStart.x;
+            int dy = pt.y - sDragStart.y;
+            if (abs(dx) > 4 || abs(dy) > 4) {
+                sIsDragging = true;
+                sManualPan = true;
+                sManualInteractMs = millis();
+                double degPerPixX = 360.0 / (256.0 * pow(2.0, (double)sZoom));
+                double degPerPixY = degPerPixX * cos(sViewLat * M_PI / 180.0);
+                sViewLon = sDragStartLon - (double)dx * degPerPixX;
+                sViewLat = sDragStartLat + (double)dy * degPerPixY;
+                sMapNeedsRedraw = true;
+                redrawCanvas();
+            }
+        } else if (code == LV_EVENT_RELEASED) {
+            if (!sIsDragging) {
+                // Short tap on map center toggles auto-center & auto-zoom
+                int rx = pt.x - M;
+                int ry = pt.y - 76;
+                if (abs(rx - MAP_W / 2) < 60 && abs(ry - MAP_H / 2) < 60) {
+                    sManualPan = false;
+                    sAutoZoom = true;
+                    haptic(HAPTIC_CLICK);
+                    sMapNeedsRedraw = true;
+                    refresh(true);
+                }
+            }
+            sIsDragging = false;
         }
-        sMapNeedsRedraw = true;
-        haptic(HAPTIC_TICK);
-        refresh(true);
-    }, LV_EVENT_CLICKED, NULL);
+    }, LV_EVENT_ALL, NULL);
 
     auto makeMapBtn = [&](int x, int y, int w, int h, const char* txt, lv_event_cb_t cb) -> lv_obj_t* {
         lv_obj_t* b = box(sMapCard, w, h);

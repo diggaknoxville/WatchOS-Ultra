@@ -25,6 +25,7 @@ static const AppEntry APPS[] = {
     {"Position",  ICO_MY_LOCATION,       0x64D2FF, nav::PG_POSITION,      0},
     {"LoRa",      ICO_PODCASTS,          0xBF5AF2, nav::PG_LORA,          0},
     {"Alerts",    ICO_NOTIFICATIONS,     0xFF375F, nav::PG_NOTIFS,        0},
+    {"YouTube",   ICO_PLAY_ARROW,        0xFF3B30, nav::PG_APP_MEDIA,     0},
     {"Phone",     ICO_SMARTPHONE,        0x5E5CE6, nav::PG_APP_CONNECT,   0},
     {"Torch",     ICO_FLASHLIGHT_ON,     0xFFD60A, nav::PG_COUNT,         1},
     {"System",    ICO_MEMORY,            0x8E8E93, nav::PG_SYSTEM,        0},

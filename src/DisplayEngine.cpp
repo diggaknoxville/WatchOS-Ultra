@@ -390,6 +390,7 @@ bool DisplayEngine::init() {
     pages::buildPower(scr);
     pages::buildFaces(scr);
     pages::buildSettings(scr);
+    pages::buildAppMedia(scr);
 
     buildBanner();
     buildAodAndTorch();
@@ -429,7 +430,30 @@ void DisplayEngine::update(unsigned long now) {
         if (torchOn()) {
             setTorch(false);
         } else if (!wasSleeping) {
-            nav::sideKey(key == 2);
+            if (key == 1) {
+                nav::sideKey(false);
+            } else if (key == 2) {
+                nav::sideKey(true);
+            } else if (key == 3) {
+                // Action Button (GPIO 0) Single Click
+                ui::haptic(HAPTIC_CLICK);
+                if (nav::current() == nav::PG_FACE) {
+                    nav::go(nav::PG_POSITION);
+                } else if (nav::current() == nav::PG_POSITION) {
+                    nav::go(nav::PG_CONTROL);
+                } else {
+                    nav::home();
+                }
+            } else if (key == 4) {
+                // Action Button (GPIO 0) Double Click: Torch
+                ui::haptic(HAPTIC_TICK);
+                setTorch(!torchOn());
+            } else if (key == 5) {
+                // Action Button (GPIO 0) Long Press: Meshtastic Discovery Beacon
+                ui::haptic(HAPTIC_ALERT_LONG);
+                RadioLoRa::sendNodeInfoDiscovery();
+                DisplayEngine::showNotification("Action Button", "Meshtastic Hub Discovery Beacon gesendet!", 2500, ICO_PODCASTS);
+            }
         }
     }
 

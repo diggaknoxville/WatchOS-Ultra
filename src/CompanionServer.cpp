@@ -127,6 +127,25 @@ input:focus,select:focus{border-color:var(--acc)}
  <button class="btn" onclick="notify()">Send to watch</button>
 </div>
 
+<div class="card"><h2>Media & YouTube Remote</h2>
+ <div class="row" style="margin-bottom:12px"><div id="mtitle" style="font-weight:700">YouTube Music</div><div class="pill" id="mstate">PAUSED</div></div>
+ <div class="grid" style="grid-template-columns:1fr 1fr 1fr;margin-bottom:10px">
+  <button class="btn ghost" onclick="mediaCmd('prev')">|&lt;&lt;</button>
+  <button class="btn" onclick="mediaCmd('play_pause')">&gt; / ||</button>
+  <button class="btn ghost" onclick="mediaCmd('next')">&gt;&gt;|</button>
+ </div>
+ <div class="grid" style="grid-template-columns:1fr 1fr">
+  <button class="btn ghost" onclick="mediaCmd('vol_down')">Vol -</button>
+  <button class="btn ghost" onclick="mediaCmd('vol_up')">Vol +</button>
+ </div>
+</div>
+
+<div class="card"><h2>Kalender Sync (WiFi)</h2>
+ <input type="text" id="cal_t" placeholder="Termin Titel (z.B. Meeting)" maxlength="32">
+ <input type="text" id="cal_l" placeholder="Ort (z.B. Büro)" maxlength="16">
+ <button class="btn" onclick="syncCal()">Termin an Uhr senden</button>
+</div>
+
 <div class="card"><button class="btn ghost" onclick="post('/api/find');toast('Your watch is ringing')">Find my watch</button></div>
 <div id="toast"></div>
 <script>
@@ -147,6 +166,8 @@ function syncTime(manual){const z=Intl.DateTimeFormat().resolvedOptions().timeZo
 function lora(){const m=$('lmsg').value.trim();if(!m)return;post('/api/lora?msg='+encodeURIComponent(m)).then(()=>{$('lmsg').value='';toast('Transmitting on 868 MHz')})}
 function sos(){if(confirm('Broadcast an SOS beacon with your position?'))post('/api/lora?sos=1').then(()=>toast('SOS beacon sent'))}
 function notify(){post(`/api/notify?title=${encodeURIComponent($('nt').value||'Phone')}&msg=${encodeURIComponent($('nm').value)}`).then(()=>{toast('Delivered');$('nm').value=''})}
+function mediaCmd(c){post(`/api/media?cmd=${c}`).then(r=>r.json()).then(d=>{if(d.title)$('mtitle').textContent=d.title;toast('Media: '+c)}).catch(()=>toast('Media error'))}
+function syncCal(){const t=$('cal_t').value.trim(),l=$('cal_l').value.trim();if(!t)return toast('Titel fehlt');const now=Math.round(Date.now()/1000);fetch('/api/calendar',{method:'POST',body:JSON.stringify({events:[{title:t,loc:l,start:now,end:now+3600,allDay:false}]})}).then(()=>{toast('Termin synchronisiert!');$('cal_t').value='';$('cal_l').value=''})}
 function tick(){if(!S)return;const d=new Date((base+S.offset)*1000+(Date.now()-at)),p=n=>String(n).padStart(2,'0');
  $('clock').innerHTML=`${p(d.getUTCHours())}<b>:</b>${p(d.getUTCMinutes())}<b>:</b>${p(d.getUTCSeconds())}`}
 function render(){
@@ -237,6 +258,8 @@ bool CompanionServer::init() {
     server.on("/api/lora", HTTP_POST, handleApiLoraSend);
     server.on("/api/find", HTTP_POST, handleApiFind);
     server.on("/api/ailimits", HTTP_ANY, handleApiAiLimits);
+    server.on("/api/calendar", HTTP_ANY, handleApiCalendar);
+    server.on("/api/media", HTTP_ANY, handleApiMedia);
     server.on("/api/ota/status", HTTP_GET, handleApiOtaStatus);
     server.on("/api/ota/upload", HTTP_POST, [](){
         bool err = Update.hasError();
@@ -459,6 +482,74 @@ void CompanionServer::handleApiAiLimits() {
     j += "\"sync\":" + String(d.last_sync_time) + ",\"has_data\":" + (d.has_data ? "true" : "false");
     j += "}";
     server.sendHeader("Cache-Control", "no-store");
+    server.send(200, "application/json", j);
+}
+
+void CompanionServer::handleApiCalendar() {
+    if (server.method() == HTTP_POST) {
+        if (server.hasArg("plain")) {
+            BleCompanion::updateCalendarFromJson(server.arg("plain").c_str());
+            server.send(200, "application/json", "{\"status\":\"ok\"}");
+            return;
+        }
+        server.send(400, "application/json", "{\"error\":\"missing_body\"}");
+        return;
+    }
+    // GET
+    CalendarEvent events[12];
+    uint8_t n = BleCompanion::getUpcomingEvents(events, 12);
+    String j = "{\"events\":[";
+    for (uint8_t i = 0; i < n; i++) {
+        if (i > 0) j += ",";
+        j += "{\"title\":\"" + String(events[i].title) + "\",\"loc\":\"" + String(events[i].loc) + "\",";
+        j += "\"start\":" + String(events[i].startEpoch) + ",\"end\":" + String(events[i].endEpoch) + ",";
+        j += "\"allDay\":" + String(events[i].allDay ? "true" : "false") + "}";
+    }
+    j += "]}";
+    server.send(200, "application/json", j);
+}
+
+void CompanionServer::handleApiMedia() {
+    if (server.method() == HTTP_POST) {
+        String cmd = server.hasArg("cmd") ? server.arg("cmd") : "";
+        if (cmd == "play_pause") {
+            const MediaState& ms = BleCompanion::getMediaState();
+            BleCompanion::setMediaState(!ms.isPlaying, ms.title, ms.artist, ms.volumePct);
+            BleCompanion::sendMediaCommand("CMD:MEDIA:PLAY_PAUSE");
+        } else if (cmd == "next") {
+            BleCompanion::sendMediaCommand("CMD:MEDIA:NEXT");
+        } else if (cmd == "prev") {
+            BleCompanion::sendMediaCommand("CMD:MEDIA:PREV");
+        } else if (cmd == "vol_up") {
+            BleCompanion::sendMediaCommand("CMD:MEDIA:VOL_UP");
+            const MediaState& ms = BleCompanion::getMediaState();
+            uint8_t nv = ms.volumePct < 95 ? ms.volumePct + 5 : 100;
+            BleCompanion::setMediaState(ms.isPlaying, ms.title, ms.artist, nv);
+        } else if (cmd == "vol_down") {
+            BleCompanion::sendMediaCommand("CMD:MEDIA:VOL_DOWN");
+            const MediaState& ms = BleCompanion::getMediaState();
+            uint8_t nv = ms.volumePct > 5 ? ms.volumePct - 5 : 0;
+            BleCompanion::setMediaState(ms.isPlaying, ms.title, ms.artist, nv);
+        }
+
+        if (server.hasArg("title") || server.hasArg("artist")) {
+            const MediaState& ms = BleCompanion::getMediaState();
+            String t = server.hasArg("title") ? server.arg("title") : ms.title;
+            String a = server.hasArg("artist") ? server.arg("artist") : ms.artist;
+            uint8_t vol = server.hasArg("vol") ? server.arg("vol").toInt() : ms.volumePct;
+            bool play = server.hasArg("play") ? (server.arg("play") == "1" || server.arg("play") == "true") : ms.isPlaying;
+            BleCompanion::setMediaState(play, t.c_str(), a.c_str(), vol);
+        }
+        nav::markDirty(nav::PG_APP_MEDIA);
+        server.send(200, "application/json", "{\"status\":\"ok\"}");
+        return;
+    }
+    // GET
+    const MediaState& ms = BleCompanion::getMediaState();
+    String j = "{\"isPlaying\":" + String(ms.isPlaying ? "true" : "false") + ",";
+    j += "\"title\":\"" + String(ms.title) + "\",";
+    j += "\"artist\":\"" + String(ms.artist) + "\",";
+    j += "\"volume\":" + String(ms.volumePct) + "}";
     server.send(200, "application/json", j);
 }
 

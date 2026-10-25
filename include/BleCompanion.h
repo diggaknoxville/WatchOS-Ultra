@@ -35,8 +35,9 @@ public:
     static const MediaState& getMediaState();
     static void setMediaState(bool isPlaying, const char* title, const char* artist, uint8_t volumePct = 50);
 
-    // Synced Google Calendar Events from Phone
+    // Synced Google Calendar Events from Phone (BLE or WiFi)
     static uint8_t getUpcomingEvents(CalendarEvent* out, uint8_t maxOut);
     static bool hasCalendarEvents();
     static void triggerCalendarSync();
+    static void updateCalendarFromJson(const char* json);
 };

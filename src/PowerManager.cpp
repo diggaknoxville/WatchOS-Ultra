@@ -77,6 +77,7 @@ float PowerManager::cachedCurrent = 0.0f;
 float PowerManager::cachedTemp = 28.0f;
 
 bool PowerManager::init() {
+    pinMode(0, INPUT_PULLUP); // Left Action / Boot button (GPIO 0)
     if (!sI2cMutex) {
         sI2cMutex = xSemaphoreCreateRecursiveMutex();
     }
@@ -193,6 +194,48 @@ float PowerManager::getChargeCurrentMa() { return cachedCharging ? 300.0f : 0.0f
 float PowerManager::getTempCelsius() { return cachedTemp; }
 
 void PowerManager::loop(unsigned long currentMillis) {
+    // Software debouncing & gesture detection for GPIO 0 (Action/Boot button on left side)
+    static int sLastBtnState = HIGH;
+    static uint32_t sBtnDownMs = 0;
+    static uint32_t sBtnUpMs = 0;
+    static uint8_t sClickCount = 0;
+    static bool sLongReported = false;
+
+    int raw = digitalRead(0);
+    if (raw == LOW && sLastBtnState == HIGH) {
+        // Pressed
+        sBtnDownMs = currentMillis;
+        sLongReported = false;
+        PowerManager::handleActivity();
+    } else if (raw == LOW && sLastBtnState == LOW) {
+        // Holding down
+        if (!sLongReported && (currentMillis - sBtnDownMs >= 1000)) {
+            sLongReported = true;
+            sKeyEvent = 5; // Long press Action button
+            sClickCount = 0;
+            PowerManager::handleActivity();
+        }
+    } else if (raw == HIGH && sLastBtnState == LOW) {
+        // Released
+        if (!sLongReported) {
+            uint32_t dur = currentMillis - sBtnDownMs;
+            if (dur >= 30 && dur < 900) {
+                sClickCount++;
+                sBtnUpMs = currentMillis;
+            }
+        }
+    }
+    sLastBtnState = raw;
+
+    if (sClickCount > 0 && (currentMillis - sBtnUpMs >= 240)) {
+        if (sClickCount == 1) {
+            sKeyEvent = 3; // Action button single click
+        } else if (sClickCount >= 2) {
+            sKeyEvent = 4; // Action button double click
+        }
+        sClickCount = 0;
+    }
+
     if (lockI2C(30)) {
         instance.loop();                       // PMU / RTC / sensor interrupts -> events
         if (currentMillis - lastTelemetryUpdate > 1000) {

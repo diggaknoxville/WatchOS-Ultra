@@ -629,4 +629,170 @@ void buildSettings(lv_obj_t* scr) {
     nav::registerPage(nav::PG_APP_SETTINGS, d);
 }
 
+// =============================================================================
+//  Media / YouTube Music App (Standalone full-screen player)
+// =============================================================================
+static lv_obj_t *sAppMediaTitle = nullptr;
+static lv_obj_t *sAppMediaArtist = nullptr;
+static lv_obj_t *sAppMediaPlayIcon = nullptr;
+static lv_obj_t *sAppMediaStatusPill = nullptr;
+static lv_obj_t *sAppMediaStatusTxt = nullptr;
+static lv_obj_t *sAppMediaVolBar = nullptr;
+static lv_obj_t *sAppMediaVolLbl = nullptr;
+
+static void refreshAppMedia(bool) {
+    const MediaState& ms = BleCompanion::getMediaState();
+    bool bleOk = BleCompanion::isConnected();
+    bool wifiOk = CompanionServer::isApActive();
+
+    if (sAppMediaTitle) setText(sAppMediaTitle, ms.title);
+    if (sAppMediaArtist) setText(sAppMediaArtist, ms.artist);
+    if (sAppMediaPlayIcon) setText(sAppMediaPlayIcon, ms.isPlaying ? ICO_PAUSE : ICO_PLAY_ARROW);
+
+    if (sAppMediaStatusPill && sAppMediaStatusTxt) {
+        if (bleOk) {
+            setBgColorIf(sAppMediaStatusPill, cOk());
+            setTextColorIf(sAppMediaStatusTxt, cOk());
+            setText(sAppMediaStatusTxt, "BLE VERBUNDEN");
+        } else if (wifiOk) {
+            setBgColorIf(sAppMediaStatusPill, accent());
+            setTextColorIf(sAppMediaStatusTxt, accent());
+            setText(sAppMediaStatusTxt, "WLAN AP BEREIT");
+        } else {
+            setBgColorIf(sAppMediaStatusPill, cCrit());
+            setTextColorIf(sAppMediaStatusTxt, cCrit());
+            setText(sAppMediaStatusTxt, "NICHT GEKOPPELT");
+        }
+    }
+
+    if (sAppMediaVolBar) lv_bar_set_value(sAppMediaVolBar, ms.volumePct, LV_ANIM_OFF);
+    if (sAppMediaVolLbl) {
+        char vb[16];
+        snprintf(vb, sizeof(vb), "%u%%", ms.volumePct);
+        setText(sAppMediaVolLbl, vb);
+    }
+}
+
+void buildAppMedia(lv_obj_t* scr) {
+    lv_obj_t* p = pageRoot(scr);
+    title(p, "YOUTUBE");
+
+    // Status Pill
+    sAppMediaStatusPill = box(p, 138, 30);
+    lv_obj_align(sAppMediaStatusPill, LV_ALIGN_TOP_RIGHT, -M, 24);
+    lv_obj_set_style_radius(sAppMediaStatusPill, 15, 0);
+    lv_obj_set_style_bg_opa(sAppMediaStatusPill, LV_OPA_30, 0);
+    sAppMediaStatusTxt = caption(sAppMediaStatusPill, "BEREIT", cText2());
+    lv_obj_center(sAppMediaStatusTxt);
+
+    // Album Art & Metadata Card
+    lv_obj_t* cardMeta = card(p, CW, 175);
+    lv_obj_set_pos(cardMeta, M, 72);
+    lv_obj_set_style_radius(cardMeta, 24, 0);
+
+    lv_obj_t* artBox = box(cardMeta, 64, 64);
+    lv_obj_set_pos(artBox, 18, 18);
+    lv_obj_set_style_radius(artBox, 18, 0);
+    lv_obj_set_style_bg_color(artBox, lv_color_hex(0xFF0000), 0);
+    lv_obj_t* ytIco = label(artBox, F.icoM, lv_color_hex(0xFFFFFF), ICO_PLAY_ARROW);
+    lv_obj_center(ytIco);
+
+    sAppMediaTitle = label(cardMeta, F.body, cText(), "YouTube Music");
+    lv_obj_set_pos(sAppMediaTitle, 96, 20);
+    lv_label_set_long_mode(sAppMediaTitle, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    lv_obj_set_width(sAppMediaTitle, CW - 116);
+
+    sAppMediaArtist = caption(cardMeta, "Warte auf Smartphone...", cText2());
+    lv_obj_set_pos(sAppMediaArtist, 96, 52);
+    lv_obj_set_width(sAppMediaArtist, CW - 116);
+
+    // Volume readout inside meta card
+    lv_obj_t* volCap = caption(cardMeta, "Lautstärke", cText3());
+    lv_obj_set_pos(volCap, 18, 102);
+
+    sAppMediaVolBar = lv_bar_create(cardMeta);
+    lv_obj_set_size(sAppMediaVolBar, CW - 100, 10);
+    lv_obj_set_pos(sAppMediaVolBar, 18, 126);
+    lv_obj_set_style_radius(sAppMediaVolBar, 5, LV_PART_MAIN);
+    lv_obj_set_style_radius(sAppMediaVolBar, 5, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(sAppMediaVolBar, cStroke(), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(sAppMediaVolBar, lv_color_hex(0xFF3B30), LV_PART_INDICATOR);
+    lv_bar_set_range(sAppMediaVolBar, 0, 100);
+    lv_bar_set_value(sAppMediaVolBar, 50, LV_ANIM_OFF);
+
+    sAppMediaVolLbl = caption(cardMeta, "50%", cText2());
+    lv_obj_align(sAppMediaVolLbl, LV_ALIGN_TOP_RIGHT, -18, 122);
+
+    // Big Playback Controls (y = 265)
+    auto makeBtn = [&](int x, int y, int w, int h, const char* icon, bool isIco, uint32_t col, lv_event_cb_t cb) -> lv_obj_t* {
+        lv_obj_t* b = box(p, w, h);
+        lv_obj_set_pos(b, x, y);
+        lv_obj_set_style_radius(b, h / 2, 0);
+        lv_obj_set_style_bg_color(b, lv_color_hex(col), 0);
+        lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
+        lv_obj_add_flag(b, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_t* ic = label(b, isIco ? F.icoM : F.body, cText(), icon);
+        lv_obj_center(ic);
+        return b;
+    };
+
+    // Prev Track
+    makeBtn(M + 12, 268, 80, 80, ICO_CHEVRON_LEFT, true, 0x1C1C1E, [](lv_event_t*) {
+        BleCompanion::sendMediaCommand("CMD:MEDIA:PREV");
+        haptic(HAPTIC_TICK);
+    });
+
+    // Big Center Play/Pause Button (92x92)
+    lv_obj_t* playBtn = box(p, 96, 96);
+    lv_obj_set_pos(playBtn, (SCR_W - 96) / 2, 260);
+    lv_obj_set_style_radius(playBtn, 48, 0);
+    lv_obj_set_style_bg_color(playBtn, lv_color_hex(0xFF3B30), 0);
+    lv_obj_set_style_bg_opa(playBtn, LV_OPA_COVER, 0);
+    lv_obj_add_flag(playBtn, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(playBtn, [](lv_event_t*) {
+        BleCompanion::sendMediaCommand("CMD:MEDIA:PLAY_PAUSE");
+        const MediaState& ms = BleCompanion::getMediaState();
+        BleCompanion::setMediaState(!ms.isPlaying, ms.title, ms.artist, ms.volumePct);
+        haptic(HAPTIC_CLICK);
+        refreshAppMedia(true);
+    }, LV_EVENT_CLICKED, NULL);
+    sAppMediaPlayIcon = label(playBtn, F.icoL, lv_color_hex(0xFFFFFF), ICO_PLAY_ARROW);
+    lv_obj_center(sAppMediaPlayIcon);
+
+    // Next Track
+    makeBtn(SCR_W - M - 92, 268, 80, 80, ICO_SKIP_NEXT, true, 0x1C1C1E, [](lv_event_t*) {
+        BleCompanion::sendMediaCommand("CMD:MEDIA:NEXT");
+        haptic(HAPTIC_TICK);
+    });
+
+    // Volume Stepper Buttons (y = 376)
+    makeBtn(M + 20, 380, 160, 52, "VOL  -", false, 0x1C1C1E, [](lv_event_t*) {
+        BleCompanion::sendMediaCommand("CMD:MEDIA:VOL_DOWN");
+        const MediaState& ms = BleCompanion::getMediaState();
+        uint8_t nv = ms.volumePct > 5 ? ms.volumePct - 5 : 0;
+        BleCompanion::setMediaState(ms.isPlaying, ms.title, ms.artist, nv);
+        haptic(HAPTIC_TICK);
+        refreshAppMedia(true);
+    });
+
+    makeBtn(SCR_W - M - 180, 380, 160, 52, "VOL  +", false, 0x1C1C1E, [](lv_event_t*) {
+        BleCompanion::sendMediaCommand("CMD:MEDIA:VOL_UP");
+        const MediaState& ms = BleCompanion::getMediaState();
+        uint8_t nv = ms.volumePct < 95 ? ms.volumePct + 5 : 100;
+        BleCompanion::setMediaState(ms.isPlaying, ms.title, ms.artist, nv);
+        haptic(HAPTIC_TICK);
+        refreshAppMedia(true);
+    });
+
+    refreshAppMedia(true);
+
+    nav::PageDef d;
+    d.root = p;
+    d.refresh = refreshAppMedia;
+    d.refreshMs = 500;
+    d.ttlMs = 15000;
+    nav::registerPage(nav::PG_APP_MEDIA, d);
+}
+
 }  // namespace pages

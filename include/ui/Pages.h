@@ -19,6 +19,7 @@ void buildStopwatch(lv_obj_t* scr);
 void buildPower(lv_obj_t* scr);
 void buildFaces(lv_obj_t* scr);
 void buildSettings(lv_obj_t* scr);
+void buildAppMedia(lv_obj_t* scr);
 
 // watch face helpers used by the engine
 void faceNext();

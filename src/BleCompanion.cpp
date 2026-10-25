@@ -84,9 +84,11 @@ class ServerCallbacks : public NimBLEServerCallbacks {
         sConnected = true;
         AiLimitsStore::setBleConnected(true);
         Serial.printf("[BLE] Client connected (connId=%u)\n", connInfo.getConnHandle());
+        pServer->updateConnParams(connInfo.getConnHandle(), 24, 40, 0, 400); // 30-50ms interval, 4s timeout
         nav::markDirty(nav::PG_AI_LIMITS);
         nav::markDirty(nav::PG_CONTROL);
         nav::markDirty(nav::PG_AGENDA);
+        nav::markDirty(nav::PG_APP_MEDIA);
 
         BleCompanion::triggerCalendarSync();
     }
@@ -187,6 +189,8 @@ static bool ensureStack() {
     Serial.println("[BLE] Initializing NimBLE stack...");
     NimBLEDevice::init(BLE_DEVICE_NAME);
     NimBLEDevice::setPower(ESP_PWR_LVL_P9);
+    NimBLEDevice::setSecurityAuth(true, true, true);
+    NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT);
 
     sServer = NimBLEDevice::createServer();
     sServer->setCallbacks(new ServerCallbacks());
@@ -338,4 +342,38 @@ uint8_t BleCompanion::getUpcomingEvents(CalendarEvent* out, uint8_t maxOut) {
 
 bool BleCompanion::hasCalendarEvents() {
     return sNumCalEvents > 0;
+}
+
+void BleCompanion::updateCalendarFromJson(const char* json) {
+    if (!json || !json[0]) return;
+    const char* p = strstr(json, "\"cal\"");
+    if (!p) p = strstr(json, "\"events\"");
+    if (!p) p = json;
+    p = strchr(p, '[');
+    if (!p) return;
+
+    portENTER_CRITICAL(&sCalMux);
+    sNumCalEvents = 0;
+    while ((p = strchr(p, '{')) != nullptr && sNumCalEvents < MAX_CAL_EVENTS) {
+        const char* endObj = strchr(p, '}');
+        if (!endObj) break;
+        CalendarEvent& ev = sCalendarEvents[sNumCalEvents++];
+        ev.title[0] = 0;
+        ev.loc[0] = 0;
+        parseJsonString(p, "t", ev.title, sizeof(ev.title));
+        if (!ev.title[0]) parseJsonString(p, "title", ev.title, sizeof(ev.title));
+        parseJsonString(p, "l", ev.loc, sizeof(ev.loc));
+        if (!ev.loc[0]) parseJsonString(p, "location", ev.loc, sizeof(ev.loc));
+        ev.startEpoch = parseJsonUint(p, "s", 0);
+        if (ev.startEpoch == 0) ev.startEpoch = parseJsonUint(p, "start", 0);
+        ev.endEpoch   = parseJsonUint(p, "e", 0);
+        if (ev.endEpoch == 0) ev.endEpoch = parseJsonUint(p, "end", 0);
+        ev.allDay     = (parseJsonUint(p, "a", 0) != 0);
+        p = endObj + 1;
+    }
+    portEXIT_CRITICAL(&sCalMux);
+    saveCalendarToNvs();
+    nav::markDirty(nav::PG_AGENDA);
+    DisplayEngine::showNotification("Kalender Sync", "Termine erfolgreich synchronisiert!", 2500, "calendar_month");
+    Serial.printf("[CALENDAR] Synced %u events via JSON\n", sNumCalEvents);
 }

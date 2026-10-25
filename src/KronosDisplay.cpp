@@ -86,20 +86,23 @@ KronosDisplay::Touch KronosDisplay::pollTouch() {
     if (instance.getTouched()) {
         int16_t px = 0, py = 0;
         uint8_t tp = 0;
-        if (PowerManager::lockI2C(15)) {
+        bool locked = PowerManager::lockI2C(25);
+        if (locked) {
             tp = instance.getPoint(&px, &py, 1);
             PowerManager::unlockI2C();
+            if (tp > 0) {
+                sLast.pressed = true;
+                sLast.x = px;
+                sLast.y = py;
+                sLastIrqMs = now;
+            } else {
+                sLast.pressed = false;            // evt=0x00 release frame from CST9217
+                sLastIrqMs = now;
+            }
         }
-        if (tp > 0) {
-            sLast.pressed = true;
-            sLast.x = px;
-            sLast.y = py;
-            sLastIrqMs = now;
-        } else {
-            sLast.pressed = false;            // evt=0x00 release frame from CST9217
-        }
+        // If I2C was busy, do NOT set pressed=false; retain previous state until lock is acquired!
         sLast.ms = now;
-    } else if (sLast.pressed && (now - sLastIrqMs > 450)) {
+    } else if (sLast.pressed && (now - sLastIrqMs > 350)) {
         // Safety fallback if release IRQ was ever missed
         sLast.pressed = false;
         sLast.ms = now;
@@ -155,6 +158,8 @@ bool KronosDisplay::begin() {
     lv_indev_set_type(sTouch, LV_INDEV_TYPE_POINTER);
     lv_indev_set_read_cb(sTouch, touchReadCb);
     lv_indev_set_display(sTouch, sDisp);
+    lv_indev_set_scroll_limit(sTouch, 8);
+    lv_indev_set_long_press_time(sTouch, 450);
 
     Serial.printf("[DISP] %ux%u, 2x %u-row strips in internal DMA RAM (%u KB), heap left %u KB\n",
                   W, H, stripRows, (unsigned)(2 * bytes / 1024),

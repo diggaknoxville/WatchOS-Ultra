@@ -556,6 +556,14 @@ static Gesture classify(bool horizontal, int dx, int dy, int x0, int y0, int* di
     switch (sMode) {
         case M_CAROUSEL:
             if (horizontal) {
+                // On PG_POSITION (Map), drag inside the map is reserved for smooth 2D panning!
+                // Only edge swipes (near bezels x0 < 36 or x0 > W - 36) or outside the map card switch pages.
+                if (sCur == PG_POSITION) {
+                    bool insideMap = (y0 >= 72 && y0 <= 72 + 242 && x0 >= 14 && x0 <= W - 14);
+                    if (insideMap && (x0 >= 36 && x0 <= W - 36)) {
+                        return G_NONE; // Pass directly to map canvas drag & drop!
+                    }
+                }
                 *dir = dx < 0 ? 1 : -1;
                 if (neighbour(sCur, *dir) == PG_COUNT) *dir = 0;   // rubber band
                 return G_PAGE;
@@ -618,7 +626,7 @@ static void trackGestures() {
         // finger lifted before any gesture ran: a quick flick still navigates
         if (sTracking && !sTriggered && sGestures && !sBusy && millis() - sT0 < 450) {
             int dx = sLx - sX0, dy = sLy - sY0;
-            if (abs(dx) > 22 || abs(dy) > 22) { sTriggered = true; flick(dx, dy); }
+            if (abs(dx) > 42 || abs(dy) > 42) { sTriggered = true; flick(dx, dy); }
         }
         sTracking = false;
         sTriggered = false;
