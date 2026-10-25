@@ -230,54 +230,76 @@ static float rubber(float raw) {
     return s * 90.0f * (1.0f - expf(-fabsf(raw) / 180.0f));
 }
 
+static float computeScenePos(const Scene& sc, float raw) {
+    float pos = 0;
+    switch (sc.g) {
+        case G_PAGE:
+            if (sc.dir == 0) pos = rubber(raw);
+            else {
+                pos = -sc.dir * raw;                        // progress towards the neighbour
+                if (pos < 0) pos = -rubber(-pos) * 0.5f;    // dragging back past the start
+                if (pos > W) pos = W;
+            }
+            break;
+        case G_SHEET_TOP_OPEN: case G_SHEET_BOT_CLOSE: case G_BACK:
+            pos = raw; break;
+        case G_SHEET_TOP_CLOSE: case G_SHEET_BOT_OPEN: case G_HOME:
+            pos = -raw; break;
+        default: break;
+    }
+    if (sc.g != G_PAGE || sc.dir != 0) pos = pos < 0 ? 0 : (pos > sc.full ? sc.full : pos);
+    return pos;
+}
+
 // Drive a gesture with the finger until release, then settle. Returns commit.
 static bool interactive(Scene& sc, bool horizontal, int x0, int y0) {
     struct Sample { uint32_t ms; float pos; } hist[8];
     int hn = 0;
-    float pos = 0, raw = 0;
+    // Seed history with touch-down (sT0, 0) and current finger position (sLx, sLy)
+    // so fast flicks that release within 1-2 scan frames still have accurate velocity!
+    hist[hn++] = {sT0, 0.0f};
+    float raw0 = horizontal ? (float)(sLx - x0) : (float)(sLy - y0);
+    float pos = computeScenePos(sc, raw0);
+    uint32_t now0 = millis();
+    if (now0 <= sT0) now0 = sT0 + 8;
+    hist[hn++] = {now0, pos};
+
+    float lastRenderedPos = -9999.0f;
     for (;;) {
         KronosDisplay::Touch t = KronosDisplay::pollTouch();
         if (!t.pressed) break;
-        raw = horizontal ? (float)(t.x - x0) : (float)(t.y - y0);
-        switch (sc.g) {
-            case G_PAGE:
-                if (sc.dir == 0) pos = rubber(raw);
-                else {
-                    pos = -sc.dir * raw;                        // progress towards the neighbour
-                    if (pos < 0) pos = -rubber(-pos) * 0.5f;    // dragging back past the start
-                    if (pos > W) pos = W;
-                }
-                break;
-            case G_SHEET_TOP_OPEN: case G_SHEET_BOT_CLOSE: case G_BACK:
-                pos = raw; break;
-            case G_SHEET_TOP_CLOSE: case G_SHEET_BOT_OPEN: case G_HOME:
-                pos = -raw; break;
-            default: break;
+        float raw = horizontal ? (float)(t.x - x0) : (float)(t.y - y0);
+        pos = computeScenePos(sc, raw);
+        if (fabsf(pos - hist[hn - 1].pos) >= 0.5f || (t.ms > hist[hn - 1].ms + 20)) {
+            if (hn == 8) { memmove(hist, hist + 1, sizeof(Sample) * 7); hn = 7; }
+            hist[hn++] = {t.ms > hist[hn - 1].ms ? t.ms : millis(), pos};
         }
-        if (sc.g != G_PAGE || sc.dir != 0) pos = pos < 0 ? 0 : (pos > sc.full ? sc.full : pos);
-        if (hn == 8) { memmove(hist, hist + 1, sizeof(Sample) * 7); hn = 7; }
-        hist[hn++] = {t.ms, pos};
-        frame(sc, pos);
+        if (fabsf(pos - lastRenderedPos) >= 1.0f) {
+            lastRenderedPos = pos;
+            frame(sc, pos);
+        } else {
+            delay(1);
+        }
     }
     // Release velocity: peak of the recent segment velocities. Averaging would
     // under-estimate flicks because the finger decelerates while lifting off.
     float vel = 0;
     for (int k = hn - 1; k > 0; k--) {
         uint32_t age = hist[hn - 1].ms - hist[k].ms;
-        if (age > 100) break;
+        if (age > 120) break;
         int j = k - 1;
-        while (j > 0 && hist[k].ms - hist[j].ms < 8) j--;           // >= 8 ms segments
+        while (j > 0 && hist[k].ms - hist[j].ms < 6) j--;
         uint32_t dt = hist[k].ms - hist[j].ms;
-        if (dt == 0) continue;
+        if (dt == 0) dt = 8;
         float v = (hist[k].pos - hist[j].pos) * 1000.0f / dt;
         if (fabsf(v) > fabsf(vel)) vel = v;
     }
-    // iOS-like commit: 30 % of the way, or a flick in the right direction
+    // iOS-like commit: 22 % of the way, or a flick in the right direction
     bool commit = false;
     if (!(sc.g == G_PAGE && sc.dir == 0)) {
         float projected = pos + vel * PROJECTION_S;
-        if (vel < -300.0f) commit = false;                            // flicked back
-        else commit = pos > sc.full * 0.30f || (vel > 300.0f && pos > 6.0f) || projected > sc.full * 0.5f;
+        if (vel < -350.0f) commit = false;                            // flicked back
+        else commit = pos > sc.full * 0.22f || (vel > 180.0f && pos > 5.0f) || projected > sc.full * 0.38f;
     }
     settle(sc, pos, vel, commit ? sc.full : 0);
     return commit;
@@ -291,7 +313,23 @@ static void finishPage(PageId to, const Surface* glass) {
 
 static bool prepareGlass() {
     instance.waitPushComplete();
-    return Compositor::captureMirror(sGlass);
+    bool ok = Compositor::captureMirror(sGlass);
+    // Keep the cached surface of the page we are leaving 100% up-to-date in PSRAM
+    if (ok && sCur < PG_COUNT && sGlass.valid && sGlass.words > 0) {
+        Surface& dst = sSurf[sCur];
+        if (dst.words < sGlass.words) {
+            if (dst.data) heap_caps_free(dst.data);
+            dst.data = (uint16_t*)heap_caps_malloc(sGlass.words * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+            dst.words = dst.data ? sGlass.words : 0;
+        }
+        if (dst.data) {
+            memcpy(dst.data, sGlass.data, sGlass.words * sizeof(uint16_t));
+            dst.valid = true;
+            dst.renderedAt = millis();
+            sDirty[sCur] = false;
+        }
+    }
+    return ok;
 }
 
 // Take the touch away from LVGL: the pressed widget gets INDEV_RESET (no click)
@@ -373,10 +411,13 @@ static void animate(Scene& sc) {
     statsReport("animation", 0);
 }
 
-void go(PageId id) {
+static void doOpenApp(PageId id);
+static void doHome();
+
+static void doGo(PageId id) {
     if (!registered(id) || sBusy || id == sCur) return;
     if (id == PG_CONTROL || id == PG_NOTIFS) {
-        if (sCur != PG_FACE) home();
+        if (sCur != PG_FACE) doHome();
         sBusy = true;
         prepareGlass();
         ensureSurface(id);
@@ -388,7 +429,7 @@ void go(PageId id) {
         sBusy = false;
         return;
     }
-    if (!isCarousel(id)) { openApp(id); return; }
+    if (!isCarousel(id)) { doOpenApp(id); return; }
     if (sMode != M_CAROUSEL) {                               // leave sheets/apps first
         sDepth = 0;
         sBusy = true;
@@ -410,7 +451,7 @@ void go(PageId id) {
     sBusy = false;
 }
 
-void openApp(PageId id) {
+static void doOpenApp(PageId id) {
     if (!registered(id) || sBusy) return;
     sBusy = true;
     prepareGlass();
@@ -424,7 +465,7 @@ void openApp(PageId id) {
     sBusy = false;
 }
 
-void back() {
+static void doBack() {
     if (sBusy) return;
     if (sMode == M_SHEET_TOP || sMode == M_SHEET_BOTTOM) {
         sBusy = true;
@@ -448,9 +489,9 @@ void back() {
     }
 }
 
-void home() {
+static void doHome() {
     if (sBusy || sCur == PG_FACE) return;
-    if (sMode == M_CAROUSEL) { go(PG_FACE); return; }
+    if (sMode == M_CAROUSEL) { doGo(PG_FACE); return; }
     sBusy = true;
     prepareGlass();
     ensureSurface(PG_FACE);
@@ -461,10 +502,46 @@ void home() {
     sBusy = false;
 }
 
-void sideKey(bool longPress) {
-    if (longPress) { openApp(PG_APP_POWER); return; }
-    if (sCur == PG_FACE) go(PG_LAUNCHER);
-    else home();
+static void doSideKey(bool longPress) {
+    if (longPress) { doOpenApp(PG_APP_POWER); return; }
+    if (sCur == PG_FACE) doGo(PG_LAUNCHER);
+    else doHome();
+}
+
+// Defer programmatic navigation calls so they never run re-entrantly inside
+// an LVGL event callback (e.g. LV_EVENT_CLICKED inside lv_timer_handler).
+enum PendingAction : uint8_t {
+    ACT_NONE = 0,
+    ACT_GO,
+    ACT_OPEN_APP,
+    ACT_BACK,
+    ACT_HOME,
+    ACT_SIDE_SHORT,
+    ACT_SIDE_LONG
+};
+static volatile PendingAction sPendingAction = ACT_NONE;
+static volatile PageId sPendingPage = PG_FACE;
+
+void go(PageId id)            { sPendingPage = id; sPendingAction = ACT_GO; }
+void openApp(PageId id)       { sPendingPage = id; sPendingAction = ACT_OPEN_APP; }
+void back()                   { sPendingAction = ACT_BACK; }
+void home()                   { sPendingAction = ACT_HOME; }
+void sideKey(bool longPress)  { sPendingAction = longPress ? ACT_SIDE_LONG : ACT_SIDE_SHORT; }
+
+static void flushPendingAction() {
+    if (sBusy || sPendingAction == ACT_NONE) return;
+    PendingAction act = sPendingAction;
+    PageId page = sPendingPage;
+    sPendingAction = ACT_NONE;
+    switch (act) {
+        case ACT_GO:         doGo(page); break;
+        case ACT_OPEN_APP:   doOpenApp(page); break;
+        case ACT_BACK:       doBack(); break;
+        case ACT_HOME:       doHome(); break;
+        case ACT_SIDE_SHORT: doSideKey(false); break;
+        case ACT_SIDE_LONG:  doSideKey(true); break;
+        default: break;
+    }
 }
 
 // ------------------------------------------------------------------ gestures
@@ -505,13 +582,13 @@ static void flick(int dx, int dy) {
     int dir;
     Gesture g = classify(horizontal, dx, dy, sX0, sY0, &dir);
     switch (g) {
-        case G_PAGE:            if (dir) go(neighbour(sCur, dir)); break;
-        case G_SHEET_TOP_OPEN:  go(PG_CONTROL); break;
-        case G_SHEET_BOT_OPEN:  go(PG_NOTIFS); break;
+        case G_PAGE:            if (dir) doGo(neighbour(sCur, dir)); break;
+        case G_SHEET_TOP_OPEN:  doGo(PG_CONTROL); break;
+        case G_SHEET_BOT_OPEN:  doGo(PG_NOTIFS); break;
         case G_SHEET_TOP_CLOSE:
         case G_SHEET_BOT_CLOSE:
-        case G_BACK:            back(); break;
-        case G_HOME:            home(); break;
+        case G_BACK:            doBack(); break;
+        case G_HOME:            doHome(); break;
         default: break;
     }
 }
@@ -575,16 +652,13 @@ static void trackGestures() {
 static void prerender(uint32_t now) {
     if (sBusy || KronosDisplay::lastTouch().pressed) return;
     if (Compositor::renderBusy()) {
-        for (int step = 0; step < 3; step++) {
-            if (Compositor::renderStep()) {
-                sDirty[sJobPage] = false;
-                sJobPage = PG_COUNT;
-                break;
-            }
+        if (Compositor::renderStep()) {
+            sDirty[sJobPage] = false;
+            sJobPage = PG_COUNT;
         }
         return;
     }
-    if (now - sLastTouchMs < 20 || now - sLastPrerender < 15) return;
+    if (now - sLastTouchMs < 120 || now - sLastPrerender < 20) return;
     PageId want[6];
     int n = 0;
     if (sMode == M_CAROUSEL) {
@@ -610,11 +684,9 @@ static void prerender(uint32_t now) {
 void registerPage(PageId id, const PageDef& def) {
     if (id >= PG_COUNT) return;
     sPages[id] = def;
-    // Keep carousel surfaces warm in PSRAM for instant back-to-back swiping;
-    // pages still re-render immediately whenever markDirty() is called.
-    if (isCarousel(id) && sPages[id].ttlMs > 0 && sPages[id].ttlMs < 60000) {
-        sPages[id].ttlMs = 60000;
-    }
+    // Keep all page surfaces permanently cached in PSRAM unless explicitly
+    // invalidated via markDirty() or updated when leaving the active page.
+    sPages[id].ttlMs = 0;
     sDirty[id] = true;
 }
 
@@ -628,7 +700,9 @@ void begin(PageId initial) {
 }
 
 void update(uint32_t now) {
+    flushPendingAction();
     trackGestures();
+    flushPendingAction();
     const PageDef& p = sPages[sCur];
     if (registered(sCur) && p.refresh && (p.refreshMs == 0 || now - sLastRefresh[sCur] >= p.refreshMs)) {
         p.refresh(false);

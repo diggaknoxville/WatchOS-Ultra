@@ -58,8 +58,9 @@ void KronosDisplay::injectSwipe(int x0, int y0, int x1, int y1, uint32_t ms) {
 }
 
 KronosDisplay::Touch KronosDisplay::pollTouch() {
+    uint32_t now = millis();
     if (sSynth) {
-        uint32_t t = millis() - sSt0;
+        uint32_t t = now - sSt0;
         if (t <= sSdur) {
             float p = (float)t / sSdur;
             sLast.pressed = true;
@@ -69,18 +70,36 @@ KronosDisplay::Touch KronosDisplay::pollTouch() {
             sLast.pressed = false;
             sSynth = false;
         }
-        sLast.ms = millis();
+        sLast.ms = now;
         return sLast;
     }
-    int16_t px, py;
-    if (instance.getPoint(&px, &py, 1)) {
-        sLast.pressed = true;
-        sLast.x = px;
-        sLast.y = py;
-    } else {
-        sLast.pressed = false;                // keep the last coordinates for release handling
+
+    // CST9217 sends a TP_INT falling edge for each new scan frame (~70 Hz while
+    // pressed) and one final TP_INT falling edge with evt=0x00 on finger release.
+    // Polling touch.getPoint() when TP_INT has not fired reads an already-ACKed
+    // buffer (0xAB) and falsely returns 0. Only read I2C when TP_INT fired!
+    static uint32_t sLastIrqMs = 0;
+    if (instance.getTouched()) {
+        int16_t px = 0, py = 0;
+        uint8_t tp = 0;
+        if (PowerManager::lockI2C(15)) {
+            tp = instance.getPoint(&px, &py, 1);
+            PowerManager::unlockI2C();
+        }
+        if (tp > 0) {
+            sLast.pressed = true;
+            sLast.x = px;
+            sLast.y = py;
+            sLastIrqMs = now;
+        } else {
+            sLast.pressed = false;            // evt=0x00 release frame from CST9217
+        }
+        sLast.ms = now;
+    } else if (sLast.pressed && (now - sLastIrqMs > 450)) {
+        // Safety fallback if release IRQ was ever missed
+        sLast.pressed = false;
+        sLast.ms = now;
     }
-    sLast.ms = millis();
     return sLast;
 }
 

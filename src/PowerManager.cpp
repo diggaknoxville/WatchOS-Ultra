@@ -9,6 +9,16 @@
 static volatile int sKeyEvent = 0;
 static volatile uint8_t sTargetBrightness = 220;
 static uint8_t sAppliedHwBrightness = 0xFF;
+static SemaphoreHandle_t sI2cMutex = nullptr;
+
+bool PowerManager::lockI2C(uint32_t timeoutMs) {
+    if (!sI2cMutex) return true;
+    return xSemaphoreTakeRecursive(sI2cMutex, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
+}
+
+void PowerManager::unlockI2C() {
+    if (sI2cMutex) xSemaphoreGiveRecursive(sI2cMutex);
+}
 
 static uint8_t toHardwareBrightness(uint8_t uiLevel) {
     if (uiLevel == 0) return 0;
@@ -66,6 +76,9 @@ float PowerManager::cachedCurrent = 0.0f;
 float PowerManager::cachedTemp = 28.0f;
 
 bool PowerManager::init() {
+    if (!sI2cMutex) {
+        sI2cMutex = xSemaphoreCreateRecursiveMutex();
+    }
     // On the T-Watch Ultra the AXP2101 PMU, power rails, charger and the display
     // backlight are all brought up by LilyGoLib's instance.begin() (called in
     // setup() before this). Configure safe VBUS/system limits and disable unused rails.
@@ -177,10 +190,13 @@ float PowerManager::getChargeCurrentMa() { return cachedCharging ? 300.0f : 0.0f
 float PowerManager::getTempCelsius() { return cachedTemp; }
 
 void PowerManager::loop(unsigned long currentMillis) {
-    instance.loop();                       // PMU / RTC / sensor interrupts -> events
-    if (currentMillis - lastTelemetryUpdate > 1000) {
-        lastTelemetryUpdate = currentMillis;
-        updateTelemetry();
+    if (lockI2C(30)) {
+        instance.loop();                       // PMU / RTC / sensor interrupts -> events
+        if (currentMillis - lastTelemetryUpdate > 1000) {
+            lastTelemetryUpdate = currentMillis;
+            updateTelemetry();
+        }
+        unlockI2C();
     }
 
     // Auto Power State transitions

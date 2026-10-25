@@ -25,6 +25,25 @@ static uint32_t lastSensorCount = 0;
 static volatile uint32_t pendingCount = 0;
 static volatile bool countUpdated = false;
 static volatile bool wristEvent = false;
+static volatile int sPendingHaptic = -1;
+
+static void playHapticOnI2c(HapticPattern pattern) {
+    if (!drvReady || !SettingsStorage::get().hapticEnabled) return;
+    if (!PowerManager::lockI2C(15)) return;
+    instance.drv.selectLibrary(1);
+    instance.drv.setMode(SensorDRV2605::MODE_INTTRIG);
+    switch (pattern) {
+        case HAPTIC_TICK:         instance.drv.setWaveform(0, 14); instance.drv.setWaveform(1, 0); break;
+        case HAPTIC_CLICK:        instance.drv.setWaveform(0, 1);  instance.drv.setWaveform(1, 0); break;
+        case HAPTIC_DOUBLE_CLICK: instance.drv.setWaveform(0, 1);  instance.drv.setWaveform(1, 10); instance.drv.setWaveform(2, 0); break;
+        case HAPTIC_ALERT_SHORT:  instance.drv.setWaveform(0, 58); instance.drv.setWaveform(1, 0); break;
+        case HAPTIC_ALERT_LONG:   instance.drv.setWaveform(0, 47); instance.drv.setWaveform(1, 0); break;
+        case HAPTIC_SUCCESS:      instance.drv.setWaveform(0, 14); instance.drv.setWaveform(1, 15); instance.drv.setWaveform(2, 0); break;
+        case HAPTIC_HEARTBEAT:    instance.drv.setWaveform(0, 82); instance.drv.setWaveform(1, 0); break;
+    }
+    instance.drv.run();
+    PowerManager::unlockI2C();
+}
 
 static void persist() {
     Preferences p;
@@ -106,9 +125,18 @@ bool MotionHaptic::init() {
 }
 
 void MotionHaptic::updateMotion(unsigned long now) {
+    int hp = sPendingHaptic;
+    if (hp >= 0) {
+        sPendingHaptic = -1;
+        playHapticOnI2c((HapticPattern)hp);
+    }
+
     if (sensorOnline && now - lastPoll >= 40) {
         lastPoll = now;
-        instance.sensor.update();                  // drains the hub FIFO -> callbacks
+        if (PowerManager::lockI2C(15)) {
+            instance.sensor.update();              // drains the hub FIFO -> callbacks
+            PowerManager::unlockI2C();
+        }
     }
 
     rolloverIfNeeded();
@@ -147,18 +175,8 @@ void MotionHaptic::updateMotion(unsigned long now) {
 
 void MotionHaptic::triggerHaptic(HapticPattern pattern) {
     if (!drvReady || !SettingsStorage::get().hapticEnabled) return;
-    instance.drv.selectLibrary(1);
-    instance.drv.setMode(SensorDRV2605::MODE_INTTRIG);
-    switch (pattern) {
-        case HAPTIC_TICK:         instance.drv.setWaveform(0, 14); instance.drv.setWaveform(1, 0); break;
-        case HAPTIC_CLICK:        instance.drv.setWaveform(0, 1);  instance.drv.setWaveform(1, 0); break;
-        case HAPTIC_DOUBLE_CLICK: instance.drv.setWaveform(0, 1);  instance.drv.setWaveform(1, 10); instance.drv.setWaveform(2, 0); break;
-        case HAPTIC_ALERT_SHORT:  instance.drv.setWaveform(0, 58); instance.drv.setWaveform(1, 0); break;
-        case HAPTIC_ALERT_LONG:   instance.drv.setWaveform(0, 47); instance.drv.setWaveform(1, 0); break;
-        case HAPTIC_SUCCESS:      instance.drv.setWaveform(0, 14); instance.drv.setWaveform(1, 15); instance.drv.setWaveform(2, 0); break;
-        case HAPTIC_HEARTBEAT:    instance.drv.setWaveform(0, 82); instance.drv.setWaveform(1, 0); break;
-    }
-    instance.drv.run();
+    // Queue haptic pattern for Core 0 so UI thread (Core 1) never touches I2C Wire
+    sPendingHaptic = (int)pattern;
 }
 
 void MotionHaptic::getAccel(float &ax, float &ay, float &az) { ax = 0; ay = 0; az = 1; }

@@ -625,8 +625,9 @@ private:
      */
     bool initPMU(bool batteryCalibration = false);
 
-
+public:
     static EventGroupHandle_t _event;
+private:
     uint8_t _effects;
     uint32_t devices_probe;
     uint8_t *_boot_images_addr;

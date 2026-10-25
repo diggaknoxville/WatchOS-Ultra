@@ -44,7 +44,7 @@ void esp_enable_slow_crystal()
     }
 }
 
-void setGroupBitsFromISR(EventGroupHandle_t xEventGroup,
+void IRAM_ATTR setGroupBitsFromISR(EventGroupHandle_t xEventGroup,
                          const EventBits_t uxBitsToSet)
 {
     BaseType_t xHigherPriorityTaskWoken, xResult;

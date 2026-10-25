@@ -77,6 +77,7 @@ static void onToggle(lv_event_t* e) {
         case 0:
             s.wifiApEnabled = !s.wifiApEnabled;
             CompanionServer::requestAp(s.wifiApEnabled);
+            nav::markDirty(nav::PG_APP_CONNECT);
             DisplayEngine::showNotification(s.wifiApEnabled ? "WiFi AP an" : "WiFi AP aus",
                                             s.wifiApEnabled ? "192.168.4.1 (vortex2026)" : "WLAN abgeschaltet (Stromsparen)",
                                             2500, ICO_WIFI);
@@ -84,6 +85,7 @@ static void onToggle(lv_event_t* e) {
         case 1: {
             bool en = !BleCompanion::isEnabled();
             BleCompanion::setEnabled(en);
+            nav::markDirty(nav::PG_APP_CONNECT);
             DisplayEngine::showNotification(en ? "Bluetooth an" : "Bluetooth aus",
                                             en ? "BLE Companion aktiv" : "BLE abgeschaltet (Stromsparen)",
                                             2500, ICO_SMARTPHONE);
@@ -92,6 +94,7 @@ static void onToggle(lv_event_t* e) {
         case 2: {
             bool en = !GpsManager::isEnabled();
             GpsManager::setEnabled(en);
+            nav::markDirty(nav::PG_POSITION);
             DisplayEngine::showNotification(en ? "GPS an" : "GPS aus",
                                             en ? "Satellitensuche aktiv" : "GNSS abgeschaltet (Stromsparen)",
                                             2500, ICO_SATELLITE_ALT);
@@ -100,6 +103,7 @@ static void onToggle(lv_event_t* e) {
         case 3: {
             bool en = !RadioLoRa::isEnabled();
             RadioLoRa::setEnabled(en);
+            nav::markDirty(nav::PG_LORA);
             DisplayEngine::showNotification(en ? "LoRa an" : "LoRa aus",
                                             en ? "SX1262 868 MHz Empfang aktiv" : "LoRa Funk im Deep-Sleep",
                                             2500, ICO_PODCASTS);

@@ -38,8 +38,6 @@ static void onApp(lv_event_t* e) {
     if (a.action == 1) { DisplayEngine::setTorch(true); return; }
     if (!nav::isCarousel(a.page) && a.page != nav::PG_NOTIFS && a.page != nav::PG_CONTROL) {
         nav::openApp(a.page);
-        if (nav::current() != a.page)
-            DisplayEngine::showNotification(a.name, "Coming in the next update", 2500);
         return;
     }
     nav::go(a.page);

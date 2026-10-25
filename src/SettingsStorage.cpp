@@ -3,6 +3,9 @@
 
 Preferences SettingsStorage::prefs;
 SystemSettings SettingsStorage::settings;
+static SystemSettings sCommitted;
+static volatile bool sDirty = false;
+static volatile unsigned long sDirtyAt = 0;
 
 void SettingsStorage::init() {
     esp_err_t err = nvs_flash_init();
@@ -35,6 +38,7 @@ void SettingsStorage::init() {
         String title = prefs.getString("title", "KRONOS ULTRA");
         strncpy(settings.customTitle, title.c_str(), sizeof(settings.customTitle) - 1);
         settings.customTitle[sizeof(settings.customTitle) - 1] = '\0';
+        sCommitted = settings;
     }
 }
 
@@ -43,26 +47,41 @@ SystemSettings& SettingsStorage::get() {
 }
 
 void SettingsStorage::save() {
-    prefs.putUChar("wf_idx", settings.watchfaceIndex);
-    prefs.putUShort("accent", settings.accentColor);
-    prefs.putUChar("bright", settings.brightness);
-    prefs.putUShort("sleep_s", settings.autoSleepSec);
-    prefs.putBool("wrist_wake", settings.wristWakeEnabled);
-    prefs.putBool("haptic", settings.hapticEnabled);
-    prefs.putBool("aod", settings.aodEnabled);
-    prefs.putBool("sound", settings.soundEnabled);
-    prefs.putBool("wifi_ap", settings.wifiApEnabled);
-    prefs.putBool("ble_en", settings.bleEnabled);
-    prefs.putBool("gps_en", settings.gpsEnabled);
-    prefs.putBool("lora_en", settings.loraEnabled);
-    prefs.putBool("lora_bcn", settings.loraBeaconEnabled);
-    prefs.putInt("tz_sec", settings.timezoneOffsetSec);
-    prefs.putUInt("step_goal", settings.dailyStepGoal);
-    prefs.putString("title", settings.customTitle);
-    prefs.putString("tz_posix", settings.tzPosix);
+    // Non-blocking on UI thread: schedule background diff-flush on Core 0
+    sDirty = true;
+    sDirtyAt = millis();
+}
+
+void SettingsStorage::flushNow() {
+    sDirty = false;
+    if (settings.watchfaceIndex != sCommitted.watchfaceIndex) prefs.putUChar("wf_idx", settings.watchfaceIndex);
+    if (settings.accentColor != sCommitted.accentColor)       prefs.putUShort("accent", settings.accentColor);
+    if (settings.brightness != sCommitted.brightness)         prefs.putUChar("bright", settings.brightness);
+    if (settings.autoSleepSec != sCommitted.autoSleepSec)     prefs.putUShort("sleep_s", settings.autoSleepSec);
+    if (settings.wristWakeEnabled != sCommitted.wristWakeEnabled) prefs.putBool("wrist_wake", settings.wristWakeEnabled);
+    if (settings.hapticEnabled != sCommitted.hapticEnabled)   prefs.putBool("haptic", settings.hapticEnabled);
+    if (settings.aodEnabled != sCommitted.aodEnabled)         prefs.putBool("aod", settings.aodEnabled);
+    if (settings.soundEnabled != sCommitted.soundEnabled)     prefs.putBool("sound", settings.soundEnabled);
+    if (settings.wifiApEnabled != sCommitted.wifiApEnabled)   prefs.putBool("wifi_ap", settings.wifiApEnabled);
+    if (settings.bleEnabled != sCommitted.bleEnabled)         prefs.putBool("ble_en", settings.bleEnabled);
+    if (settings.gpsEnabled != sCommitted.gpsEnabled)         prefs.putBool("gps_en", settings.gpsEnabled);
+    if (settings.loraEnabled != sCommitted.loraEnabled)       prefs.putBool("lora_en", settings.loraEnabled);
+    if (settings.loraBeaconEnabled != sCommitted.loraBeaconEnabled) prefs.putBool("lora_bcn", settings.loraBeaconEnabled);
+    if (settings.timezoneOffsetSec != sCommitted.timezoneOffsetSec) prefs.putInt("tz_sec", settings.timezoneOffsetSec);
+    if (settings.dailyStepGoal != sCommitted.dailyStepGoal)   prefs.putUInt("step_goal", settings.dailyStepGoal);
+    if (strcmp(settings.customTitle, sCommitted.customTitle) != 0) prefs.putString("title", settings.customTitle);
+    if (strcmp(settings.tzPosix, sCommitted.tzPosix) != 0)    prefs.putString("tz_posix", settings.tzPosix);
+    sCommitted = settings;
+}
+
+void SettingsStorage::loop(unsigned long now) {
+    if (sDirty && (now - sDirtyAt >= 400)) {
+        flushNow();
+    }
 }
 
 void SettingsStorage::resetDefaults() {
+    memset(&sCommitted, 0xFF, sizeof(sCommitted));
     settings.watchfaceIndex = FACE_MODULAR;
     settings.accentColor = THEME_CYBER_CYAN;
     settings.brightness = 220;
@@ -82,7 +101,7 @@ void SettingsStorage::resetDefaults() {
     strncpy(settings.tzPosix, "CET-1CEST,M3.5.0,M10.5.0/3", sizeof(settings.tzPosix));
 
     prefs.putBool("init_flag", true);
-    save();
+    flushNow();
 }
 
 uint32_t SettingsStorage::getLifetimeSteps() {

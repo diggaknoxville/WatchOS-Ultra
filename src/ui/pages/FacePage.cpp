@@ -1045,7 +1045,6 @@ static void showFace(int idx) {
     idx = ((idx % FACE_COUNT) + FACE_COUNT) % FACE_COUNT;
     if (idx == sShown) return;
     for (int i = 0; i < FACE_COUNT; i++) setHidden(sFaces[i], i != idx);
-    if (sShown >= 0) lv_obj_fade_in(sFaces[idx], 260, 0);
     sShown = idx;
     nav::markDirty(nav::PG_FACE);
 }

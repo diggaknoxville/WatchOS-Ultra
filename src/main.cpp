@@ -35,6 +35,7 @@ void backgroundTask(void* parameter) {
         MotionHaptic::updateMotion(now);
         GpsManager::loop(now);
         RadioLoRa::loop(now);
+        SettingsStorage::loop(now);
         RtcManager::periodicMaintenance();
         vTaskDelay(pdMS_TO_TICKS(10));
     }
@@ -101,8 +102,8 @@ void setup() {
     AudioEngine::playSoundFx(SFX_BOOT);
     MotionHaptic::triggerHaptic(HAPTIC_SUCCESS);
 
-    xTaskCreatePinnedToCore(uiTask, "UiCompositor", 16384, NULL, 2, &uiTaskHandle, 1);
-    xTaskCreatePinnedToCore(backgroundTask, "BgServices", 10240, NULL, 1, &bgTaskHandle, 0);
+    xTaskCreatePinnedToCore(uiTask, "UiCompositor", 24576, NULL, 2, &uiTaskHandle, 1);
+    xTaskCreatePinnedToCore(backgroundTask, "BgServices", 12288, NULL, 1, &bgTaskHandle, 0);
 
     Serial.println("[OS] Boot complete\n");
 }

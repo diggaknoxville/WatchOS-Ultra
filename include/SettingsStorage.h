@@ -7,6 +7,8 @@ public:
     static void init();
     static SystemSettings& get();
     static void save();
+    static void flushNow();
+    static void loop(unsigned long now);
     static void resetDefaults();
 
     // Specific persistent counters

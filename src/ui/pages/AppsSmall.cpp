@@ -135,7 +135,7 @@ void buildPower(lv_obj_t* scr) {
 
     lv_obj_t* rst = powerButton(p, 196, ICO_RESTART_ALT, "Restart", cSurf2(), cText());
     lv_obj_add_event_cb(rst, [](lv_event_t*) {
-        SettingsStorage::save();
+        SettingsStorage::flushNow();
         RtcManager::periodicMaintenance();
         delay(150);
         ESP.restart();
@@ -143,7 +143,7 @@ void buildPower(lv_obj_t* scr) {
 
     lv_obj_t* off = powerButton(p, 292, ICO_POWER_SETTINGS_NEW, "Hold to power off", cCrit(), cText());
     lv_obj_add_event_cb(off, [](lv_event_t*) {
-        SettingsStorage::save();
+        SettingsStorage::flushNow();
         haptic(HAPTIC_ALERT_LONG);
         delay(300);
         instance.pmu.shutdown();

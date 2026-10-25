@@ -1,5 +1,6 @@
 #include "GpsManager.h"
 #include "RtcManager.h"
+#include "PowerManager.h"
 #include "SettingsStorage.h"
 #include "ui/Navigator.h"
 #include <LilyGoLib.h>
@@ -38,7 +39,10 @@ static void persist() {
 
 static void power(bool on) {
     if (on == sPowered) return;
-    instance.powerControl(POWER_GPS, on);
+    if (PowerManager::lockI2C(30)) {
+        instance.powerControl(POWER_GPS, on);
+        PowerManager::unlockI2C();
+    }
     sPowered = on;
     if (on) sPowerOnAt = millis();
     Serial.printf("[GPS] power %s\n", on ? "ON" : "OFF");

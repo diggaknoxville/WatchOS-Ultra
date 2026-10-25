@@ -71,6 +71,11 @@ RfalNfcClass NFCReader(&nfc_hw);
 
 EventGroupHandle_t LilyGoUltra::_event = NULL;
 
+static void IRAM_ATTR onPmuIsr()    { setGroupBitsFromISR(LilyGoUltra::_event, HW_IRQ_POWER); }
+static void IRAM_ATTR onTpIsr()     { setGroupBitsFromISR(LilyGoUltra::_event, HW_IRQ_TOUCHPAD); }
+static void IRAM_ATTR onSensorIsr() { setGroupBitsFromISR(LilyGoUltra::_event, HW_IRQ_SENSOR); }
+static void IRAM_ATTR onRtcIsr()    { setGroupBitsFromISR(LilyGoUltra::_event, HW_IRQ_RTC); }
+
 static bool _lock_callback(void)
 {
     return instance.lockSPI();
@@ -351,10 +356,8 @@ uint8_t LilyGoUltra::getPoint(int16_t *x_array, int16_t *y_array, uint8_t get_po
 {
     EventBits_t bits = xEventGroupGetBits(_event);
     if (bits & HW_IRQ_TOUCHPAD) {
+        clearEventBits(HW_IRQ_TOUCHPAD);
         uint8_t tp = touch.getPoint(x_array, y_array, get_point);
-        if (tp == 0) {
-            clearEventBits(HW_IRQ_TOUCHPAD);
-        }
         return tp;
     }
     return 0;
@@ -486,9 +489,7 @@ bool LilyGoUltra::initPMU(bool batteryCalibration)
 
     // Register PMU interrupt management
     pinMode(PMU_INT, INPUT_PULLUP);
-    attachInterrupt(PMU_INT, []() {
-        setGroupBitsFromISR(_event, HW_IRQ_POWER);
-    }, FALLING);
+    attachInterrupt(PMU_INT, onPmuIsr, FALLING);
 
     // Enable the battery NTC temperature detection function
     pmu.enableTSPinMeasure();
@@ -677,16 +678,8 @@ void LilyGoUltra::powerControl(enum PowerCtrlChannel ch, bool enable)
     case POWER_GPS:
         if (enable) {
             pmu.enableBLDO1();
-            Serial1.begin(38400, SERIAL_8N1, GPS_RX, GPS_TX);
-            pinMode(GPS_PPS, INPUT);
         } else {
             pmu.disableBLDO1();
-            gpio_reset_pin((gpio_num_t )GPS_RX);
-            gpio_reset_pin((gpio_num_t )GPS_TX);
-            gpio_reset_pin((gpio_num_t )GPS_PPS);
-            pinMode(GPS_RX, OPEN_DRAIN);
-            pinMode(GPS_RX, OPEN_DRAIN);
-            pinMode(GPS_PPS, OPEN_DRAIN);
         }
         break;
     case POWER_NFC:
@@ -808,9 +801,7 @@ void LilyGoUltra::lightSleep(WakeupSource_t wakeup_src)
     digitalWrite(NFC_CS, HIGH);
 
     pinMode(PMU_INT, INPUT_PULLUP);
-    attachInterrupt(PMU_INT, []() {
-        setGroupBitsFromISR(_event, HW_IRQ_POWER);
-    }, FALLING);
+    attachInterrupt(PMU_INT, onPmuIsr, FALLING);
 }
 
 
@@ -1100,9 +1091,7 @@ bool LilyGoUltra::initTouch()
         devices_probe |= HW_TOUCH_ONLINE;
 
         pinMode(TP_INT, INPUT_PULLUP);
-        attachInterrupt(TP_INT, []() {
-            setGroupBitsFromISR(_event, HW_IRQ_TOUCHPAD);
-        }, FALLING);
+        attachInterrupt(TP_INT, onTpIsr, FALLING);
 
     }
     return res;
@@ -1136,9 +1125,7 @@ bool LilyGoUltra::initSensor()
         sensor.setRemapAxes(SensorBHI260AP::TOP_LAYER_BOTTOM_RIGHT_CORNER);
 
         pinMode(SENSOR_INT, INPUT);
-        attachInterrupt(SENSOR_INT, []() {
-            setGroupBitsFromISR(_event, HW_IRQ_SENSOR);
-        }, RISING);
+        attachInterrupt(SENSOR_INT, onSensorIsr, RISING);
 
     }
     Wire.setClock(400000UL);
@@ -1159,9 +1146,7 @@ bool LilyGoUltra::initRTC()
         rtc.setClockOutput(SensorPCF85063::CLK_LOW);
 
         pinMode(RTC_INT, INPUT_PULLUP);
-        attachInterrupt(RTC_INT, []() {
-            setGroupBitsFromISR(_event, HW_IRQ_RTC);
-        }, FALLING);
+        attachInterrupt(RTC_INT, onRtcIsr, FALLING);
     }
     return res;
 }
@@ -1235,7 +1220,6 @@ void LilyGoUltra::loop()
 
     if (bits & HW_IRQ_SENSOR) {
         clearEventBits(HW_IRQ_SENSOR);
-        sensor.update();
         sendEvent(SENSOR_EVENT);
     }
 
@@ -1254,9 +1238,7 @@ void LilyGoUltra::wakeupTouch()
     io.digitalWrite(EXPANDS_TOUCH_RST, HIGH);
     delay(60);
     pinMode(TP_INT, INPUT_PULLUP);
-    attachInterrupt(TP_INT, []() {
-        setGroupBitsFromISR(_event, HW_IRQ_TOUCHPAD);
-    }, FALLING);
+    attachInterrupt(TP_INT, onTpIsr, FALLING);
 }
 
 bool LilyGoUltra::lockSPI(TickType_t xTicksToWait)

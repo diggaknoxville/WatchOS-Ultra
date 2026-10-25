@@ -1,5 +1,6 @@
 #include "RtcManager.h"
 #include "SettingsStorage.h"
+#include "PowerManager.h"
 #include <Wire.h>
 #include <sys/time.h>
 #include <WiFi.h>
@@ -129,7 +130,10 @@ void RtcManager::writeRtcUtc(time_t utcEpoch) {
     gmtime_r(&utcEpoch, &g);
     RTC_DateTime dt(g.tm_year + 1900, g.tm_mon + 1, g.tm_mday,
                     g.tm_hour, g.tm_min, g.tm_sec, g.tm_wday);
-    instance.rtc.setDateTime(dt);
+    if (PowerManager::lockI2C(30)) {
+        instance.rtc.setDateTime(dt);
+        PowerManager::unlockI2C();
+    }
 }
 
 bool RtcManager::init() {
@@ -152,7 +156,11 @@ bool RtcManager::init() {
 }
 
 void RtcManager::updateSystemTimeFromRtc() {
-    RTC_DateTime dt = instance.rtc.getDateTime();
+    RTC_DateTime dt;
+    if (PowerManager::lockI2C(30)) {
+        dt = instance.rtc.getDateTime();
+        PowerManager::unlockI2C();
+    }
     time_t ep = utcFromRtc(dt);
     if (dt.getYear() >= 2025 && dt.getYear() <= 2099 && ep >= MIN_VALID_EPOCH) {
         struct timeval tv = { .tv_sec = ep, .tv_usec = 0 };

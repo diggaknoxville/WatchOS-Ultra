@@ -22,6 +22,10 @@ public:
     static void loop(unsigned long currentMillis);
     static void applyBrightnessOnUiThread();
 
+    // Shared recursive mutex protecting the I2C bus (Wire) across Core 0 and Core 1
+    static bool lockI2C(uint32_t timeoutMs = 50);
+    static void unlockI2C();
+
     // side (power) key: 0 = none, 1 = click, 2 = long press. Consumed by the UI task.
     static int takeKeyEvent();
 
