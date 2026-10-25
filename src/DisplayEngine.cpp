@@ -13,7 +13,12 @@
 #include "RtcManager.h"
 #include "MotionHaptic.h"
 #include "AudioEngine.h"
+#include "NavEngine.h"
+#include "RadioLoRa.h"
 #include <LilyGoLib.h>
+#include <SD.h>
+#include "ff.h"
+#include <errno.h>
 #include <esp_heap_caps.h>
 #include <sys/time.h>
 
@@ -236,6 +241,77 @@ static void debugConsole() {
             }
             case 'K': nav::sideKey(false); Serial.printf("KEY page %d\n", (int)nav::current()); break;
             case 'L': nav::sideKey(true);  Serial.printf("KEY page %d\n", (int)nav::current()); break;
+            case 'I': {
+                const NavStatus& st = NavEngine::status();
+                Serial.printf("SD_INFO ready=%d total=%luMB used=%luMB map=%d places=%lu nodes=%lu heap=%uKB\n",
+                              (int)st.sdReady, (unsigned long)st.sdTotalMB, (unsigned long)st.sdUsedMB,
+                              (int)st.mapLoaded, (unsigned long)st.mapPlaces, (unsigned long)st.mapRouteNodes,
+                              (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024));
+                File root = SD.open("/");
+                if (root) {
+                    for (int n = 0; n < 32; n++) {
+                        File f = root.openNextFile();
+                        if (!f) break;
+                        Serial.printf("  %s %s (%u B)\n", f.isDirectory() ? "DIR " : "FILE", f.path(), (unsigned)f.size());
+                        f.close();
+                    }
+                    root.close();
+                }
+                break;
+            }
+            case 'M': { // M<city_or_@mesh>: start navigation to matching place or mesh node
+                RadioLoRa::injectDemoPeers();
+                NavPlace pl[4];
+                int n = NavEngine::searchPlaces(line + 1, pl, 4);
+                if (n > 0) {
+                    if (pl[0].rank == 0) NavEngine::setMode(NAV_MODE_MESH);
+                    NavEngine::startNavigation(pl[0].name, pl[0].lat, pl[0].lon);
+                    Serial.printf("NAV_OK %s %.4f,%.4f dist=%.1fkm eta=%umin\n",
+                                  pl[0].name, pl[0].lat, pl[0].lon,
+                                  NavEngine::status().totalDistKm, NavEngine::status().etaMinutes);
+                } else {
+                    Serial.println("NAV_NOT_FOUND");
+                }
+                break;
+            }
+            case 'U': { // U<total_bytes>: upload /kronos/germany.knav to SD in 4096-byte chunks
+                uint32_t total = (uint32_t)strtoul(line + 1, nullptr, 10);
+                if (total == 0 || !NavEngine::beginSdUpload("/kronos/germany.knav", total)) {
+                    Serial.println("UP_ERR_OPEN");
+                    break;
+                }
+                Serial.println("UP_READY");
+                uint8_t* cbuf = (uint8_t*)heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
+                uint32_t recvd = 0;
+                unsigned long lastByteAt = millis();
+                bool ok = (cbuf != nullptr);
+                while (ok && recvd < total && (millis() - lastByteAt < 5000)) {
+                    uint32_t want = min<uint32_t>(4096, total - recvd);
+                    uint32_t got = 0;
+                    while (got < want && (millis() - lastByteAt < 5000)) {
+                        int avail = Serial.available();
+                        if (avail > 0) {
+                            int rd = Serial.readBytes(cbuf + got, min<int>(avail, want - got));
+                            if (rd > 0) {
+                                got += (uint32_t)rd;
+                                lastByteAt = millis();
+                            }
+                        } else {
+                            esp_rom_delay_us(25);
+                        }
+                    }
+                    if (got != want || !NavEngine::writeSdUploadChunk(cbuf, got)) {
+                        ok = false;
+                        break;
+                    }
+                    recvd += got;
+                    Serial.println("K");
+                }
+                if (cbuf) heap_caps_free(cbuf);
+                bool mapOk = NavEngine::endSdUpload();
+                Serial.printf("UP_DONE ok=%d recvd=%lu map=%d\n", (int)ok, (unsigned long)recvd, (int)mapOk);
+                break;
+            }
             case 'B': {
                 const int rows = 48, Wd = 410, Hd = 502;
                 uint16_t* buf = (uint16_t*)heap_caps_malloc(Wd * rows * 2, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);

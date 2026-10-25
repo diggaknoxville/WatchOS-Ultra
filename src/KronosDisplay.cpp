@@ -5,8 +5,9 @@
 #include <LilyGoLib.h>
 #include <esp_heap_caps.h>
 
-// Strip height of each render buffer. 2 x (410 x 48 x 2 B) = 79 KB internal SRAM.
-#define STRIP_ROWS 48
+// Strip height of each render buffer. 2 x (410 x 32 x 2 B) = 51 KB internal SRAM,
+// leaving plenty of internal DMA heap for WiFi AP + NimBLE + SD SPI simultaneously.
+#define STRIP_ROWS 32
 
 // flush instrumentation shared with the UI perf monitor (defined in LV_Helper_v9.cpp)
 extern volatile uint32_t g_kronosFlushUs;
@@ -153,7 +154,7 @@ bool KronosDisplay::begin() {
     lv_indev_set_display(sTouch, sDisp);
 
     Serial.printf("[DISP] %ux%u, 2x %u-row strips in internal DMA RAM (%u KB), heap left %u KB\n",
-                  W, H, STRIP_ROWS, (unsigned)(2 * bytes / 1024),
+                  W, H, stripRows, (unsigned)(2 * bytes / 1024),
                   (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024));
     return true;
 }

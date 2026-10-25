@@ -9,6 +9,7 @@
 #include "BleCompanion.h"
 #include "DisplayEngine.h"
 #include "AiLimitsStore.h"
+#include "NavEngine.h"
 #include "ui/Navigator.h"
 #include <esp_mac.h>
 #include <Update.h>
@@ -261,6 +262,20 @@ bool CompanionServer::init() {
             } else {
                 Update.printError(Serial);
             }
+        }
+    });
+    server.on("/api/sd/upload", HTTP_POST, []() {
+        bool ok = NavEngine::endSdUpload();
+        server.send(200, "application/json", ok ? "{\"status\":\"ok\"}" : "{\"status\":\"error\"}");
+    }, []() {
+        HTTPUpload& upload = server.upload();
+        if (upload.status == UPLOAD_FILE_START) {
+            Serial.printf("[SD] Upload Start: %s\n", upload.filename.c_str());
+            NavEngine::beginSdUpload("/kronos/germany.knav", 0);
+        } else if (upload.status == UPLOAD_FILE_WRITE) {
+            NavEngine::writeSdUploadChunk(upload.buf, upload.currentSize);
+        } else if (upload.status == UPLOAD_FILE_END) {
+            Serial.printf("[SD] Upload Finished: %u bytes\n", upload.totalSize);
         }
     });
     // captive portal: every unknown URL (OS connectivity checks) -> the app

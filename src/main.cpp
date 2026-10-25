@@ -9,6 +9,7 @@
 #include "RadioLoRa.h"
 #include "AudioEngine.h"
 #include "GpsManager.h"
+#include "NavEngine.h"
 #include "DisplayEngine.h"
 #include "CompanionServer.h"
 #include "NotificationStore.h"
@@ -35,6 +36,7 @@ void backgroundTask(void* parameter) {
         MotionHaptic::updateMotion(now);
         GpsManager::loop(now);
         RadioLoRa::loop(now);
+        NavEngine::loop(now);
         SettingsStorage::loop(now);
         RtcManager::periodicMaintenance();
         vTaskDelay(pdMS_TO_TICKS(10));
@@ -75,6 +77,7 @@ static void printHardware(uint32_t p) {
 }
 
 void setup() {
+    Serial.setRxBufferSize(4096);
     Serial.begin(115200);
     delay(200);
     Serial.println("\n=======================================================");
@@ -82,8 +85,9 @@ void setup() {
     Serial.println("=======================================================");
 
     // 0. Full hardware bring-up (AMOLED, touch, AXP2101, PCF85063, BHI260,
-    //    DRV2605, GNSS, SX1262, amplifier) via LilyGoLib.
-    uint32_t probe = instance.begin();
+    //    DRV2605, GNSS, SX1262, SD, amplifier) via LilyGoLib.
+    //    Skip unused FFat (/fs) and NFC to preserve >55 KB internal SRAM for WiFi + BLE + SD.
+    uint32_t probe = instance.begin(NO_INIT_FATFS | NO_HW_NFC);
     instance.setBrightness(180);
     printHardware(probe);
 

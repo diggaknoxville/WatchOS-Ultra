@@ -8,6 +8,7 @@
 #include "BleCompanion.h"
 #include "GpsManager.h"
 #include "RadioLoRa.h"
+#include "NavEngine.h"
 #include "Config.h"
 
 using namespace ui;
@@ -20,9 +21,21 @@ static void refresh(bool) {
     char b[56];
     int bat = PowerManager::getBatteryPercent();
     bool chg = PowerManager::isCharging();
-    snprintf(b, sizeof(b), "%d %% (%.2f V)", bat, PowerManager::getBatteryVoltage());
+    snprintf(b, sizeof(b), "%d %% (%.2f V %s)", bat, PowerManager::getBatteryVoltage(),
+             chg ? "CHG" : (PowerManager::isVbusConnected() ? "USB" : "BAT"));
     setText(sVal[0], b);
-    setText(sVal[1], chg ? "Charging" : (PowerManager::isVbusConnected() ? "USB" : "Battery"));
+
+    const NavStatus& ns = NavEngine::status();
+    if (ns.mapLoaded) {
+        snprintf(b, sizeof(b), "%lu GB · DE (%lu Orte)", (unsigned long)max<uint32_t>(1, ns.sdTotalMB / 1024),
+                 (unsigned long)ns.mapPlaces);
+    } else if (ns.sdReady) {
+        snprintf(b, sizeof(b), "%lu GB (%lu MB belegt)", (unsigned long)max<uint32_t>(1, ns.sdTotalMB / 1024),
+                 (unsigned long)ns.sdUsedMB);
+    } else {
+        snprintf(b, sizeof(b), "Keine Karte erkannt");
+    }
+    setText(sVal[1], b);
     snprintf(b, sizeof(b), "%.1f °C", PowerManager::getTempCelsius());
     setText(sVal[2], b);
     snprintf(b, sizeof(b), "%s · %s · %s · %s",
@@ -38,7 +51,7 @@ static void refresh(bool) {
     snprintf(b, sizeof(b), "%s  %s", RtcManager::lastSyncSource(), a);
     setText(sVal[5], b);
     unsigned long up = millis() / 1000;
-    snprintf(b, sizeof(b), "%lud %02lu:%02lu (v4.0)", up / 86400, (up / 3600) % 24, (up / 60) % 60);
+    snprintf(b, sizeof(b), "%lud %02lu:%02lu (v4.1)", up / 86400, (up / 3600) % 24, (up / 60) % 60);
     setText(sVal[6], b);
 }
 
@@ -46,7 +59,7 @@ void buildSystem(lv_obj_t* scr) {
     lv_obj_t* p = pageRoot(scr);
     title(p, "SYSTEM");
     lv_obj_t* c = kvCard(p, 84, 7);
-    static const char* keys[7] = {"BATTERY", "POWER", "PMU TEMP", "RADIOS",
+    static const char* keys[7] = {"BATTERY", "SD / KARTE", "PMU TEMP", "RADIOS",
                                   "PSRAM FREE", "TIME SYNC", "UPTIME"};
     for (int i = 0; i < 7; i++) sVal[i] = kvRow(c, keys[i], i == 6);
 

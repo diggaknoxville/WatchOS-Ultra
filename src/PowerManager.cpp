@@ -88,8 +88,10 @@ bool PowerManager::init() {
     instance.pmu.setVbusVoltageLimit(XPOWERS_AXP2101_VBUS_VOL_LIM_4V36);
     instance.pmu.setVbusCurrentLimit(XPOWERS_AXP2101_VBUS_CUR_LIM_1500MA);
     instance.pmu.setSysPowerDownVoltage(2600);
-    // Disable unused NFC power rail (DLDO1) to reduce LDO thermal load and save battery
-    instance.pmu.disableDLDO1();
+    // Keep DLDO1 (NFC rail) powered with NFC_CS HIGH so ST25R3916 does not clamp
+    // the shared SPI bus (MISO=33/MOSI=34/SCK=35) used by microSD and SX1262 LoRa.
+    pinMode(NFC_CS, OUTPUT);
+    digitalWrite(NFC_CS, HIGH);
 
     instance.onEvent(onPmuEvent, POWER_EVENT, nullptr);
     currentBrightness = SettingsStorage::get().brightness;

@@ -13,6 +13,7 @@ static NimBLEServer* sServer = nullptr;
 static NimBLECharacteristic* sDataChar = nullptr;
 static NimBLECharacteristic* sStatusChar = nullptr;
 static bool sBleEnabled = true;
+static bool sStackInited = false;
 static bool sConnected = false;
 static uint32_t sLastAdvRestart = 0;
 
@@ -61,7 +62,8 @@ class DataCallbacks : public NimBLECharacteristicCallbacks {
     }
 };
 
-bool BleCompanion::init() {
+static bool ensureStack() {
+    if (sStackInited) return true;
     Serial.println("[BLE] Initializing NimBLE stack...");
     NimBLEDevice::init(BLE_DEVICE_NAME);
     NimBLEDevice::setPower(ESP_PWR_LVL_P9);
@@ -92,19 +94,25 @@ bool BleCompanion::init() {
     pAdvertising->setName(BLE_DEVICE_NAME);
     pAdvertising->addServiceUUID(SERVICE_AI_LIMITS_UUID);
     pAdvertising->enableScanResponse(true);
+    sStackInited = true;
+    return true;
+}
 
+bool BleCompanion::init() {
     sBleEnabled = SettingsStorage::get().bleEnabled;
     if (sBleEnabled) {
-        pAdvertising->start();
-        Serial.println("[BLE] NimBLE advertising started as 'WatchOS Ultra'");
+        if (ensureStack()) {
+            NimBLEDevice::getAdvertising()->start();
+            Serial.println("[BLE] NimBLE advertising started as 'WatchOS Ultra'");
+        }
     } else {
-        Serial.println("[BLE] NimBLE initialized (disabled by user)");
+        Serial.println("[BLE] Disabled by user settings (stack deferred)");
     }
     return true;
 }
 
 void BleCompanion::loop(unsigned long now) {
-    if (!sBleEnabled) return;
+    if (!sBleEnabled || !sStackInited) return;
 
     if (!sConnected && (now - sLastAdvRestart >= 10000)) {
         sLastAdvRestart = now;
@@ -115,7 +123,7 @@ void BleCompanion::loop(unsigned long now) {
 }
 
 bool BleCompanion::isConnected() {
-    return sConnected && sBleEnabled;
+    return sConnected && sBleEnabled && sStackInited;
 }
 
 void BleCompanion::setEnabled(bool en) {
@@ -123,20 +131,22 @@ void BleCompanion::setEnabled(bool en) {
     SettingsStorage::get().bleEnabled = en;
     SettingsStorage::save();
     if (!en) {
-        if (NimBLEDevice::getAdvertising()->isAdvertising()) {
-            NimBLEDevice::stopAdvertising();
-        }
-        if (sConnected && sServer) {
-            std::vector<uint16_t> peers = sServer->getPeerDevices();
-            for (uint16_t connId : peers) {
-                sServer->disconnect(connId);
+        if (sStackInited) {
+            if (NimBLEDevice::getAdvertising()->isAdvertising()) {
+                NimBLEDevice::stopAdvertising();
             }
-            sConnected = false;
-            AiLimitsStore::setBleConnected(false);
+            if (sConnected && sServer) {
+                std::vector<uint16_t> peers = sServer->getPeerDevices();
+                for (uint16_t connId : peers) {
+                    sServer->disconnect(connId);
+                }
+                sConnected = false;
+                AiLimitsStore::setBleConnected(false);
+            }
         }
         Serial.println("[BLE] Disabled");
     } else {
-        if (!sConnected && !NimBLEDevice::getAdvertising()->isAdvertising()) {
+        if (ensureStack() && !sConnected && !NimBLEDevice::getAdvertising()->isAdvertising()) {
             NimBLEDevice::startAdvertising();
         }
         Serial.println("[BLE] Enabled (advertising)");

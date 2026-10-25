@@ -620,13 +620,14 @@ bool LilyGoUltra::installSD()
     }
 #endif /*EXPANDS_SD_DET*/
 
-    // Set mount point to /fs
-    if (!SD.begin(SD_CS, SPI, 4000000U, "/sd")) {
+    // Mount SD card at 4 MHz SPI (LilyGo default for shared SPI bus), max 5 open files
+    if (!SD.begin(SD_CS, SPI, 4000000U, "/sd", 5)) {
         log_e("Failed to detect SD Card!!");
         return false;
     }
     if (SD.cardType() != CARD_NONE) {
-        log_i("SD Card Size: %llu MB\n", SD.cardSize() / (1024 * 1024));
+        Serial.printf("[SD] microSD mounted: %llu MB total (%llu MB used), type=%d\n",
+                      SD.cardSize() / (1024ULL * 1024ULL), SD.usedBytes() / (1024ULL * 1024ULL), (int)SD.cardType());
         devices_probe |= HW_SD_ONLINE;
         return true;
     }
