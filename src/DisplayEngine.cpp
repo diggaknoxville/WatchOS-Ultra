@@ -1,5 +1,5 @@
 // ============================================================================
-//  KRONOS UI facade: pages, overlays, hardware events, debug console.
+//  WatchOS Ultra UI facade: pages, overlays, hardware events, debug console.
 // ============================================================================
 #include "DisplayEngine.h"
 #include "ui/UiKit.h"
@@ -15,6 +15,7 @@
 #include "AudioEngine.h"
 #include "NavEngine.h"
 #include "RadioLoRa.h"
+#include "CompanionServer.h"
 #include <LilyGoLib.h>
 #include <SD.h>
 #include "ff.h"
@@ -29,13 +30,14 @@ static lv_obj_t *sBanner, *sBannerIcon, *sBannerTitle, *sBannerMsg;
 static uint32_t sBannerHideAt = 0;
 static lv_obj_t *sAod, *sAodTime, *sAodDate;
 static lv_obj_t *sTorch;
-static uint8_t sTorchPrevBrightness = 0;
 static uint16_t sLastAccent = 0xFFFF;
 static bool sReady = false;
+static bool sDnd = false;
 
-// cross-task notification inbox (latest wins; history lives in NotificationStore)
+// cross-task banner inbox (latest wins; history lives in NotificationStore)
 static portMUX_TYPE sInboxMux = portMUX_INITIALIZER_UNLOCKED;
-static volatile bool sInNotif = false;
+static volatile bool sInPending = false;
+static bool sInStored = false;                 // true = notification, false = toast
 static char sInTitle[40], sInMsg[112], sInIcon[4];
 static uint32_t sInDuration = 4500;
 
@@ -80,6 +82,10 @@ static void buildBanner() {
     }, LV_EVENT_CLICKED, NULL);
 }
 
+// AOD pixel shift (burn-in): the clock wanders +-4 px every 5 minutes
+static const int8_t AOD_SHIFT[][2] = {{0, 0}, {4, 0}, {4, 4}, {0, 4}, {-4, 4}, {-4, 0}, {-4, -4}, {0, -4}, {4, -4}};
+static const int AOD_SHIFT_N = sizeof(AOD_SHIFT) / sizeof(AOD_SHIFT[0]);
+
 static void buildAodAndTorch() {
     sAod = box(lv_layer_top(), SCR_W, SCR_H);
     lv_obj_set_style_bg_opa(sAod, LV_OPA_COVER, 0);
@@ -97,19 +103,24 @@ static void buildAodAndTorch() {
     lv_obj_set_style_bg_opa(sTorch, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(sTorch, lv_color_white(), 0);
     lv_obj_add_flag(sTorch, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_t* th = caption(sTorch, "TAP TO TURN OFF", lv_color_hex(0x9AA0A8));
+    lv_obj_t* th = caption(sTorch, "TIPPEN ZUM AUSSCHALTEN", lv_color_hex(0x9AA0A8));
     lv_obj_align(th, LV_ALIGN_BOTTOM_MID, 0, -24);
     lv_obj_add_flag(sTorch, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_event_cb(sTorch, [](lv_event_t*) { DisplayEngine::setTorch(false); }, LV_EVENT_CLICKED, NULL);
 }
 
+// AOD clock: text changes once per minute (plus on show), position every 5 min
 static void refreshAod() {
+    static int lastMin = -1;
+    static uint32_t lastShiftMs = 0;
+    static int shiftIdx = 0;
     bool aod = PowerManager::getPowerState() == POWER_AOD;
     bool shown = !lv_obj_has_flag(sAod, LV_OBJ_FLAG_HIDDEN);
     if (aod != shown) {
         setHidden(sAod, !aod);
         if (aod) {
             lv_obj_move_foreground(sAod);
+            lastMin = -1;                                   // force a clock update on show
         } else {
             // Immediately repaint the active screen when leaving AOD so the AOD clock
             // never lingers on the panel or in the compositor mirror.
@@ -118,41 +129,106 @@ static void refreshAod() {
             lv_refr_now(NULL);
         }
     }
-    if (aod) {
-        struct tm t;
-        RtcManager::getLocalTimeInfo(&t);
-        char b[32];
-        snprintf(b, sizeof(b), "%02d:%02d", t.tm_hour, t.tm_min);
-        setText(sAodTime, b);
-        snprintf(b, sizeof(b), "%s %d %s", WD_S[t.tm_wday % 7], t.tm_mday, MO_S[t.tm_mon % 12]);
-        setText(sAodDate, b);
+    if (!aod) return;
+    struct tm t;
+    RtcManager::getLocalTimeInfo(&t);
+    uint32_t now = millis();
+    bool shift = false;
+    if (now - lastShiftMs >= 5UL * 60UL * 1000UL) {
+        lastShiftMs = now;
+        shiftIdx = (shiftIdx + 1) % AOD_SHIFT_N;
+        shift = true;
     }
+    if (t.tm_min == lastMin && !shift) return;
+    lastMin = t.tm_min;
+    char b[32];
+    snprintf(b, sizeof(b), "%02d:%02d", t.tm_hour, t.tm_min);
+    setText(sAodTime, b);
+    snprintf(b, sizeof(b), "%s %d. %s", WD_DE_S[t.tm_wday % 7], t.tm_mday, MO_DE_S[t.tm_mon % 12]);
+    setText(sAodDate, b);
+    int dx = AOD_SHIFT[shiftIdx][0], dy = AOD_SHIFT[shiftIdx][1];
+    lv_obj_align(sAodTime, LV_ALIGN_CENTER, dx, -20 + dy);
+    lv_obj_align(sAodDate, LV_ALIGN_CENTER, dx, 70 + dy);
+}
+
+static void enqueueBanner(const char* title, const char* msg, uint32_t durationMs, const char* icon, bool stored) {
+    portENTER_CRITICAL(&sInboxMux);
+    strncpy(sInTitle, title ? title : "", sizeof(sInTitle) - 1);
+    sInTitle[sizeof(sInTitle) - 1] = 0;
+    strncpy(sInMsg, msg ? msg : "", sizeof(sInMsg) - 1);
+    sInMsg[sizeof(sInMsg) - 1] = 0;
+    strncpy(sInIcon, icon ? icon : "", sizeof(sInIcon) - 1);
+    sInIcon[sizeof(sInIcon) - 1] = 0;
+    sInDuration = durationMs;
+    sInStored = stored;
+    sInPending = true;
+    portEXIT_CRITICAL(&sInboxMux);
 }
 
 static void pollInbox() {
-    if (sInNotif) {
+    if (sInPending) {
         char title[40], msg[112], icon[4];
         uint32_t dur;
+        bool stored;
         portENTER_CRITICAL(&sInboxMux);
         memcpy(title, sInTitle, sizeof(title));
         memcpy(msg, sInMsg, sizeof(msg));
         memcpy(icon, sInIcon, sizeof(icon));
         dur = sInDuration;
-        sInNotif = false;
+        stored = sInStored;
+        sInPending = false;
         portEXIT_CRITICAL(&sInboxMux);
-        lv_label_set_text(sBannerTitle, title);
-        lv_label_set_text(sBannerMsg, msg);
-        lv_label_set_text(sBannerIcon, icon[0] ? icon : ICO_NOTIFICATIONS);
-        lv_obj_move_foreground(sBanner);
-        bannerSlide(true);
-        sBannerHideAt = millis() + dur;
-        PowerManager::handleActivity();
-        nav::markDirty(nav::PG_NOTIFS);
-        nav::markDirty(nav::PG_FACE);
+        if (stored) {
+            nav::markDirty(nav::PG_NOTIFS);
+            nav::markDirty(nav::PG_FACE);                   // unread badge
+        }
+        if (!(stored && sDnd)) {                            // DND: no banner for notifications
+            lv_label_set_text(sBannerTitle, title);
+            lv_label_set_text(sBannerMsg, msg);
+            lv_label_set_text(sBannerIcon, icon[0] ? icon : ICO_NOTIFICATIONS);
+            lv_obj_move_foreground(sBanner);
+            bannerSlide(true);
+            sBannerHideAt = millis() + dur;
+            PowerManager::handleActivity();
+        }
     }
     if (sBannerHideAt && millis() > sBannerHideAt) {
         sBannerHideAt = 0;
         bannerSlide(false);
+    }
+}
+
+// ------------------------------------------------------------------ OTA confirm
+static bool sOtaDialogShown = false;
+
+static void otaAnswer(bool ok, void*) {
+    sOtaDialogShown = false;
+    CompanionServer::otaConfirm(ok);
+    if (!ok) DisplayEngine::showToast("Firmware-Update", "Verworfen", 2000, ICO_UPDATE);
+}
+
+static void pollOta(unsigned long now) {
+    static unsigned long last = 0;
+    if (now - last < 500) return;
+    last = now;
+    char hash[72] = {0};
+    uint32_t size = 0;
+    bool pending = CompanionServer::otaPending(hash, sizeof(hash), &size);
+    if (pending && !sOtaDialogShown && !dialogOpen()) {
+        char prefix[12];
+        strncpy(prefix, hash, 8);
+        prefix[8] = 0;
+        char msg[96];
+        snprintf(msg, sizeof(msg), "SHA-256 %s...\n%lu KB empfangen. Die Uhr startet danach neu.",
+                 prefix, (unsigned long)((size + 1023) / 1024));
+        sOtaDialogShown = true;
+        PowerManager::handleActivity();
+        haptic(HAPTIC_ALERT_SHORT);
+        confirmDialog("Firmware-Update installieren?", msg, "Installieren", "Abbrechen", otaAnswer, nullptr, false);
+    } else if (!pending && sOtaDialogShown) {
+        sOtaDialogShown = false;                            // timed out on the server side
+        closeDialog();
+        DisplayEngine::showToast("Firmware-Update", "Abgelaufen", 2000, ICO_UPDATE);
     }
 }
 
@@ -191,7 +267,7 @@ static void perfReport(unsigned long now) {
 
 // Serial console (UI task):
 //   S snapshot | G<page> go | F<n> face | T<epoch>,<tz>[,<zone>] time | N<title>|<msg>
-//   P perf toggle | K / L side key click / long | B panel throughput
+//   P perf toggle | K / L side key click / long | B panel throughput | M<place> navigate
 static void debugConsole() {
     static char line[96];
     static uint8_t len = 0;
@@ -214,15 +290,20 @@ static void debugConsole() {
                 lv_draw_buf_destroy(snap);
                 break;
             }
-            case 'G':
-                nav::go((nav::PageId)atoi(line + 1));
+            case 'G': {
+                int pg = atoi(line + 1);
+                if (pg >= 0 && pg < (int)nav::PG_COUNT) nav::go((nav::PageId)pg);
                 Serial.printf("PAGE %d\n", (int)nav::current());
                 break;
-            case 'F':
-                SettingsStorage::get().watchfaceIndex = atoi(line + 1) % FACE_COUNT;
-                SettingsStorage::save();
+            }
+            case 'F': {
+                int v = atoi(line + 1);
+                if (v < 0) v = 0;
+                v %= FACE_COUNT;
+                pages::faceSelect(v);
                 Serial.printf("FACE %d\n", SettingsStorage::get().watchfaceIndex);
                 break;
+            }
             case 'T': {
                 long ep = 0, tz = 0;
                 char zone[40] = {0};
@@ -252,7 +333,7 @@ static void debugConsole() {
             case 'K': nav::sideKey(false); Serial.printf("KEY page %d\n", (int)nav::current()); break;
             case 'L': nav::sideKey(true);  Serial.printf("KEY page %d\n", (int)nav::current()); break;
             case 'I': {
-                const NavStatus& st = NavEngine::status();
+                NavStatus st = NavEngine::status();
                 Serial.printf("SD_INFO ready=%d total=%luMB used=%luMB map=%d places=%lu nodes=%lu heap=%uKB\n",
                               (int)st.sdReady, (unsigned long)st.sdTotalMB, (unsigned long)st.sdUsedMB,
                               (int)st.mapLoaded, (unsigned long)st.mapPlaces, (unsigned long)st.mapRouteNodes,
@@ -270,15 +351,13 @@ static void debugConsole() {
                 break;
             }
             case 'M': { // M<city_or_@mesh>: start navigation to matching place or mesh node
-                RadioLoRa::injectDemoPeers();
-                NavPlace pl[4];
+                static NavPlace pl[4];
                 int n = NavEngine::searchPlaces(line + 1, pl, 4);
                 if (n > 0) {
                     if (pl[0].rank == 0) NavEngine::setMode(NAV_MODE_MESH);
-                    NavEngine::startNavigation(pl[0].name, pl[0].lat, pl[0].lon);
-                    Serial.printf("NAV_OK %s %.4f,%.4f dist=%.1fkm eta=%umin\n",
-                                  pl[0].name, pl[0].lat, pl[0].lon,
-                                  NavEngine::status().totalDistKm, NavEngine::status().etaMinutes);
+                    bool accepted = NavEngine::startNavigation(pl[0].name, pl[0].lat, pl[0].lon);
+                    Serial.printf("NAV_%s %s %.4f,%.4f (status via I)\n", accepted ? "QUEUED" : "BUSY",
+                                  pl[0].name, pl[0].lat, pl[0].lon);
                 } else {
                     Serial.println("NAV_NOT_FOUND");
                 }
@@ -307,7 +386,7 @@ static void debugConsole() {
                                 lastByteAt = millis();
                             }
                         } else {
-                            esp_rom_delay_us(25);
+                            vTaskDelay(1);
                         }
                     }
                     if (got != want || !NavEngine::writeSdUploadChunk(cbuf, got)) {
@@ -343,7 +422,7 @@ static void debugConsole() {
 
 // ------------------------------------------------------------------ public
 bool DisplayEngine::init() {
-    Serial.println("[UI] Building KRONOS interface...");
+    Serial.println("[UI] Building WatchOS Ultra interface...");
     initFonts();
 
     lv_obj_t* scr = lv_screen_active();
@@ -357,12 +436,16 @@ bool DisplayEngine::init() {
     lv_obj_t* splash = box(scr, SCR_W, SCR_H);
     lv_obj_set_style_bg_opa(splash, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(splash, cBg(), 0);
-    lv_obj_t* logo = label(splash, F.numM, cText(), "KRONOS");
+    lv_obj_t* logo = label(splash, F.numM, cText(), "WATCHOS");
     lv_obj_set_style_text_letter_space(logo, 10, 0);
     lv_obj_align(logo, LV_ALIGN_CENTER, 5, -18);
     lv_obj_t* sub = caption(splash, "ULTRA", accent());
     lv_obj_set_style_text_letter_space(sub, 8, 0);
     lv_obj_align(sub, LV_ALIGN_CENTER, 4, 22);
+    char ver[48];
+    snprintf(ver, sizeof(ver), "VERSION %s  •  BUILD %s", OS_VERSION, OS_BUILD);
+    lv_obj_t* vl = caption(splash, ver, cText3());
+    lv_obj_align(vl, LV_ALIGN_BOTTOM_MID, 0, -96);
     static lv_obj_t* sBootBar;
     sBootBar = lv_bar_create(splash);
     lv_obj_set_size(sBootBar, 120, 3);
@@ -407,13 +490,12 @@ bool DisplayEngine::init() {
     lv_obj_delete(splash);                      // glass already shows the face
     lv_display_enable_invalidation(dsp, true);
 
-    lv_display_t* disp = lv_display_get_default();
-    lv_display_add_event_cb(disp, perfRenderEvent, LV_EVENT_RENDER_START, NULL);
-    lv_display_add_event_cb(disp, perfRenderEvent, LV_EVENT_RENDER_READY, NULL);
+    lv_display_add_event_cb(dsp, perfRenderEvent, LV_EVENT_RENDER_START, NULL);
+    lv_display_add_event_cb(dsp, perfRenderEvent, LV_EVENT_RENDER_READY, NULL);
 
     sLastAccent = SettingsStorage::get().accentColor;
     sReady = true;
-    Serial.printf("[UI] KRONOS interface ready (PSRAM free %u KB)\n", (unsigned)(ESP.getFreePsram() / 1024));
+    Serial.printf("[UI] WatchOS Ultra interface ready (PSRAM free %u KB)\n", (unsigned)(ESP.getFreePsram() / 1024));
     return true;
 }
 
@@ -429,14 +511,14 @@ void DisplayEngine::update(unsigned long now) {
         PowerManager::handleActivity();
         if (torchOn()) {
             setTorch(false);
-        } else if (!wasSleeping) {
+        } else if (!wasSleeping && !dialogOpen()) {
             if (key == 1) {
                 nav::sideKey(false);
             } else if (key == 2) {
                 nav::sideKey(true);
             } else if (key == 3) {
-                // Action Button (GPIO 0) Single Click
-                ui::haptic(HAPTIC_CLICK);
+                // Action button single click: face -> position -> control -> home
+                haptic(HAPTIC_CLICK);
                 if (nav::current() == nav::PG_FACE) {
                     nav::go(nav::PG_POSITION);
                 } else if (nav::current() == nav::PG_POSITION) {
@@ -445,14 +527,17 @@ void DisplayEngine::update(unsigned long now) {
                     nav::home();
                 }
             } else if (key == 4) {
-                // Action Button (GPIO 0) Double Click: Torch
-                ui::haptic(HAPTIC_TICK);
+                // Action button double click: torch
+                haptic(HAPTIC_TICK);
                 setTorch(!torchOn());
             } else if (key == 5) {
-                // Action Button (GPIO 0) Long Press: Meshtastic Discovery Beacon
-                ui::haptic(HAPTIC_ALERT_LONG);
-                RadioLoRa::sendNodeInfoDiscovery();
-                DisplayEngine::showNotification("Action Button", "Meshtastic Hub Discovery Beacon gesendet!", 2500, ICO_PODCASTS);
+                // Action button long press: Meshtastic discovery (rate-limited by RadioLoRa)
+                bool sent = RadioLoRa::sendNodeInfoDiscovery();
+                haptic(sent ? HAPTIC_ALERT_SHORT : HAPTIC_TICK);
+                showToast("Mesh Discovery",
+                          sent ? "NodeInfo-Anfrage gesendet"
+                               : (RadioLoRa::isEnabled() ? "Bereits gesendet (Wartezeit)" : "LoRa ist aus"),
+                          2500, ICO_PODCASTS);
             }
         }
     }
@@ -466,35 +551,38 @@ void DisplayEngine::update(unsigned long now) {
 
     static unsigned long lastAod = 0;
     if (now - lastAod >= 250) { lastAod = now; refreshAod(); }
-    nav::setGesturesEnabled(lv_obj_has_flag(sAod, LV_OBJ_FLAG_HIDDEN) && !torchOn());
-    nav::update(now);
+    bool lowPower = PowerManager::isLowPowerState();
+    nav::setGesturesEnabled(lv_obj_has_flag(sAod, LV_OBJ_FLAG_HIDDEN) && !torchOn() && !dialogOpen());
+    // AOD / sleep: only the AOD clock is maintained; pages are neither refreshed
+    // nor pre-rendered (nav still services touch wake-up and pending actions)
+    nav::update(now, !lowPower);
+    if (!lowPower) pollOta(now);
     PowerManager::applyBrightnessOnUiThread();
 }
 
 void DisplayEngine::showNotification(const String& title, const String& msg, uint32_t durationMs, const char* icon) {
     NotificationStore::add(title.c_str(), msg.c_str(), icon);
-    portENTER_CRITICAL(&sInboxMux);
-    strncpy(sInTitle, title.c_str(), sizeof(sInTitle) - 1);
-    sInTitle[sizeof(sInTitle) - 1] = 0;
-    strncpy(sInMsg, msg.c_str(), sizeof(sInMsg) - 1);
-    sInMsg[sizeof(sInMsg) - 1] = 0;
-    strncpy(sInIcon, icon ? icon : "", sizeof(sInIcon) - 1);
-    sInIcon[sizeof(sInIcon) - 1] = 0;
-    sInDuration = durationMs;
-    sInNotif = true;
-    portEXIT_CRITICAL(&sInboxMux);
-    MotionHaptic::triggerHaptic(HAPTIC_ALERT_SHORT);
+    enqueueBanner(title.c_str(), msg.c_str(), durationMs, icon, true);
+    if (!sDnd) MotionHaptic::triggerHaptic(HAPTIC_ALERT_SHORT);
 }
 
+void DisplayEngine::showToast(const char* title, const char* msg, uint32_t durationMs, const char* icon) {
+    enqueueBanner(title, msg, durationMs, icon, false);
+}
+
+void DisplayEngine::setDoNotDisturb(bool on) { sDnd = on; }
+bool DisplayEngine::doNotDisturb() { return sDnd; }
+
 void DisplayEngine::setTorch(bool on) {
+    // PowerManager drives the panel to full brightness while the override is
+    // set and restores the user brightness afterwards (settings untouched).
     if (on) {
-        sTorchPrevBrightness = SettingsStorage::get().brightness;
         setHidden(sTorch, false);
         lv_obj_move_foreground(sTorch);
-        PowerManager::setBrightness(255);
+        PowerManager::setTorchOverride(true);
     } else {
         setHidden(sTorch, true);
-        PowerManager::setBrightness(sTorchPrevBrightness ? sTorchPrevBrightness : 220);
+        PowerManager::setTorchOverride(false);
     }
 }
 
@@ -505,18 +593,5 @@ bool DisplayEngine::isOverlayBlockingMirror() {
            (sTorch && !lv_obj_has_flag(sTorch, LV_OBJ_FLAG_HIDDEN));
 }
 
-void DisplayEngine::setApp(AppId app) {
-    switch (app) {
-        case APP_FITNESS:        nav::go(nav::PG_ACTIVITY); break;
-        case APP_LORA_MESH:      nav::go(nav::PG_LORA); break;
-        case APP_SENSORS:        nav::go(nav::PG_SYSTEM); break;
-        case APP_PHONE_SYNC:     nav::go(nav::PG_APP_CONNECT); break;
-        case APP_QUICK_SETTINGS: nav::go(nav::PG_CONTROL); break;
-        case APP_STOPWATCH:      nav::go(nav::PG_APP_STOPWATCH); break;
-        default:                 nav::home(); break;
-    }
-}
-
-AppId DisplayEngine::getCurrentApp() { return APP_WATCHFACE; }
 void DisplayEngine::nextWatchface() { pages::faceNext(); }
 bool DisplayEngine::isReady() { return sReady; }

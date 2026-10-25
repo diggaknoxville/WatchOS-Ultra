@@ -3,10 +3,14 @@
 //  Navigator: page model, gesture recognition and composited transitions.
 //
 //  Information architecture (Wear OS / iOS inspired):
-//    carousel  LAUNCHER <- FACE -> ACTIVITY -> AGENDA -> POSITION -> LORA -> SYSTEM
+//    carousel  LAUNCHER <- FACE -> AI -> ACTIVITY -> AGENDA -> POSITION -> LORA -> SYSTEM
 //    sheets    FACE: swipe down = CONTROL centre, swipe up = NOTIFICATIONS
 //    apps      opened from the launcher, stacked; left-edge swipe = back,
 //              bottom-edge swipe up = home; side key = home / launcher
+//
+//  Stack model: `base` is always a carousel page. Sheets and apps are pushed
+//  on top of it in any order (an app opened from a sheet returns to the
+//  sheet). The interaction mode is derived from the page type on top.
 //
 //  Every transition is rendered by the Compositor from cached run-length
 //  encoded page surfaces (60 fps, vsync locked) and follows the finger 1:1,
@@ -28,6 +32,11 @@ enum PageId : uint8_t {
     PG_COUNT
 };
 
+// bottom edge zone (px) in which an upward swipe inside an app means "home"
+constexpr int HOME_EDGE = 56;
+// left edge zone (px) in which a rightward swipe inside an app means "back"
+constexpr int BACK_EDGE = 30;
+
 struct PageDef {
     lv_obj_t* root = nullptr;                 // full-screen container (ui::pageRoot)
     void (*refresh)(bool force) = nullptr;    // update dynamic content
@@ -37,16 +46,22 @@ struct PageDef {
     void (*onHide)() = nullptr;
     // optional: may a vertical sheet-close gesture start at (x, y)? (e.g. not on a slider)
     bool (*allowSheetGesture)(int x, int y, int dy) = nullptr;
+    // optional: may a horizontal carousel swipe start at (x, y)? nullptr = always
+    // (e.g. a map canvas keeps horizontal drags for panning)
+    bool (*allowHorizontalGesture)(int x, int y) = nullptr;
 };
 
 void registerPage(PageId id, const PageDef& def);
+void setRefreshInterval(PageId id, uint16_t ms);  // runtime override of PageDef::refreshMs
 void begin(PageId initial);
 
 // boot: render every page once (warms glyph caches + fills the surface cache),
 // reporting progress 0..1, then reveal `initial` over whatever is on the glass
 void warmup(void (*progress)(float));
 void bootReveal(PageId initial);
-void update(uint32_t now);                    // every UI loop pass
+// every UI loop pass. refreshPages = false (low power): only pending actions
+// and touch tracking are serviced, no page refresh / background prerender.
+void update(uint32_t now, bool refreshPages = true);
 
 PageId current();
 bool transitioning();

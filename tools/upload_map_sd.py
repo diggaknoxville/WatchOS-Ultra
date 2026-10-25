@@ -1,127 +1,215 @@
 #!/usr/bin/env python3
-"""Stream a compiled KNAV Germany map file over USB-Serial to /kronos/germany.knav on the watch's microSD card."""
+"""Stream a compiled KNAV map file over USB serial to /kronos/germany.knav on the
+watch's microSD card.
+
+Protocol (serial console of the watch, 115200 baud):
+    host  -> watch   "U<total_bytes>\\n"
+    watch -> host    "UP_READY"            (or "UP_ERR_OPEN")
+    host  -> watch   4096-byte chunks (last one shorter)
+    watch -> host    "K"                   exactly, one line per chunk
+    watch -> host    "UP_DONE ok=1 recvd=<n> map=<0|1>"
+
+Works on Windows, macOS and Linux (pyserial, no select() on file descriptors).
+
+Usage:
+    upload_map_sd.py <map.knav> [--port COM5|/dev/ttyACM0] [--chunk 4096]
+    Port default: $WATCHCTL_PORT, else the first port pyserial lists.
+"""
+import argparse
 import os
 import sys
 import time
-import select
 
-def read_line(fd, timeout=5.0):
-    buf = bytearray()
-    t0 = time.time()
-    while time.time() - t0 < timeout:
-        r, _, _ = select.select([fd], [], [], 0.05)
-        if r:
-            try:
-                b = os.read(fd, 1)
-                if not b:
-                    continue
-                if b == b"\n":
-                    return buf.decode("utf-8", errors="ignore").strip()
-                elif b != b"\r":
-                    buf.extend(b)
-            except BlockingIOError:
-                pass
-    return buf.decode("utf-8", errors="ignore").strip()
+try:
+    import serial
+    import serial.tools.list_ports
+except ImportError:
+    print("pyserial is required: pip install pyserial  (see tools/requirements.txt)")
+    sys.exit(2)
+
+MAGICS = (b"KNAVDE02", b"KNAVDE03")
+
+
+def pick_port(explicit):
+    if explicit:
+        return explicit
+    env = os.environ.get("WATCHCTL_PORT")
+    if env:
+        return env
+    ports = list(serial.tools.list_ports.comports())
+    if not ports:
+        return None
+    # prefer something that looks like a USB CDC device
+    for p in ports:
+        desc = (p.description or "").lower()
+        if "usb" in desc or "cdc" in desc or "jtag" in desc or "espressif" in desc:
+            return p.device
+    return ports[0].device
+
+
+class LineReader:
+    """Line reader on top of pyserial with a timeout and a leftover buffer."""
+
+    def __init__(self, ser):
+        self.ser = ser
+        self.buf = bytearray()
+
+    def read_line(self, timeout):
+        deadline = time.monotonic() + timeout
+        while True:
+            nl = self.buf.find(b"\n")
+            if nl >= 0:
+                line = bytes(self.buf[:nl])
+                del self.buf[:nl + 1]
+                return line.decode("utf-8", errors="replace").strip("\r\n")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            self.ser.timeout = min(0.05, remaining)
+            chunk = self.ser.read(256)
+            if chunk:
+                self.buf.extend(chunk)
+
+    def drain(self, seconds=0.3):
+        end = time.monotonic() + seconds
+        self.ser.timeout = 0.05
+        while time.monotonic() < end:
+            if not self.ser.read(4096):
+                break
+        self.buf.clear()
+
 
 def main():
-    port = sys.argv[2] if len(sys.argv) > 2 else "/dev/ttyACM0"
-    map_path = sys.argv[1] if len(sys.argv) > 1 else "/home/michael/kronos-mapdata/germany_sd.knav"
-    if not os.path.exists(map_path):
-        print(f"Map file not found: {map_path}")
+    ap = argparse.ArgumentParser(description="Upload a KNAV map to the watch SD card over serial.")
+    ap.add_argument("map", help="path to the .knav file")
+    ap.add_argument("--port", help="serial port (default: $WATCHCTL_PORT or first available)")
+    ap.add_argument("--baud", type=int, default=115200)
+    ap.add_argument("--chunk", type=int, default=4096, help="chunk size, must match the firmware (4096)")
+    ap.add_argument("--ack-timeout", type=float, default=8.0, help="seconds to wait for each K")
+    args = ap.parse_args()
+
+    if not os.path.isfile(args.map):
+        print(f"Map file not found: {args.map}")
+        return 1
+    with open(args.map, "rb") as f:
+        data = f.read()
+    total = len(data)
+    if total < 52 or data[:8] not in MAGICS:
+        print("This does not look like a KNAV map file (bad magic).")
         return 1
 
-    with open(map_path, "rb") as f:
-        data = f.read()
+    port = pick_port(args.port)
+    if not port:
+        print("No serial port found. Use --port or set WATCHCTL_PORT.")
+        return 1
 
-    total = len(data)
-    print(f"Uploading {map_path} ({total / 1048576.0:.2f} MB) to {port} -> /kronos/germany.knav ...")
+    print(f"Uploading {args.map} ({total / 1048576.0:.2f} MB) via {port} -> /kronos/germany.knav")
+    try:
+        ser = serial.Serial(port, args.baud, timeout=0.05, write_timeout=5.0)
+    except serial.SerialException as e:
+        print(f"Cannot open {port}: {e}")
+        return 1
 
-    fd = os.open(port, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+    rd = LineReader(ser)
+    try:
+        rd.drain(0.5)
 
-    # Drain any pending input
-    while True:
-        r, _, _ = select.select([fd], [], [], 0.05)
-        if not r:
-            break
-        try:
-            if not os.read(fd, 4096):
+        # --- handshake ---
+        ready = False
+        t0 = time.monotonic()
+        last_send = 0.0
+        while time.monotonic() - t0 < 20.0:
+            if time.monotonic() - last_send >= 2.0:
+                ser.write(f"U{total}\n".encode("ascii"))
+                ser.flush()
+                last_send = time.monotonic()
+            line = rd.read_line(0.5)
+            if line is None:
+                continue
+            if line:
+                print("  <", line)
+            if line.startswith("UP_READY"):
+                ready = True
                 break
-        except BlockingIOError:
-            break
-
-    ready = False
-    t0 = time.time()
-    last_send = 0.0
-    while time.time() - t0 < 15.0:
-        if time.time() - last_send >= 2.0:
-            os.write(fd, f"U{total}\n".encode("ascii"))
-            last_send = time.time()
-        line = read_line(fd, timeout=0.5)
-        if line:
-            print("  <", line)
-        if "UP_READY" in line:
-            ready = True
-            break
-        if "UP_ERR" in line:
-            print("Watch reported error opening SD file!")
-            os.close(fd)
+            if line.startswith("UP_ERR"):
+                print("Watch could not open the SD file for writing.")
+                return 1
+        if not ready:
+            print("Timed out waiting for UP_READY (is the watch connected and the console idle?)")
             return 1
 
-    if not ready:
-        print("Timed out waiting for UP_READY")
-        os.close(fd)
-        return 1
+        # --- data ---
+        sent = 0
+        start_t = time.monotonic()
+        last_print = start_t
+        chunk_size = args.chunk
+        while sent < total:
+            chunk = data[sent:sent + chunk_size]
+            ser.write(chunk)
+            ser.flush()
 
-    sent = 0
-    chunk_size = 4096
-    start_t = time.time()
-    last_print = start_t
-    while sent < total:
-        chunk = data[sent:sent + chunk_size]
-        # Write 4096 bytes
-        off = 0
-        while off < len(chunk):
-            _, w, _ = select.select([], [fd], [], 1.0)
-            if w:
-                n = os.write(fd, chunk[off:])
-                off += n
+            got_ack = False
+            done_line = None
+            ack_deadline = time.monotonic() + args.ack_timeout
+            while time.monotonic() < ack_deadline:
+                line = rd.read_line(ack_deadline - time.monotonic())
+                if line is None:
+                    break
+                if line == "K":              # ACK must be exactly "K"
+                    got_ack = True
+                    break
+                if line.startswith("UP_DONE"):
+                    done_line = line
+                    break
+                if line:
+                    print("\n  [log]", line)
+            if done_line:
+                print("\n  <", done_line)
+                print("Watch finished early.")
+                return 1
+            if not got_ack:
+                print(f"\nMissing ACK at {sent}/{total} bytes")
+                return 1
 
-        got_ack = False
-        ack_t0 = time.time()
-        while time.time() - ack_t0 < 6.0:
-            ack = read_line(fd, timeout=1.0)
-            if ack == "K" or ack.endswith("K"):
-                got_ack = True
+            sent += len(chunk)
+            now = time.monotonic()
+            if now - last_print >= 0.5 or sent == total:
+                elapsed = max(0.001, now - start_t)
+                rate = (sent / 1024.0) / elapsed
+                pct = sent * 100.0 / total
+                eta = (total - sent) / 1024.0 / max(rate, 0.001)
+                print(f"\r  {pct:5.1f}%  {sent // 1024:7d} / {total // 1024} KB  {rate:6.1f} KB/s  ETA {eta:5.0f} s",
+                      end="", flush=True)
+                last_print = now
+        print()
+
+        # --- completion ---
+        done = None
+        deadline = time.monotonic() + 30.0   # reloadMap + write test may take a moment
+        while time.monotonic() < deadline:
+            line = rd.read_line(deadline - time.monotonic())
+            if line is None:
                 break
-            elif "UP_DONE" in ack:
-                print("\n  <", ack)
-                got_ack = True
+            if line:
+                print("  <", line)
+            if line.startswith("UP_DONE"):
+                done = line
                 break
-            elif ack:
-                print("\n  [log]", ack)
-        if not got_ack:
-            print(f"\nMissing ACK at {sent}/{total}")
-            break
+        if not done:
+            print("No UP_DONE from the watch.")
+            return 1
+        fields = dict(kv.split("=", 1) for kv in done.split()[1:] if "=" in kv)
+        if fields.get("ok") != "1":
+            print(f"Upload FAILED: {done}")
+            return 1
+        if fields.get("recvd") not in (None, str(total)):
+            print(f"Upload size mismatch: watch received {fields.get('recvd')} of {total} bytes")
+            return 1
+        print(f"Upload OK ({total} bytes). Map loaded on watch: {'yes' if fields.get('map') == '1' else 'NO'}")
+        return 0 if fields.get("map") == "1" else 3
+    finally:
+        ser.close()
 
-        sent += len(chunk)
-        now = time.time()
-        if now - last_print >= 1.0 or sent == total:
-            elapsed = max(0.001, now - start_t)
-            rate = (sent / 1024.0) / elapsed
-            pct = sent * 100.0 / total
-            print(f"\r  {pct:5.1f}% ({sent // 1024} / {total // 1024} KB) @ {rate:.1f} KB/s", end="", flush=True)
-            last_print = now
-
-    print()
-    for _ in range(4):
-        done_line = read_line(fd, timeout=1.5)
-        if done_line:
-            print("  <", done_line)
-        if "UP_DONE" in done_line:
-            break
-    os.close(fd)
-    return 0
 
 if __name__ == "__main__":
     sys.exit(main())
-

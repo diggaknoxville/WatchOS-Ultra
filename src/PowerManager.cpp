@@ -1,8 +1,8 @@
 #include "PowerManager.h"
 #include "SettingsStorage.h"
 #include "MotionHaptic.h"
+#include "GpsManager.h"
 #include <Wire.h>
-#include <esp32-hal-cpu.h>
 #include <LilyGoLib.h>      // global `instance` (AXP2101 pmu + backlight)
 #include "DisplayEngine.h"
 #include "ui/Icons.h"
@@ -11,6 +11,14 @@ static volatile int sKeyEvent = 0;
 static volatile uint8_t sTargetBrightness = 220;
 static uint8_t sAppliedHwBrightness = 0xFF;
 static SemaphoreHandle_t sI2cMutex = nullptr;
+
+// torch override (not persisted)
+static volatile bool sTorchOn = false;
+
+// requestSleep() bookkeeping
+static const uint32_t SLEEP_GRACE_MS = 800;
+static volatile bool sSleepRequested = false;          // user asked for SLEEP; cleared by real activity
+static volatile unsigned long sSleepRequestedAt = 0;
 
 bool PowerManager::lockI2C(uint32_t timeoutMs) {
     if (!sI2cMutex) return true;
@@ -38,43 +46,43 @@ static void onPmuEvent(DeviceEvent_t, void* params, void*) {
         case PMU_EVENT_KEY_LONG_PRESSED:  sKeyEvent = 2; PowerManager::handleActivity(); break;
         case PMU_EVENT_USBC_INSERT:
             PowerManager::handleActivity();
-            DisplayEngine::showNotification("Charging", "USB power connected", 2500, ICO_BOLT);
+            DisplayEngine::showNotification("Laden", "USB-Stromversorgung verbunden", 2500, ICO_BOLT);
             break;
         case PMU_EVENT_USBC_REMOVE:
-            DisplayEngine::showNotification("On battery", "USB power disconnected", 2500, ICO_BATTERY_FULL);
+            DisplayEngine::showNotification("Akkubetrieb", "USB-Stromversorgung getrennt", 2500, ICO_BATTERY_FULL);
             break;
         case PMU_EVENT_CHARGE_FINISH:
-            DisplayEngine::showNotification("Fully charged", "Battery at 100 %", 4000, ICO_BATTERY_FULL);
+            DisplayEngine::showNotification("Vollständig geladen", "Akku bei 100 %", 4000, ICO_BATTERY_FULL);
             break;
         case PMU_EVENT_LOW_VOLTAGE_LEVEL1:
-            DisplayEngine::showNotification("Battery low", "Connect a charger soon", 6000, ICO_BATTERY_ALERT);
+            DisplayEngine::showNotification("Akku schwach", "Bitte bald laden", 6000, ICO_BATTERY_ALERT);
             break;
         case PMU_EVENT_LOW_VOLTAGE_LEVEL2:
-            DisplayEngine::showNotification("Battery critical", "The watch will shut down soon", 8000, ICO_BATTERY_ALERT);
+            DisplayEngine::showNotification("Akku kritisch", "Die Uhr schaltet sich bald ab", 8000, ICO_BATTERY_ALERT);
             break;
         default: break;
     }
 }
 
 int PowerManager::takeKeyEvent() {
-    int e = sKeyEvent;
-    sKeyEvent = 0;
-    return e;
+    // Atomic read-and-clear: the bg task writes, the UI task consumes. A plain
+    // read-then-store could lose an event written in between.
+    return __atomic_exchange_n(&sKeyEvent, 0, __ATOMIC_SEQ_CST);
 }
 
-XPowersAXP2101 PowerManager::pmu;
 bool PowerManager::pmuReady = false;
 uint8_t PowerManager::currentBrightness = 220;
 PowerState PowerManager::currentState = POWER_ACTIVE;
 unsigned long PowerManager::lastActivityTime = 0;
 unsigned long PowerManager::lastTelemetryUpdate = 0;
 
-float PowerManager::cachedVolt = 4.0f;
-int PowerManager::cachedPercent = 85;
+// Telemetry starts as "unknown" (0 %, 0 V) until the first PMU read in init().
+float PowerManager::cachedVolt = 0.0f;
+int PowerManager::cachedPercent = 0;
+bool PowerManager::cachedBattery = false;
 bool PowerManager::cachedCharging = false;
 bool PowerManager::cachedVbus = false;
-float PowerManager::cachedCurrent = 0.0f;
-float PowerManager::cachedTemp = 28.0f;
+float PowerManager::cachedTemp = 0.0f;
 
 bool PowerManager::init() {
     pinMode(0, INPUT_PULLUP); // Left Action / Boot button (GPIO 0)
@@ -102,51 +110,84 @@ bool PowerManager::init() {
     instance.setBrightness(sAppliedHwBrightness);
     updateTelemetry();
     lastActivityTime = millis();
-    Serial.printf("[PMU] Battery %d%%  %.2fV  vbus=%d charging=%d\n",
-                  cachedPercent, cachedVolt, cachedVbus, cachedCharging);
+    Serial.printf("[PMU] Battery %d%% (%s)  %.2fV  vbus=%d charging=%d\n",
+                  cachedPercent, cachedBattery ? "fuel gauge" : "no battery / voltage curve",
+                  cachedVolt, cachedVbus, cachedCharging);
     return true;
+}
+
+// Derive the target brightness from power state + torch override.
+void PowerManager::recomputeTarget() {
+    if (sTorchOn) {
+        sTargetBrightness = 255;
+        return;
+    }
+    const uint8_t user = SettingsStorage::get().brightness;
+    switch (currentState) {
+        case POWER_ACTIVE: currentBrightness = user; break;
+        case POWER_DIM:    currentBrightness = (uint8_t)max(24, (int)user / 3); break;
+        case POWER_AOD:    currentBrightness = 18; break;   // ultra-low ambient glow
+        case POWER_SLEEP:  currentBrightness = 0; break;
+    }
+    sTargetBrightness = currentBrightness;
 }
 
 void PowerManager::setBrightness(uint8_t level) {
     SettingsStorage::get().brightness = level;
-    currentBrightness = level;
-    sTargetBrightness = level;
     lastActivityTime = millis();
-    if (currentState != POWER_ACTIVE) {
-        currentState = POWER_ACTIVE;
-    }
+    sSleepRequested = false;
+    currentState = POWER_ACTIVE;
+    recomputeTarget();
 }
 
 uint8_t PowerManager::getBrightness() {
-    return currentBrightness;
+    return sTorchOn ? 255 : currentBrightness;
 }
+
+void PowerManager::setTorchOverride(bool on) {
+    sTorchOn = on;
+    if (on) {
+        lastActivityTime = millis();
+        sSleepRequested = false;
+        currentState = POWER_ACTIVE;
+    }
+    recomputeTarget();
+}
+
+bool PowerManager::isTorchOverride() { return sTorchOn; }
 
 void PowerManager::setPowerState(PowerState state) {
     if (currentState == state) return;
+    const PowerState prev = currentState;
     currentState = state;
+    if (state == POWER_ACTIVE) sSleepRequested = false;
 
-    // NOTE: Never call setCpuFrequencyMhz(80/40) while WiFi/BLE/QSPI DMA are active
-    // (causes APB clock divider glitches and watchdog reboots on ESP32-S3), and never
-    // call instance.setBrightness() directly from Core 0 (causes QSPI bus collision
-    // with Core 1 pushColorsAsync DMA). Target brightness is applied on Core 1.
-    switch (state) {
-        case POWER_ACTIVE:
-            currentBrightness = SettingsStorage::get().brightness;
-            sTargetBrightness = currentBrightness;
-            break;
-        case POWER_DIM:
-            currentBrightness = (uint8_t)max(24, (int)SettingsStorage::get().brightness / 3);
-            sTargetBrightness = currentBrightness;
-            break;
-        case POWER_AOD:
-            currentBrightness = 18; // Ultra-low ambient glow
-            sTargetBrightness = currentBrightness;
-            break;
-        case POWER_SLEEP:
-            currentBrightness = 0;
-            sTargetBrightness = 0;
-            break;
+    // NOTE: CPU frequency scaling is intentionally NOT used. Never call
+    // setCpuFrequencyMhz(80/40) while WiFi/BLE/QSPI DMA are active (causes APB
+    // clock divider glitches and watchdog reboots on ESP32-S3). Light sleep is
+    // not used either: the SX1262 DIO1 / BLE / WiFi interrupts would be lost.
+    // Never call instance.setBrightness() directly from Core 0 (QSPI bus
+    // collision with the Core 1 pushColorsAsync DMA): the target brightness is
+    // applied on Core 1 in applyBrightnessOnUiThread().
+    recomputeTarget();
+
+    if (state == POWER_SLEEP && prev != POWER_SLEEP) {
+        // Real power saving that is safe without light sleep: stop continuous
+        // GNSS tracking (~25 mA). The UI task throttles itself to 250 ms via
+        // isLowPowerState(). Pages that need live GPS re-enable it in onShow().
+        GpsManager::setLive(false);
     }
+}
+
+void PowerManager::requestSleep() {
+    sSleepRequestedAt = millis();
+    sSleepRequested = true;
+    lastActivityTime = sSleepRequestedAt;
+    setPowerState(POWER_SLEEP);
+}
+
+bool PowerManager::isLowPowerState() {
+    return currentState == POWER_AOD || currentState == POWER_SLEEP;
 }
 
 void PowerManager::applyBrightnessOnUiThread() {
@@ -162,11 +203,17 @@ PowerState PowerManager::getPowerState() {
 }
 
 void PowerManager::handleActivity() {
-    lastActivityTime = millis();
-    if (currentState != POWER_ACTIVE || currentBrightness != SettingsStorage::get().brightness) {
+    const unsigned long now = millis();
+    if (sSleepRequested && (now - sSleepRequestedAt) < SLEEP_GRACE_MS) {
+        // grace window after requestSleep(): the triggering touch must not wake us
+        return;
+    }
+    sSleepRequested = false;
+    lastActivityTime = now;
+    if (currentState != POWER_ACTIVE ||
+        (!sTorchOn && currentBrightness != SettingsStorage::get().brightness)) {
         currentState = POWER_ACTIVE;
-        currentBrightness = SettingsStorage::get().brightness;
-        sTargetBrightness = currentBrightness;
+        recomputeTarget();
     }
 }
 
@@ -176,11 +223,16 @@ void PowerManager::updateTelemetry() {
     cachedCharging = instance.pmu.isCharging();
     cachedVbus = instance.pmu.isVbusIn();
 
-    // High accuracy voltage to SoC curve for 1S LiPo (3.4V empty to 4.2V full)
-    int pct = (int)((cachedVolt - 3.40f) / (4.20f - 3.40f) * 100.0f);
-    if (pct < 0) pct = 0;
-    if (pct > 100) pct = 100;
-    if (cachedVbus && !cachedCharging && cachedVolt >= 4.10f) pct = 100;
+    // Primary source: AXP2101 fuel gauge (returns -1 without a battery).
+    int pct = instance.pmu.getBatteryPercent();
+    cachedBattery = (pct >= 0);
+    if (pct < 0 || pct > 100) {
+        // Fallback: rough linear 1S LiPo voltage interpolation (3.4 V empty .. 4.2 V full).
+        // This is an approximation only and is wrong under load / while charging.
+        pct = (int)((cachedVolt - 3.40f) / (4.20f - 3.40f) * 100.0f);
+        if (pct < 0) pct = 0;
+        if (pct > 100) pct = 100;
+    }
     cachedPercent = pct;
 
     cachedTemp = instance.pmu.getTemperature();
@@ -188,9 +240,12 @@ void PowerManager::updateTelemetry() {
 
 float PowerManager::getBatteryVoltage() { return cachedVolt; }
 int PowerManager::getBatteryPercent() { return cachedPercent; }
+bool PowerManager::isBatteryConnected() { return cachedBattery; }
 bool PowerManager::isCharging() { return cachedCharging; }
 bool PowerManager::isVbusConnected() { return cachedVbus; }
-float PowerManager::getChargeCurrentMa() { return cachedCharging ? 300.0f : 0.0f; }
+// The AXP2101 has no charge-current ADC; only the configured charge-current
+// limit is readable. Callers show the charge state (isCharging) instead.
+float PowerManager::getChargeCurrentMa() { return 0.0f; }
 float PowerManager::getTempCelsius() { return cachedTemp; }
 
 void PowerManager::loop(unsigned long currentMillis) {
@@ -245,11 +300,18 @@ void PowerManager::loop(unsigned long currentMillis) {
         unlockI2C();
     }
 
+    // A user-requested sleep stays in effect until the next real activity,
+    // regardless of the auto-sleep setting or USB power.
+    if (sSleepRequested) {
+        if (currentState != POWER_SLEEP) setPowerState(POWER_SLEEP);
+        return;
+    }
+
     // Auto Power State transitions (with Smart Sleep power-saving override)
     bool userSleeping = MotionHaptic::isSleeping();
     uint32_t sleepThresholdMs = userSleeping ? 5000UL : (SettingsStorage::get().autoSleepSec * 1000UL);
     if (sleepThresholdMs == 0 && !userSleeping) {
-        // Auto-dim / auto-sleep disabled: always keep active
+        // Auto-dim / auto-sleep disabled ("Nie"): keep active
         if (currentState != POWER_ACTIVE) {
             setPowerState(POWER_ACTIVE);
         }
@@ -282,7 +344,7 @@ void PowerManager::loop(unsigned long currentMillis) {
         }
     } else {
         // On battery:
-        // Dim after sleepThresholdMs, then enter AOD (if enabled) or deep sleep after 2x threshold
+        // Dim after sleepThresholdMs, then enter AOD (if enabled) or display-off sleep after 2x threshold
         if (idleTime > (sleepThresholdMs * 2)) {
             if (SettingsStorage::get().aodEnabled && currentState != POWER_AOD) {
                 setPowerState(POWER_AOD);
@@ -294,4 +356,3 @@ void PowerManager::loop(unsigned long currentMillis) {
         }
     }
 }
-

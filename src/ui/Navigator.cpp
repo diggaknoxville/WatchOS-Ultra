@@ -14,7 +14,6 @@ using Compositor::Layer;
 static const int W = Compositor::W;
 static const int H = Compositor::H;
 static const int SLOP = 10;                 // px before a drag is classified
-static const int EDGE = 30;                 // edge zone for back / home gestures
 static const float SPRING_RESPONSE = 0.18f; // s, snappy critically damped spring
 static const float PROJECTION_S = 0.18f;    // velocity projection for commit decisions
 
@@ -35,9 +34,9 @@ static uint32_t sLastRefresh[PG_COUNT];
 
 static Mode sMode = M_CAROUSEL;
 static PageId sCur = PG_FACE;
-static PageId sStack[8];                    // app stack (pages under the current app)
+static PageId sStack[8];                    // pages (sheets / apps) under the current one, above sBase
 static int sDepth = 0;
-static PageId sBase = PG_FACE;              // page underneath a sheet / app stack
+static PageId sBase = PG_FACE;              // carousel page underneath the sheet / app stack
 static bool sBusy = false;
 static bool sGestures = true;
 static Surface sGlass;                      // capture of the glass at gesture start
@@ -61,6 +60,27 @@ bool isCarousel(PageId id) {
 static int carouselIndex(PageId id) {
     for (int i = 0; i < N_CAROUSEL; i++) if (CAROUSEL[i] == id) return i;
     return -1;
+}
+
+// interaction mode implied by the page on top
+static Mode modeFor(PageId id) {
+    if (id == PG_CONTROL) return M_SHEET_TOP;
+    if (id == PG_NOTIFS) return M_SHEET_BOTTOM;
+    return isCarousel(id) ? M_CAROUSEL : M_APP;
+}
+
+// page revealed by "back" / "close sheet"
+static PageId backTarget() { return sDepth > 0 ? sStack[sDepth - 1] : sBase; }
+
+// push the current page before showing `next` on top of it
+static void pushCurrent() {
+    if (sMode == M_CAROUSEL) { sBase = sCur; sDepth = 0; }
+    else if (sDepth < (int)(sizeof(sStack) / sizeof(sStack[0]))) sStack[sDepth++] = sCur;
+}
+
+static void popTo(PageId target) {
+    if (sDepth > 0) sDepth--;
+    sMode = modeFor(target);
 }
 
 static PageId neighbour(PageId id, int dir) {           // dir +1 = right, -1 = left
@@ -311,8 +331,11 @@ static bool interactive(Scene& sc, bool horizontal, int x0, int y0) {
 }
 
 // ------------------------------------------------------------------ actions
+// land on a carousel page: the sheet / app stack is gone
 static void finishPage(PageId to, const Surface* glass) {
     sMode = M_CAROUSEL;
+    sBase = to;
+    sDepth = 0;
     setCurrent(to, glass);
 }
 
@@ -365,13 +388,9 @@ static void runGesture(Gesture g, int dir, int x0, int y0, bool horizontal) {
         case G_SHEET_TOP_OPEN:  target = PG_CONTROL; ensureSurface(target); sc.to = &sSurf[target]; break;
         case G_SHEET_BOT_OPEN:  target = PG_NOTIFS;  ensureSurface(target); sc.to = &sSurf[target]; break;
         case G_SHEET_TOP_CLOSE:
-        case G_SHEET_BOT_CLOSE: target = sBase;      ensureSurface(target); sc.to = &sSurf[target]; break;
+        case G_SHEET_BOT_CLOSE:
+        case G_BACK:            target = backTarget(); ensureSurface(target); sc.to = &sSurf[target]; break;
         case G_HOME:            target = PG_FACE;    ensureSurface(target); sc.to = &sSurf[target]; break;
-        case G_BACK:
-            target = sDepth > 0 ? sStack[sDepth - 1] : sBase;
-            ensureSurface(target);
-            sc.to = &sSurf[target];
-            break;
         default: break;
     }
     tPrep = micros() - tPrep;
@@ -380,16 +399,12 @@ static void runGesture(Gesture g, int dir, int x0, int y0, bool horizontal) {
         ui::haptic(HAPTIC_TICK);
         switch (g) {
             case G_PAGE:            finishPage(target, sc.to); break;
-            case G_SHEET_TOP_OPEN:  sMode = M_SHEET_TOP; sBase = sCur; setCurrent(PG_CONTROL, sc.to); break;
-            case G_SHEET_BOT_OPEN:  sMode = M_SHEET_BOTTOM; sBase = sCur; setCurrent(PG_NOTIFS, sc.to); break;
+            case G_SHEET_TOP_OPEN:
+            case G_SHEET_BOT_OPEN:  pushCurrent(); sMode = modeFor(target); setCurrent(target, sc.to); break;
             case G_SHEET_TOP_CLOSE:
-            case G_SHEET_BOT_CLOSE: finishPage(sBase, sc.to); break;
+            case G_SHEET_BOT_CLOSE:
+            case G_BACK:            popTo(target); setCurrent(target, sc.to); break;
             case G_HOME:            sDepth = 0; finishPage(PG_FACE, sc.to); break;
-            case G_BACK:
-                if (sDepth > 0) { sDepth--; sMode = isCarousel(target) ? M_CAROUSEL : M_APP; }
-                if (isCarousel(target)) sMode = M_CAROUSEL;
-                setCurrent(target, sc.to);
-                break;
             default: break;
         }
         sSurf[target].renderedAt = millis();                // keep target surface valid for fast chained swipes
@@ -422,14 +437,13 @@ static void doHome();
 static void doGo(PageId id) {
     if (!registered(id) || sBusy || id == sCur) return;
     if (id == PG_CONTROL || id == PG_NOTIFS) {
-        PageId under = (sMode == M_CAROUSEL || sMode == M_APP) ? sCur : sBase;
         sBusy = true;
         prepareGlass();
         ensureSurface(id);
         Scene sc = {id == PG_CONTROL ? G_SHEET_TOP_OPEN : G_SHEET_BOT_OPEN, &sGlass, &sSurf[id], 0, (float)H};
         animate(sc);
-        sMode = id == PG_CONTROL ? M_SHEET_TOP : M_SHEET_BOTTOM;
-        sBase = under;
+        pushCurrent();
+        sMode = modeFor(id);
         setCurrent(id, &sSurf[id]);
         sBusy = false;
         return;
@@ -458,41 +472,31 @@ static void doGo(PageId id) {
 }
 
 static void doOpenApp(PageId id) {
-    if (!registered(id) || sBusy) return;
+    if (!registered(id) || sBusy || id == sCur) return;
+    if (id == PG_CONTROL || id == PG_NOTIFS || isCarousel(id)) { doGo(id); return; }
     sBusy = true;
     prepareGlass();
     ensureSurface(id);
     Scene sc = {G_APP_OPEN, &sGlass, &sSurf[id], 0, (float)H};
     animate(sc);
-    if (sMode == M_APP) { if (sDepth < 8) sStack[sDepth++] = sCur; }
-    else { sBase = sCur; sDepth = 0; }
+    pushCurrent();
     sMode = M_APP;
     setCurrent(id, &sSurf[id]);
     sBusy = false;
 }
 
 static void doBack() {
-    if (sBusy) return;
-    if (sMode == M_SHEET_TOP || sMode == M_SHEET_BOTTOM) {
-        sBusy = true;
-        prepareGlass();
-        ensureSurface(sBase);
-        Scene sc = {sMode == M_SHEET_TOP ? G_SHEET_TOP_CLOSE : G_SHEET_BOT_CLOSE, &sGlass, &sSurf[sBase], 0, (float)H};
-        animate(sc);
-        finishPage(sBase, &sSurf[sBase]);
-        sBusy = false;
-    } else if (sMode == M_APP) {
-        PageId target = sDepth > 0 ? sStack[sDepth - 1] : sBase;
-        sBusy = true;
-        prepareGlass();
-        ensureSurface(target);
-        Scene sc = {G_BACK, &sGlass, &sSurf[target], 0, (float)W};
-        animate(sc);
-        if (sDepth > 0) sDepth--;
-        sMode = (sDepth == 0 && isCarousel(target)) ? M_CAROUSEL : M_APP;
-        setCurrent(target, &sSurf[target]);
-        sBusy = false;
-    }
+    if (sBusy || sMode == M_CAROUSEL) return;
+    PageId target = backTarget();
+    Gesture g = (sMode == M_SHEET_TOP) ? G_SHEET_TOP_CLOSE : (sMode == M_SHEET_BOTTOM) ? G_SHEET_BOT_CLOSE : G_BACK;
+    sBusy = true;
+    prepareGlass();
+    ensureSurface(target);
+    Scene sc = {g, &sGlass, &sSurf[target], 0, g == G_BACK ? (float)W : (float)H};
+    animate(sc);
+    popTo(target);
+    setCurrent(target, &sSurf[target]);
+    sBusy = false;
 }
 
 static void doHome() {
@@ -556,14 +560,9 @@ static Gesture classify(bool horizontal, int dx, int dy, int x0, int y0, int* di
     switch (sMode) {
         case M_CAROUSEL:
             if (horizontal) {
-                // On PG_POSITION (Map), drag inside the map is reserved for smooth 2D panning!
-                // Only edge swipes (near bezels x0 < 36 or x0 > W - 36) or outside the map card switch pages.
-                if (sCur == PG_POSITION) {
-                    bool insideMap = (y0 >= 72 && y0 <= 72 + 242 && x0 >= 14 && x0 <= W - 14);
-                    if (insideMap && (x0 >= 36 && x0 <= W - 36)) {
-                        return G_NONE; // Pass directly to map canvas drag & drop!
-                    }
-                }
+                // a page may keep horizontal drags for itself (map panning)
+                const PageDef& cp = sPages[sCur];
+                if (cp.allowHorizontalGesture && !cp.allowHorizontalGesture(x0, y0)) return G_NONE;
                 *dir = dx < 0 ? 1 : -1;
                 if (neighbour(sCur, *dir) == PG_COUNT) *dir = 0;   // rubber band
                 return G_PAGE;
@@ -588,9 +587,9 @@ static Gesture classify(bool horizontal, int dx, int dy, int x0, int y0, int* di
             }
             return G_NONE;
         case M_APP:
-            if (horizontal && dx > 0 && x0 < EDGE) return G_BACK;
+            if (horizontal && dx > 0 && x0 < BACK_EDGE) return G_BACK;
             if (!horizontal && dy > 0 && y0 <= 72) return G_SHEET_TOP_OPEN;
-            if (!horizontal && dy < 0 && y0 > H - EDGE - 10) return G_HOME;
+            if (!horizontal && dy < 0 && y0 > H - HOME_EDGE) return G_HOME;
             return G_NONE;
     }
     return G_NONE;
@@ -687,8 +686,8 @@ static void prerender(uint32_t now) {
         want[n++] = PG_CONTROL;
         if (sCur == PG_FACE) { want[n++] = PG_NOTIFS; }
     } else {
+        want[n++] = backTarget();
         want[n++] = PG_FACE;
-        if (sMode == M_APP) want[n++] = sDepth > 0 ? sStack[sDepth - 1] : sBase;
     }
     for (int i = 0; i < n; i++) {
         PageId id = want[i];
@@ -705,25 +704,31 @@ static void prerender(uint32_t now) {
 void registerPage(PageId id, const PageDef& def) {
     if (id >= PG_COUNT) return;
     sPages[id] = def;
-    // Keep all page surfaces permanently cached in PSRAM unless explicitly
-    // invalidated via markDirty() or updated when leaving the active page.
-    sPages[id].ttlMs = 0;
+    // PageDef::ttlMs is honoured: pages whose content ages (uptime, countdowns)
+    // are re-rendered in the background once their cached surface is stale;
+    // ttlMs = 0 keeps the surface until markDirty().
     sDirty[id] = true;
+}
+
+void setRefreshInterval(PageId id, uint16_t ms) {
+    if (id < PG_COUNT) sPages[id].refreshMs = ms;
 }
 
 void begin(PageId initial) {
     sCur = initial;
-    sMode = isCarousel(initial) ? M_CAROUSEL : M_APP;
+    sMode = modeFor(initial);
+    if (sMode == M_CAROUSEL) sBase = initial;
     for (int i = 0; i < PG_COUNT; i++)
         if (registered((PageId)i)) ui::setHidden(sPages[i].root, i != initial);
     if (registered(initial) && sPages[initial].onShow) sPages[initial].onShow();
     refreshPage(initial, true);
 }
 
-void update(uint32_t now) {
+void update(uint32_t now, bool refreshPages) {
     flushPendingAction();
     trackGestures();
     flushPendingAction();
+    if (!refreshPages) return;                           // AOD / sleep: nothing to draw
     const PageDef& p = sPages[sCur];
     if (registered(sCur) && p.refresh && (p.refreshMs == 0 || now - sLastRefresh[sCur] >= p.refreshMs)) {
         p.refresh(false);
@@ -750,7 +755,9 @@ void bootReveal(PageId initial) {
     ensureSurface(initial);
     Scene sc = {G_APP_OPEN, &sGlass, &sSurf[initial], 0, (float)H};
     animate(sc);
-    sMode = isCarousel(initial) ? M_CAROUSEL : M_APP;
+    sMode = modeFor(initial);
+    if (sMode == M_CAROUSEL) sBase = initial;
+    sDepth = 0;
     setCurrent(initial, &sSurf[initial]);
     sBusy = false;
 }

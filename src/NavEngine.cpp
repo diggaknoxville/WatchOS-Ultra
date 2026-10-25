@@ -1,122 +1,153 @@
+// =============================================================================
+//  NavEngine - offline vector map, place search, A* routing, GPX logging
+//
+//  See include/NavEngine.h for the threading model and include/MapFormat.h
+//  for the on-disk container. Log prefixes: [NAV] engine, [MAP] map file /
+//  loader, [SD] card handling.
+// =============================================================================
 #include "NavEngine.h"
+#include "MapFormat.h"
 #include "GpsManager.h"
 #include "RadioLoRa.h"
 #include "RtcManager.h"
-#include "DisplayEngine.h"
 #include "ui/Icons.h"
 #include "ui/Navigator.h"
 #include <LilyGoLib.h>
 #include <SD.h>
-#include <SPI.h>
 #include <Preferences.h>
 #include <esp_partition.h>
+#include <esp_heap_caps.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <math.h>
+#include <string.h>
+#include <time.h>
 #include <vector>
 #include <queue>
 #include <algorithm>
+#include <utility>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
 
-static constexpr double DE_MIN_LAT = 47.20;
-static constexpr double DE_MAX_LAT = 55.10;
-static constexpr double DE_MIN_LON = 5.80;
-static constexpr double DE_MAX_LON = 15.10;
+// Germany centre, used when nothing better is known
+static constexpr double DE_CENTER_LAT = 51.1657;
+static constexpr double DE_CENTER_LON = 10.4515;
 
-// Stuttgart + all adjacent Landkreise bounding box for Tier 3 Ultra-Fine Street/Building/Landuse grid
-static constexpr double STU_MIN_LAT = 48.42;
-static constexpr double STU_MAX_LAT = 49.18;
-static constexpr double STU_MIN_LON = 8.75;
-static constexpr double STU_MAX_LON = 9.75;
+static constexpr const char* MAP_SD_PATH_PRIMARY = "/kronos/germany.knav";
+static constexpr const char* MAP_SD_TMP_PATH     = "/kronos/germany.tmp";
+static constexpr const char* MAP_SD_CANDIDATES[] = {"/kronos/germany.knav", "/germany.knav", "/map/germany.knav"};
+static constexpr const char* GPX_DIR = "/tracks";
 
-static constexpr int COARSE_NX = 32;
-static constexpr int COARSE_NY = 32;
-static constexpr int FINE_NX   = 256;
-static constexpr int FINE_NY   = 256;
-static constexpr int ULTRA_NX  = 128;
-static constexpr int ULTRA_NY  = 128;
+// =============================================================================
+// Locks
+// =============================================================================
+// Engine mutex: guards every piece of shared state in this file.
+static SemaphoreHandle_t navMutex() {
+    static SemaphoreHandle_t m = xSemaphoreCreateRecursiveMutex();
+    return m;
+}
+// I/O mutex (leaf): serialises SD card access between the background loader
+// (which runs without the engine mutex) and everything else. Never take the
+// engine mutex while holding it.
+static SemaphoreHandle_t ioMutex() {
+    static SemaphoreHandle_t m = xSemaphoreCreateRecursiveMutex();
+    return m;
+}
 
-// Feature classes in KNAVDE02
-enum FeatureClass : uint8_t {
-    FEAT_FARMLAND    = 0,  // Filled polygon: Ackerland / Weinberge / Wiesen
-    FEAT_FOREST      = 1,  // Filled polygon: Wald / Forst
-    FEAT_PARK        = 2,  // Filled polygon: Park / Grünanlage
-    FEAT_URBAN       = 3,  // Filled polygon: Wohn-/Gewerbegebiet
-    FEAT_WATER_POLY  = 4,  // Filled polygon: See / Neckar / Flussfläche
-    FEAT_BUILDING    = 5,  // Filled polygon: Gebäude-Grundriss (3D footprint)
-    FEAT_WATER       = 6,  // Polyline: Fluss / Bach
-    FEAT_BOUNDARY    = 7,  // Polyline: Grenze
-    FEAT_RAIL        = 8,  // Polyline: S-Bahn / U-Bahn / DB-Schiene
-    FEAT_PATH        = 9,  // Polyline: Fußweg / Radweg / Waldweg
-    FEAT_RESIDENTIAL = 10, // Polyline: Wohnstraße / Anliegerstraße
-    FEAT_TERTIARY    = 11, // Polyline: Kreisstraße / Ortsverbindungsstraße
-    FEAT_SECONDARY   = 12, // Polyline: Landesstraße
-    FEAT_PRIMARY     = 13, // Polyline: Bundesstraße
-    FEAT_MOTORWAY    = 14  // Polyline: Autobahn
+struct NavLock {
+    NavLock() { xSemaphoreTakeRecursive(navMutex(), portMAX_DELAY); }
+    ~NavLock() { xSemaphoreGiveRecursive(navMutex()); }
+    NavLock(const NavLock&) = delete;
+    NavLock& operator=(const NavLock&) = delete;
+};
+struct IoLock {
+    IoLock() { xSemaphoreTakeRecursive(ioMutex(), portMAX_DELAY); }
+    ~IoLock() { xSemaphoreGiveRecursive(ioMutex()); }
+    IoLock(const IoLock&) = delete;
+    IoLock& operator=(const IoLock&) = delete;
 };
 
-struct KnavHeader {
-    char magic[8];          // "KNAVDE02" or "KNAVDE01"
-    uint32_t numPlaces;
-    uint32_t placesOffset;
-    uint32_t numRouteNodes;
-    uint32_t numRouteEdges;
-    uint32_t routeNodesOffset;
-    uint32_t routeEdgesOffset;
-    uint32_t coarseDirOffset;
-    uint32_t fineDirOffset;
-    uint32_t ultraDirOffset;
-    uint32_t numPois;
-    uint32_t poisOffset;
-};
+// =============================================================================
+// Static state (all guarded by the engine mutex unless noted)
+// =============================================================================
+static NavStatus sStat{};
+static bool sInited = false;
+static unsigned long sInitMs = 0;
 
-struct DiskPlace {
-    int32_t lat_e5;
-    int32_t lon_e5;
-    uint32_t pop;
-    uint8_t rank;
-    char name[35];
-};
+// --- map source --------------------------------------------------------------
+static KnavHeader sHdr{};
+static bool sHdrIsV3 = false;
+static uint64_t sFileBound = 0;             // readable bytes (SD file size or flash partition size)
+static uint32_t sMapGen = 0;                // bumped on every unload; async jobs compare against it
+static char sMapPath[48] = "";
+static const esp_partition_t* sFlashPart = nullptr;
+static bool sUseFlashPart = false;
+static bool sMirrorPending = false;         // flash map should be mirrored to SD (deferred, chunked)
+static bool sDeferredBootDone = false;
 
-struct DiskPoi {
-    int32_t lat_e5;
-    int32_t lon_e5;
-    uint8_t type; // 0=Transit(S/U), 1=Parking, 2=Fuel, 3=Food/Cafe, 4=Shop/Market, 5=Health, 6=Sight, 7=StreetName
-    char name[27];
-};
+// --- PSRAM tables (published by the loader, freed by unloadMapLocked) --------
+static DiskPlace* sPlaces = nullptr;
+static uint32_t sNumPlaces = 0;
+static DiskPoi* sPois = nullptr;
+static uint32_t sNumPois = 0;
+static uint32_t* sPoiCellStart = nullptr;   // KNAV_ULTRA_CELLS + 1 entries (CSR index by ultra cell)
+static uint32_t* sPoiOrder = nullptr;       // numPois entries, indexes into sPois
+static DiskRouteNode* sNodes = nullptr;
+static DiskRouteEdge* sEdges = nullptr;
+static uint32_t sNumNodes = 0, sNumEdges = 0;
+static bool sGraphReady = false;
+static bool sLoaderFinished = false;        // all stages for the current generation done (or skipped)
+// Non-empty-cell bitmaps per tier (built from the directories, entries validated)
+static uint8_t* sCellBitmap[3] = {nullptr, nullptr, nullptr};
+static bool sCellBitmapReady[3] = {false, false, false};
 
-struct DiskRouteNode {
-    int32_t lat_e5;
-    int32_t lon_e5;
-    uint32_t firstEdge;
-    uint16_t edgeCount;
-    uint16_t pad;
-};
-
-struct DiskRouteEdge {
-    uint32_t toNode;
-    uint16_t dist_hm;
-    uint8_t flags;
-    uint8_t pad;
-};
-
-struct CellDirEntry {
-    uint32_t offset;
-    uint32_t length;
-};
-
+// --- waypoints -----------------------------------------------------------------
 struct UserWaypoint {
     char name[24];
     double lat;
     double lon;
 };
-
 static constexpr int MAX_USER_WAYPOINTS = 16;
 static UserWaypoint sWaypoints[MAX_USER_WAYPOINTS];
 static int sNumWaypoints = 0;
 
-// Built-in cities (Stuttgart + all adjacent Landkreise + major German cities)
+// --- route -----------------------------------------------------------------
+static std::vector<NavRoutePoint> sRoute;
+struct RouteRequest {
+    bool pending = false;
+    uint32_t serial = 0;
+    double sLat = 0, sLon = 0, dLat = 0, dLon = 0;
+    NavMode mode = NAV_MODE_CAR;
+};
+static RouteRequest sReq;
+static uint32_t sReqSerial = 0;
+static bool sRoutingActive = false;         // background task is inside A* (graph must not be freed)
+static bool sGraphDropPending = false;      // unloadMapLocked() ran while routing; free afterwards
+static DiskRouteNode* sDropNodes = nullptr;
+static DiskRouteEdge* sDropEdges = nullptr;
+static bool sRouteWaitingForPos = false;    // request accepted without a position; route when one appears
+
+// --- GPX ---------------------------------------------------------------------
+static std::vector<NavRoutePoint> sGpxTrail;
+static unsigned long sLastGpxMs = 0;
+static char sGpxOpenPath[40] = "";          // file with an open <trkseg>, "" = none
+static char sGpxOpenDay[12] = "";           // local date (YYYY-MM-DD) that file belongs to
+
+// --- scratch (used only under the engine mutex) ------------------------------
+static LoraPeerNode sPeerScratch[16];
+
+// --- shared SD write test ------------------------------------------------------------
+static File sUploadFile;
+static uint32_t sUploadRemaining = 0;
+static bool sUploadActive = false;
+
+// =============================================================================
+// Built-in city list. Used ONLY as a fallback label / search source while no
+// map place table is resident in PSRAM (no map, or tables still loading).
+// With a loaded map, labels come from the map's place table (rank <= 2 first).
+// =============================================================================
 static const NavPlace BUILTIN_CITIES[] = {
     {"Stuttgart",              48.7758,  9.1829,  632865, 1},
     {"Esslingen am Neckar",    48.7406,  9.3108,   94941, 2},
@@ -159,6 +190,7 @@ static const NavPlace BUILTIN_CITIES[] = {
 };
 static constexpr int N_BUILTIN_CITIES = sizeof(BUILTIN_CITIES) / sizeof(BUILTIN_CITIES[0]);
 
+// Coarse outline of the German border (lat_e5, lon_e5), drawn at overview zoom.
 static const int32_t DE_BORDER_PTS[][2] = {
     {5490000,  835000}, {5480000,  945000}, {5440000, 1020000}, {5400000, 1085000},
     {5445000, 1260000}, {5410000, 1380000}, {5390000, 1425000}, {5330000, 1440000},
@@ -174,135 +206,292 @@ static const int32_t DE_BORDER_PTS[][2] = {
 };
 static constexpr int N_BORDER_PTS = sizeof(DE_BORDER_PTS) / sizeof(DE_BORDER_PTS[0]);
 
-static NavStatus sStat{};
-static KnavHeader sHdr{};
-static bool sIsV2 = false;
-static char sMapPath[48] = "/kronos/germany.knav";
-static const esp_partition_t* sFlashPart = nullptr;
-static bool sUseFlashPart = false;
-static std::vector<NavRoutePoint> sRoute;
-static std::vector<NavRoutePoint> sGpxTrail;
-static unsigned long sLastGpxMs = 0;
+// =============================================================================
+// Small helpers
+// =============================================================================
+static inline double deg2rad(double d) { return d * M_PI / 180.0; }
+
+static double haversineKm(double lat1, double lon1, double lat2, double lon2) {
+    double dLat = deg2rad(lat2 - lat1);
+    double dLon = deg2rad(lon2 - lon1);
+    double a = sin(dLat * 0.5) * sin(dLat * 0.5) +
+               cos(deg2rad(lat1)) * cos(deg2rad(lat2)) * sin(dLon * 0.5) * sin(dLon * 0.5);
+    return 6371.0 * 2.0 * atan2(sqrt(a), sqrt(1.0 - a));
+}
+
+static float calcBearingDeg(double lat1, double lon1, double lat2, double lon2) {
+    double phi1 = deg2rad(lat1), phi2 = deg2rad(lat2);
+    double dLon = deg2rad(lon2 - lon1);
+    double y = sin(dLon) * cos(phi2);
+    double x = cos(phi1) * sin(phi2) - sin(phi1) * cos(phi2) * cos(dLon);
+    double brng = atan2(y, x) * 180.0 / M_PI;
+    return (float)fmod(brng + 360.0, 360.0);
+}
+
+static inline double kmPerDegLon(double lat) {
+    double c = cos(deg2rad(lat));
+    if (c < 0.2) c = 0.2;
+    return 111.32 * c;
+}
+
+static bool psramCanAlloc(size_t bytes, size_t reserve = 768 * 1024) {
+    if (bytes == 0) return false;
+    size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+    size_t freeB = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    return largest >= bytes && freeB >= bytes + reserve;
+}
+
+static void* psramAlloc(size_t bytes) {
+    if (!psramCanAlloc(bytes)) return nullptr;
+    return heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM);
+}
+
+static void fmtAge(char* out, size_t n, uint32_t sec) {
+    if (sec < 3600) snprintf(out, n, "%lum", (unsigned long)(sec / 60));
+    else if (sec < 172800) snprintf(out, n, "%luh", (unsigned long)(sec / 3600));
+    else snprintf(out, n, "%lud", (unsigned long)(sec / 86400));
+}
+
+static bool timeIsPlausible() {
+    time_t t = time(NULL);
+    return t > 1700000000 && RtcManager::isTimeValid();
+}
+
+static void setTurn(const char* cmd, const char* icon) {
+    strncpy(sStat.nextTurnCmd, cmd, sizeof(sStat.nextTurnCmd) - 1);
+    sStat.nextTurnCmd[sizeof(sStat.nextTurnCmd) - 1] = 0;
+    sStat.nextTurnIcon = icon ? icon : ICO_NAVIGATION;
+}
 
 // =============================================================================
-// SD Card Hardware Write-Protect Unlock (CMD27 PROGRAM_CSD + CMD42 UNLOCK)
+// Map reader (SD file or flash partition). readAt() is bounds-checked against
+// the readable size handed to open(). SD access goes through the I/O mutex.
 // =============================================================================
-static uint8_t sdCrc7(const uint8_t* data, size_t len) {
-    uint8_t crc = 0;
-    for (size_t i = 0; i < len; i++) {
-        uint8_t d = data[i];
-        for (int b = 0; b < 8; b++) {
-            crc <<= 1;
-            if ((d ^ crc) & 0x80) crc ^= 0x09;
-            d <<= 1;
+struct MapReader {
+    File sdFile;
+    const esp_partition_t* part = nullptr;
+    uint64_t bound = 0;
+    bool valid = false;
+
+    bool open(bool useFlash, const esp_partition_t* flashPart, const char* path, uint64_t readable) {
+        close();
+        bound = readable;
+        if (useFlash) {
+            if (!flashPart) return false;
+            part = flashPart;
+            valid = true;
+            return true;
+        }
+        IoLock io;
+        sdFile = SD.open(path, FILE_READ);
+        valid = (bool)sdFile;
+        if (valid && bound == 0) bound = sdFile.size();
+        return valid;
+    }
+    bool readAt(uint64_t offset, void* dst, size_t len) {
+        if (!valid || !dst) return false;
+        if (len == 0) return true;
+        if (offset + (uint64_t)len > bound) return false;
+        if (part) {
+            if (offset + len > part->size) return false;
+            return esp_partition_read(part, (size_t)offset, dst, len) == ESP_OK;
+        }
+        IoLock io;
+        if (!sdFile.seek((uint32_t)offset)) return false;
+        return sdFile.read((uint8_t*)dst, len) == len;
+    }
+    void close() {
+        if (sdFile) {
+            IoLock io;
+            sdFile.close();
+        }
+        part = nullptr;
+        valid = false;
+    }
+};
+
+// Persistent reader for rendering (opened by reloadMap, closed by unload).
+static MapReader sMapRd;
+
+// =============================================================================
+// Header validation
+// =============================================================================
+static bool rangeOk(uint64_t off, uint64_t count, uint64_t elemSize, uint64_t bound) {
+    if (count == 0) return true;
+    uint64_t end = off + count * elemSize;
+    return off > 0 && end <= bound;
+}
+
+// Reads and validates a header from a reader whose bound is already known.
+static bool readHeader(MapReader& rd, KnavHeader& h, bool& isV3) {
+    memset(&h, 0, sizeof(h));
+    char magic[KNAV_MAGIC_LEN];
+    if (!rd.readAt(0, magic, sizeof(magic))) return false;
+    if (knavMagicIsV3(magic)) {
+        if (!rd.readAt(0, &h, KNAV_HEADER_V3_SIZE)) return false;
+        isV3 = true;
+    } else if (knavMagicIsV2(magic)) {
+        if (!rd.readAt(0, &h, KNAV_HEADER_V2_SIZE)) return false;
+        isV3 = false;
+    } else {
+        return false;
+    }
+    uint64_t bound = rd.bound;
+    if (isV3) {
+        if (h.fileSize < KNAV_HEADER_V3_SIZE || h.fileSize > bound) {
+            Serial.printf("[MAP] header fileSize %lu exceeds readable size %llu\n",
+                          (unsigned long)h.fileSize, (unsigned long long)bound);
+            return false;
+        }
+        bound = h.fileSize;
+    }
+    if (h.numPlaces > KNAV_MAX_PLACES || h.numRouteNodes > KNAV_MAX_ROUTE_NODES ||
+        h.numRouteEdges > KNAV_MAX_ROUTE_EDGES || h.numPois > KNAV_MAX_POIS) {
+        Serial.println("[MAP] header counts out of range");
+        return false;
+    }
+    if (!rangeOk(h.placesOffset, h.numPlaces, sizeof(DiskPlace), bound) ||
+        !rangeOk(h.routeNodesOffset, h.numRouteNodes, sizeof(DiskRouteNode), bound) ||
+        !rangeOk(h.routeEdgesOffset, h.numRouteEdges, sizeof(DiskRouteEdge), bound) ||
+        !rangeOk(h.poisOffset, h.numPois, sizeof(DiskPoi), bound)) {
+        Serial.println("[MAP] header table offsets outside file");
+        return false;
+    }
+    if (h.coarseDirOffset && !rangeOk(h.coarseDirOffset, KNAV_COARSE_CELLS, sizeof(CellDirEntry), bound)) return false;
+    if (h.fineDirOffset   && !rangeOk(h.fineDirOffset,   KNAV_FINE_CELLS,   sizeof(CellDirEntry), bound)) return false;
+    if (h.ultraDirOffset  && !rangeOk(h.ultraDirOffset,  KNAV_ULTRA_CELLS,  sizeof(CellDirEntry), bound)) return false;
+    return true;
+}
+
+static uint32_t dirOffsetForTier(int tier) {
+    return tier == 2 ? sHdr.ultraDirOffset : tier == 1 ? sHdr.fineDirOffset : sHdr.coarseDirOffset;
+}
+
+// =============================================================================
+// Cell cache (PSRAM, LRU, byte budgeted). Keys: (tier << 20) | cellIdx.
+// =============================================================================
+struct CachedCell {
+    int32_t key;        // -1 = unused
+    uint32_t lastUsed;
+    uint8_t* data;      // nullptr with len 0 = known empty cell
+    uint32_t len;
+};
+static constexpr int CELL_CACHE_SLOTS = 192;
+static constexpr uint32_t CELL_CACHE_BUDGET = 1536u * 1024u;
+static CachedCell sCellCache[CELL_CACHE_SLOTS];
+static uint32_t sCacheClock = 0;
+static uint32_t sCacheBytes = 0;
+static bool sWarnedBigCell = false;
+
+static void clearCellCache() {
+    for (int i = 0; i < CELL_CACHE_SLOTS; i++) {
+        if (sCellCache[i].data) heap_caps_free(sCellCache[i].data);
+        sCellCache[i].data = nullptr;
+        sCellCache[i].key = -1;
+        sCellCache[i].len = 0;
+        sCellCache[i].lastUsed = 0;
+    }
+    sCacheBytes = 0;
+}
+
+static int cacheVictim() {
+    int victim = 0;
+    for (int i = 0; i < CELL_CACHE_SLOTS; i++) {
+        if (sCellCache[i].key == -1) return i;
+        if (sCellCache[i].lastUsed < sCellCache[victim].lastUsed) victim = i;
+    }
+    return victim;
+}
+
+static void cacheEvict(int slot) {
+    if (sCellCache[slot].data) {
+        heap_caps_free(sCellCache[slot].data);
+        sCellCache[slot].data = nullptr;
+        if (sCacheBytes >= sCellCache[slot].len) sCacheBytes -= sCellCache[slot].len;
+        else sCacheBytes = 0;
+    }
+    sCellCache[slot].key = -1;
+    sCellCache[slot].len = 0;
+}
+
+static inline bool cellBitmapGet(int tier, uint32_t idx) {
+    return (sCellBitmap[tier][idx >> 3] >> (idx & 7)) & 1;
+}
+static inline void cellBitmapSet(uint8_t* bm, uint32_t idx) {
+    bm[idx >> 3] |= (uint8_t)(1u << (idx & 7));
+}
+
+// Returns the payload of a cell (nullptr with outLen 0 if empty / invalid).
+static const uint8_t* getCachedCellData(int tier, uint32_t cellIdx, uint32_t& outLen) {
+    outLen = 0;
+    if (tier < 0 || tier > 2 || cellIdx >= knavDirEntries(tier)) return nullptr;
+    if (sCellBitmapReady[tier] && !cellBitmapGet(tier, cellIdx)) return nullptr;
+
+    int32_t key = (int32_t)(((uint32_t)tier << 20) | cellIdx);
+    sCacheClock++;
+    for (int i = 0; i < CELL_CACHE_SLOTS; i++) {
+        if (sCellCache[i].key == key) {
+            sCellCache[i].lastUsed = sCacheClock;
+            outLen = sCellCache[i].len;
+            return sCellCache[i].data;
         }
     }
-    return (crc << 1) | 1;
-}
 
-static bool testSdWriteCapability() {
-    digitalWrite(LORA_CS, HIGH);
-    digitalWrite(NFC_CS, HIGH);
-    File f = SD.open("/kronos_rw.tmp", FILE_WRITE, true);
-    if (!f) return false;
-    size_t w = f.write((const uint8_t*)"KRONOS", 6);
-    f.flush();
-    f.close();
-    if (w != 6) return false;
-    File r = SD.open("/kronos_rw.tmp", FILE_READ);
-    if (!r) return false;
-    char buf[8] = {0};
-    size_t nr = r.read((uint8_t*)buf, 6);
-    r.close();
-    SD.remove("/kronos_rw.tmp");
-    return (nr == 6 && memcmp(buf, "KRONOS", 6) == 0);
-}
+    uint32_t baseDir = dirOffsetForTier(tier);
+    if (baseDir == 0 || !sMapRd.valid) return nullptr;
 
-static bool tryUnlockSdCardHardware() {
-    digitalWrite(LORA_CS, HIGH);
-    digitalWrite(NFC_CS, HIGH);
-    SD.end();
-    delay(20);
+    CellDirEntry de{};
+    if (!sMapRd.readAt((uint64_t)baseDir + (uint64_t)cellIdx * sizeof(CellDirEntry), &de, sizeof(de))) return nullptr;
 
-    SPI.beginTransaction(SPISettings(400000, MSBFIRST, SPI_MODE0));
-    digitalWrite(SD_CS, HIGH);
-    for (int i = 0; i < 10; i++) SPI.transfer(0xFF);
+    int slot = cacheVictim();
+    cacheEvict(slot);
 
-    auto sendCmd = [&](uint8_t cmd, uint32_t arg) -> uint8_t {
-        SPI.transfer(0xFF);
-        uint8_t pkt[6] = {
-            (uint8_t)(0x40 | cmd),
-            (uint8_t)(arg >> 24),
-            (uint8_t)(arg >> 16),
-            (uint8_t)(arg >> 8),
-            (uint8_t)(arg & 0xFF),
-            0
-        };
-        pkt[5] = sdCrc7(pkt, 5);
-        for (int i = 0; i < 6; i++) SPI.transfer(pkt[i]);
-        for (int i = 0; i < 16; i++) {
-            uint8_t r = SPI.transfer(0xFF);
-            if ((r & 0x80) == 0) return r;
-        }
-        return 0xFF;
-    };
-
-    digitalWrite(SD_CS, LOW);
-    uint8_t r0 = sendCmd(0, 0); // CMD0
-    if (r0 == 0x01) {
-        sendCmd(8, 0x1AA);
-        for (int i = 0; i < 4; i++) SPI.transfer(0xFF);
-        for (int tries = 0; tries < 200; tries++) {
-            sendCmd(55, 0);
-            if (sendCmd(41, 0x40000000) == 0x00) break;
-            delay(2);
-        }
-        // Read CSD via CMD9
-        if (sendCmd(9, 0) == 0x00) {
-            uint8_t tok = 0xFF;
-            for (int i = 0; i < 200; i++) {
-                tok = SPI.transfer(0xFF);
-                if (tok == 0xFE) break;
-            }
-            if (tok == 0xFE) {
-                uint8_t csd[16];
-                for (int i = 0; i < 16; i++) csd[i] = SPI.transfer(0xFF);
-                SPI.transfer(0xFF); SPI.transfer(0xFF); // CRC16
-
-                bool wpSet = (csd[14] & 0x30) != 0;
-                Serial.printf("[SD] CSD[14]=0x%02X (PERM/TMP_WP=%d)\n", csd[14], (int)wpSet);
-                if (wpSet) {
-                    // Attempt CMD27 (PROGRAM_CSD) clearing bits 4 & 5 (TMP_WRITE_PROTECT & PERM_WRITE_PROTECT)
-                    csd[14] &= ~0x30;
-                    csd[15] = sdCrc7(csd, 15);
-                    uint8_t r27 = sendCmd(27, 0);
-                    if (r27 == 0x00) {
-                        SPI.transfer(0xFF);
-                        SPI.transfer(0xFE); // Data token
-                        for (int i = 0; i < 16; i++) SPI.transfer(csd[i]);
-                        SPI.transfer(0xFF); SPI.transfer(0xFF); // Dummy CRC16
-                        uint8_t resp = SPI.transfer(0xFF);
-                        for (int w = 0; w < 500; w++) {
-                            if (SPI.transfer(0xFF) == 0xFF) break;
-                            delay(1);
-                        }
-                        Serial.printf("[SD] CMD27 PROGRAM_CSD response=0x%02X\n", resp);
-                    }
-                }
-            }
-        }
+    if (de.length == 0 || de.offset == 0) {
+        // remember emptiness so the directory is not re-read every frame
+        sCellCache[slot].key = key;
+        sCellCache[slot].lastUsed = sCacheClock;
+        return nullptr;
     }
-    digitalWrite(SD_CS, HIGH);
-    SPI.transfer(0xFF);
-    SPI.endTransaction();
-    delay(20);
+    if (de.length > KNAV_MAX_CELL_BYTES || (uint64_t)de.offset + de.length > sFileBound) {
+        if (!sWarnedBigCell) {
+            sWarnedBigCell = true;
+            Serial.printf("[MAP] cell tier%d #%lu invalid or > %lu bytes (len %lu) - skipped (builder must cap cells)\n",
+                          tier, (unsigned long)cellIdx, (unsigned long)KNAV_MAX_CELL_BYTES, (unsigned long)de.length);
+        }
+        sCellCache[slot].key = key;
+        sCellCache[slot].lastUsed = sCacheClock;
+        return nullptr;
+    }
 
-    bool mounted = SD.begin(SD_CS, SPI, 16000000U);
-    if (!mounted) mounted = instance.installSD();
-    if (!mounted) return false;
-    return testSdWriteCapability();
+    // make room within the byte budget
+    while (sCacheBytes + de.length > CELL_CACHE_BUDGET) {
+        int v = -1;
+        for (int i = 0; i < CELL_CACHE_SLOTS; i++) {
+            if (i == slot || !sCellCache[i].data) continue;
+            if (v < 0 || sCellCache[i].lastUsed < sCellCache[v].lastUsed) v = i;
+        }
+        if (v < 0) break;
+        cacheEvict(v);
+    }
+
+    uint8_t* buf = (uint8_t*)heap_caps_malloc(de.length, MALLOC_CAP_SPIRAM);
+    if (!buf) return nullptr;
+    if (!sMapRd.readAt(de.offset, buf, de.length)) {
+        heap_caps_free(buf);
+        return nullptr;
+    }
+    sCellCache[slot].key = key;
+    sCellCache[slot].lastUsed = sCacheClock;
+    sCellCache[slot].data = buf;
+    sCellCache[slot].len = de.length;
+    sCacheBytes += de.length;
+    outLen = de.length;
+    return buf;
 }
 
+// =============================================================================
+// Waypoints (NVS)
+// =============================================================================
 static void loadWaypointsFromStorage() {
     sNumWaypoints = 0;
     Preferences p;
@@ -317,8 +506,8 @@ static void loadWaypointsFromStorage() {
             String nm = p.getString(kName, "POI");
             strncpy(sWaypoints[i].name, nm.c_str(), sizeof(sWaypoints[i].name) - 1);
             sWaypoints[i].name[sizeof(sWaypoints[i].name) - 1] = 0;
-            sWaypoints[i].lat = p.getDouble(kLat, 48.7758);
-            sWaypoints[i].lon = p.getDouble(kLon, 9.1829);
+            sWaypoints[i].lat = p.getDouble(kLat, 0.0);
+            sWaypoints[i].lon = p.getDouble(kLon, 0.0);
             sNumWaypoints++;
         }
         p.end();
@@ -344,273 +533,868 @@ static void saveWaypointsToNvs() {
     sStat.savedWaypoints = (uint16_t)sNumWaypoints;
 }
 
-struct MapReader {
-    File sdFile;
-    const esp_partition_t* flashPart = nullptr;
-    bool valid = false;
+// =============================================================================
+// SD card
+// =============================================================================
+// Plain write/read-back test. No raw SPI, no CS manipulation, no CSD writes:
+// a failing test only means "not writable" for us.
+static bool testSdWriteCapability() {
+    IoLock io;
+    const char* tmp = "/kronos_rw.tmp";
+    File f = SD.open(tmp, FILE_WRITE, true);
+    if (!f) return false;
+    size_t w = f.write((const uint8_t*)"WATCHOS", 7);
+    f.flush();
+    f.close();
+    if (w != 7) { SD.remove(tmp); return false; }
+    File r = SD.open(tmp, FILE_READ);
+    if (!r) { SD.remove(tmp); return false; }
+    char buf[8] = {0};
+    size_t nr = r.read((uint8_t*)buf, 7);
+    r.close();
+    SD.remove(tmp);
+    return (nr == 7 && memcmp(buf, "WATCHOS", 7) == 0);
+}
 
-    bool open() {
-        if (sUseFlashPart && sFlashPart) {
-            flashPart = sFlashPart;
-            valid = true;
+static void detectSdLocked() {
+    bool ready = false;
+    {
+        IoLock io;
+        ready = (instance.getDeviceProbe() & HW_SD_ONLINE) != 0 && SD.cardType() != CARD_NONE;
+        if (!ready && instance.installSD()) ready = true;
+    }
+    sStat.sdReady = ready;
+    if (ready) {
+        sStat.sdWritable = testSdWriteCapability();
+        if (!sStat.sdWritable) Serial.println("[SD] card is read-only for us (write test failed)");
+        IoLock io;
+        sStat.sdTotalMB = (uint32_t)(SD.cardSize() / (1024ULL * 1024ULL));
+        // usedBytes() may scan the FAT; it is refreshed in the deferred boot step
+    } else {
+        sStat.sdWritable = false;
+        sStat.sdTotalMB = sStat.sdUsedMB = 0;
+    }
+}
+
+// =============================================================================
+// Map (un)load
+// =============================================================================
+static void freeGraphBuffers(DiskRouteNode* n, DiskRouteEdge* e) {
+    if (n) heap_caps_free(n);
+    if (e) heap_caps_free(e);
+}
+
+// Releases everything that belongs to the current map generation.
+static void unloadMapLocked() {
+    sMapGen++;
+    sMapRd.close();
+    clearCellCache();
+    for (int t = 0; t < 3; t++) {
+        if (sCellBitmap[t]) heap_caps_free(sCellBitmap[t]);
+        sCellBitmap[t] = nullptr;
+        sCellBitmapReady[t] = false;
+    }
+    if (sPlaces) heap_caps_free(sPlaces);
+    sPlaces = nullptr; sNumPlaces = 0;
+    if (sPois) heap_caps_free(sPois);
+    sPois = nullptr; sNumPois = 0;
+    if (sPoiCellStart) heap_caps_free(sPoiCellStart);
+    sPoiCellStart = nullptr;
+    if (sPoiOrder) heap_caps_free(sPoiOrder);
+    sPoiOrder = nullptr;
+    if (sRoutingActive) {
+        // A* is using the graph right now on the background task: hand the
+        // buffers over, they are freed when the job finishes. (A second
+        // unload during the same job finds sNodes already null.)
+        if (!sDropNodes && !sDropEdges) {
+            sDropNodes = sNodes; sDropEdges = sEdges;
+            sGraphDropPending = true;
+        } else {
+            freeGraphBuffers(sNodes, sEdges);
+        }
+    } else {
+        freeGraphBuffers(sNodes, sEdges);
+    }
+    sNodes = nullptr; sEdges = nullptr; sNumNodes = sNumEdges = 0;
+    sGraphReady = false;
+    sLoaderFinished = false;
+    sUseFlashPart = false;
+    sFlashPart = nullptr;
+    sMapPath[0] = 0;
+    sFileBound = 0;
+    sHdrIsV3 = false;
+    memset(&sHdr, 0, sizeof(sHdr));
+    sStat.mapLoaded = false;
+    sStat.ultraLoaded = false;
+    sStat.graphReady = false;
+    sStat.placesReady = false;
+    sStat.mapLoadPct = 0;
+    sStat.mapPlaces = 0;
+    sStat.mapRouteNodes = 0;
+    sStat.mapPois = 0;
+    sWarnedBigCell = false;
+}
+
+static void publishHeaderLocked(const char* src) {
+    sStat.mapLoaded = true;
+    sStat.ultraLoaded = (sHdr.ultraDirOffset > 0);
+    sStat.mapPlaces = sHdr.numPlaces;
+    sStat.mapRouteNodes = sHdr.numRouteNodes;
+    sStat.mapPois = sHdr.numPois;
+    sStat.mapLoadPct = 0;
+    Serial.printf("[MAP] %s %s: %lu places, %lu nodes, %lu edges, %lu POIs, ultra=%d, bound=%llu\n",
+                  src, sHdrIsV3 ? KNAV_MAGIC_V3 : KNAV_MAGIC_V2,
+                  (unsigned long)sHdr.numPlaces, (unsigned long)sHdr.numRouteNodes,
+                  (unsigned long)sHdr.numRouteEdges, (unsigned long)sHdr.numPois,
+                  (int)sStat.ultraLoaded, (unsigned long long)sFileBound);
+}
+
+bool NavEngine::reloadMap() {
+    NavLock lock;
+    unloadMapLocked();
+    loadWaypointsFromStorage();
+    detectSdLocked();
+
+    const esp_partition_t* part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_FAT, NULL);
+
+    // 1. SD card candidates
+    if (sStat.sdReady) {
+        for (const char* path : MAP_SD_CANDIDATES) {
+            bool exists;
+            {
+                IoLock io;
+                exists = SD.exists(path);
+            }
+            if (!exists) continue;
+            MapReader rd;
+            if (!rd.open(false, nullptr, path, 0)) continue;
+            KnavHeader h{};
+            bool v3 = false;
+            bool ok = readHeader(rd, h, v3);
+            uint64_t bound = rd.bound;
+            rd.close();
+            if (!ok) {
+                Serial.printf("[MAP] %s rejected (bad header)\n", path);
+                continue;
+            }
+            sHdr = h;
+            sHdrIsV3 = v3;
+            sFileBound = v3 ? h.fileSize : bound;
+            strncpy(sMapPath, path, sizeof(sMapPath) - 1);
+            sMapPath[sizeof(sMapPath) - 1] = 0;
+            if (!sMapRd.open(false, nullptr, sMapPath, sFileBound)) {
+                Serial.printf("[MAP] cannot open %s for rendering\n", path);
+                unloadMapLocked();
+                continue;
+            }
+            publishHeaderLocked(path);
+            sMirrorPending = false;
             return true;
         }
-        if (sStat.sdReady) {
-            digitalWrite(LORA_CS, HIGH);
-            digitalWrite(NFC_CS, HIGH);
-            sdFile = SD.open(sMapPath, FILE_READ);
-            valid = (bool)sdFile;
-            return valid;
+    }
+
+    // 2. internal flash partition
+    if (part && part->size >= KNAV_HEADER_V2_SIZE) {
+        MapReader rd;
+        if (rd.open(true, part, nullptr, part->size)) {
+            KnavHeader h{};
+            bool v3 = false;
+            bool ok = readHeader(rd, h, v3);
+            rd.close();
+            if (ok) {
+                sHdr = h;
+                sHdrIsV3 = v3;
+                sFlashPart = part;
+                sUseFlashPart = true;
+                sFileBound = v3 ? h.fileSize : part->size;
+                if (!sMapRd.open(true, part, nullptr, sFileBound)) {
+                    unloadMapLocked();
+                } else {
+                    publishHeaderLocked("flash");
+                    bool sdHasMap = false;
+                    if (sStat.sdReady && sStat.sdWritable) {
+                        IoLock io;
+                        sdHasMap = SD.exists(MAP_SD_PATH_PRIMARY);
+                    }
+                    sMirrorPending = sStat.sdReady && sStat.sdWritable && !sdHasMap;
+                    return true;
+                }
+            }
         }
+    }
+
+    Serial.println("[MAP] no map file - built-in city list only");
+    return false;
+}
+
+bool NavEngine::getMapCenter(double& lat, double& lon) {
+    NavLock lock;
+    if (sStat.mapLoaded && sHdrIsV3 && sHdr.bboxMaxLat_e5 > sHdr.bboxMinLat_e5 && sHdr.bboxMaxLon_e5 > sHdr.bboxMinLon_e5) {
+        lat = (sHdr.bboxMinLat_e5 + sHdr.bboxMaxLat_e5) * 0.5e-5;
+        lon = (sHdr.bboxMinLon_e5 + sHdr.bboxMaxLon_e5) * 0.5e-5;
+        return true;
+    }
+    lat = DE_CENTER_LAT;
+    lon = DE_CENTER_LON;
+    return sStat.mapLoaded;
+}
+
+// =============================================================================
+// Background loader: directories -> places -> POIs -> graph, 16 KB per tick,
+// SD reads without the engine mutex. Private state is touched only by the
+// background task; the command (generation) is read under the engine mutex.
+// =============================================================================
+enum LoadStage : uint8_t {
+    LS_IDLE = 0, LS_DIR0, LS_DIR1, LS_DIR2, LS_PLACES, LS_POIS, LS_NODES, LS_EDGES, LS_DONE
+};
+static constexpr uint32_t LOAD_CHUNK = 16 * 1024;
+
+struct LoaderState {
+    uint32_t activeGen = 0;      // generation the private state belongs to
+    LoadStage stage = LS_IDLE;
+    MapReader rd;
+    KnavHeader hdr{};
+    uint64_t bound = 0;
+    bool useFlash = false;
+    const esp_partition_t* part = nullptr;
+    char path[48] = "";
+    // per stage
+    uint8_t* buf = nullptr;      // destination table (owned until published)
+    uint64_t stageOff = 0;       // absolute file offset of the stage data
+    uint32_t stageBytes = 0;     // bytes to read in this stage
+    uint32_t stageDone = 0;
+    uint64_t totalBytes = 1;     // for progress
+    uint64_t totalDone = 0;
+    uint8_t* chunk = nullptr;    // 16 KB scratch for directory scanning
+    uint32_t dirValid = 0, dirInvalid = 0;
+};
+static LoaderState sLd;
+
+static void loaderReset() {
+    if (sLd.buf) heap_caps_free(sLd.buf);
+    sLd.buf = nullptr;
+    if (sLd.chunk) heap_caps_free(sLd.chunk);
+    sLd.chunk = nullptr;
+    sLd.rd.close();
+    sLd.stage = LS_IDLE;
+    sLd.stageBytes = sLd.stageDone = 0;
+    sLd.totalDone = 0;
+}
+
+// Marks the current generation as fully loaded (engine mutex held).
+static void loaderFinishLocked() {
+    sLd.stage = LS_DONE;
+    sLd.rd.close();
+    if (sLd.chunk) { heap_caps_free(sLd.chunk); sLd.chunk = nullptr; }
+    if (sLd.activeGen != sMapGen) return;
+    if (!sGraphReady && sNodes) {
+        // nodes arrived but edges did not (memory / read error): drop the half graph
+        freeGraphBuffers(sNodes, sEdges);
+        sNodes = nullptr; sEdges = nullptr; sNumNodes = sNumEdges = 0;
+    }
+    sLoaderFinished = true;
+    sStat.mapLoadPct = 100;
+}
+
+static uint64_t stageDataBytes(const KnavHeader& h, LoadStage s) {
+    switch (s) {
+        case LS_DIR0:   return h.coarseDirOffset ? (uint64_t)KNAV_COARSE_CELLS * sizeof(CellDirEntry) : 0;
+        case LS_DIR1:   return h.fineDirOffset   ? (uint64_t)KNAV_FINE_CELLS   * sizeof(CellDirEntry) : 0;
+        case LS_DIR2:   return h.ultraDirOffset  ? (uint64_t)KNAV_ULTRA_CELLS  * sizeof(CellDirEntry) : 0;
+        case LS_PLACES: return (uint64_t)h.numPlaces * sizeof(DiskPlace);
+        case LS_POIS:   return (uint64_t)h.numPois * sizeof(DiskPoi);
+        case LS_NODES:  return (uint64_t)h.numRouteNodes * sizeof(DiskRouteNode);
+        case LS_EDGES:  return (uint64_t)h.numRouteEdges * sizeof(DiskRouteEdge);
+        default:        return 0;
+    }
+}
+static uint64_t stageOffset(const KnavHeader& h, LoadStage s) {
+    switch (s) {
+        case LS_DIR0:   return h.coarseDirOffset;
+        case LS_DIR1:   return h.fineDirOffset;
+        case LS_DIR2:   return h.ultraDirOffset;
+        case LS_PLACES: return h.placesOffset;
+        case LS_POIS:   return h.poisOffset;
+        case LS_NODES:  return h.routeNodesOffset;
+        case LS_EDGES:  return h.routeEdgesOffset;
+        default:        return 0;
+    }
+}
+
+// Begins a stage: allocates the destination. Returns false if the stage is skipped.
+static bool loaderBeginStage(LoadStage s) {
+    sLd.stage = s;
+    sLd.stageOff = stageOffset(sLd.hdr, s);
+    uint64_t bytes = stageDataBytes(sLd.hdr, s);
+    sLd.stageBytes = (uint32_t)bytes;
+    sLd.stageDone = 0;
+    if (bytes == 0) return false;
+    if (s <= LS_DIR2) {
+        if (!sLd.chunk) sLd.chunk = (uint8_t*)heap_caps_malloc(LOAD_CHUNK, MALLOC_CAP_SPIRAM);
+        int tier = (int)s - (int)LS_DIR0;
+        size_t bmBytes = (knavDirEntries(tier) + 7) / 8;
+        sLd.buf = (uint8_t*)heap_caps_malloc(bmBytes, MALLOC_CAP_SPIRAM);
+        if (!sLd.buf || !sLd.chunk) { Serial.println("[MAP] loader: no memory for directory bitmap"); return false; }
+        memset(sLd.buf, 0, bmBytes);
+        sLd.dirValid = sLd.dirInvalid = 0;
+        return true;
+    }
+    if (bytes > 0xFFFFFFFFull) return false;
+    sLd.buf = (uint8_t*)psramAlloc((size_t)bytes);
+    if (!sLd.buf) {
+        Serial.printf("[MAP] loader: not enough PSRAM for stage %d (%lu KB, free %lu KB) - skipped\n",
+                      (int)s, (unsigned long)(bytes / 1024),
+                      (unsigned long)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
         return false;
     }
-    bool readAt(uint32_t offset, void* dst, size_t len) {
-        if (!valid) return false;
-        if (flashPart) {
-            return esp_partition_read(flashPart, offset, dst, len) == ESP_OK;
+    return true;
+}
+
+// Called under the engine mutex when a table is complete.
+static void loaderPublishLocked(LoadStage s) {
+    if (sLd.activeGen != sMapGen || !sStat.mapLoaded) {
+        if (sLd.buf) heap_caps_free(sLd.buf);
+        sLd.buf = nullptr;
+        return;
+    }
+    switch (s) {
+        case LS_DIR0: case LS_DIR1: case LS_DIR2: {
+            int tier = (int)s - (int)LS_DIR0;
+            if (sCellBitmap[tier]) heap_caps_free(sCellBitmap[tier]);
+            sCellBitmap[tier] = sLd.buf;
+            sCellBitmapReady[tier] = true;
+            if (sLd.dirInvalid) {
+                Serial.printf("[MAP] tier%d directory: %lu cells, %lu invalid entries ignored\n",
+                              tier, (unsigned long)sLd.dirValid, (unsigned long)sLd.dirInvalid);
+            }
+            break;
         }
-        if (!sdFile.seek(offset)) return false;
-        return sdFile.read((uint8_t*)dst, len) == len;
-    }
-    void close() {
-        if (sdFile) sdFile.close();
-        flashPart = nullptr;
-        valid = false;
-    }
-};
-
-// LRU Cell Cache in PSRAM (tier: 0=Coarse, 1=Fine, 2=Ultra Stuttgart)
-struct CachedCell {
-    int32_t key; // (tier << 20) | cellIdx, -1 = unused
-    uint32_t lastUsed;
-    uint8_t* data;
-    uint32_t len;
-};
-static constexpr int CELL_CACHE_SLOTS = 32;
-static CachedCell sCellCache[CELL_CACHE_SLOTS];
-static uint32_t sCacheClock = 0;
-
-static File sUploadFile;
-static uint32_t sUploadRemaining = 0;
-
-static void clearCellCache() {
-    for (int i = 0; i < CELL_CACHE_SLOTS; i++) {
-        if (sCellCache[i].data) {
-            heap_caps_free(sCellCache[i].data);
-            sCellCache[i].data = nullptr;
+        case LS_PLACES:
+            sPlaces = (DiskPlace*)sLd.buf;
+            sNumPlaces = sLd.hdr.numPlaces;
+            for (uint32_t i = 0; i < sNumPlaces; i++) sPlaces[i].name[sizeof(sPlaces[i].name) - 1] = 0;
+            sStat.placesReady = true;
+            Serial.printf("[MAP] place table resident: %lu entries\n", (unsigned long)sNumPlaces);
+            break;
+        case LS_POIS: {
+            DiskPoi* pois = (DiskPoi*)sLd.buf;
+            uint32_t n = sLd.hdr.numPois;
+            uint32_t* cellStart = (uint32_t*)psramAlloc((KNAV_ULTRA_CELLS + 1) * sizeof(uint32_t));
+            uint32_t* order = (uint32_t*)psramAlloc((size_t)n * sizeof(uint32_t));
+            if (!cellStart || !order) {
+                if (cellStart) heap_caps_free(cellStart);
+                if (order) heap_caps_free(order);
+                heap_caps_free(pois);
+                Serial.println("[MAP] POI index: no memory - POIs disabled");
+                break;
+            }
+            // CSR by ultra cell (POIs outside the ultra box are dropped)
+            const double latSpan = KNAV_STG_MAX_LAT - KNAV_STG_MIN_LAT;
+            const double lonSpan = KNAV_STG_MAX_LON - KNAV_STG_MIN_LON;
+            auto cellOf = [&](const DiskPoi& p) -> int32_t {
+                double la = p.lat_e5 * 1e-5, lo = p.lon_e5 * 1e-5;
+                if (la < KNAV_STG_MIN_LAT || la >= KNAV_STG_MAX_LAT || lo < KNAV_STG_MIN_LON || lo >= KNAV_STG_MAX_LON) return -1;
+                int cy = (int)((la - KNAV_STG_MIN_LAT) / latSpan * KNAV_ULTRA_NY);
+                int cx = (int)((lo - KNAV_STG_MIN_LON) / lonSpan * KNAV_ULTRA_NX);
+                cy = std::clamp(cy, 0, KNAV_ULTRA_NY - 1);
+                cx = std::clamp(cx, 0, KNAV_ULTRA_NX - 1);
+                return cy * KNAV_ULTRA_NX + cx;
+            };
+            memset(cellStart, 0, (KNAV_ULTRA_CELLS + 1) * sizeof(uint32_t));
+            for (uint32_t i = 0; i < n; i++) {
+                pois[i].name[sizeof(pois[i].name) - 1] = 0;
+                int32_t c = cellOf(pois[i]);
+                if (c >= 0) cellStart[c + 1]++;
+            }
+            for (uint32_t c = 0; c < KNAV_ULTRA_CELLS; c++) cellStart[c + 1] += cellStart[c];
+            // fill using a running cursor per cell (reuse a temporary copy of starts)
+            uint32_t* cursor = (uint32_t*)psramAlloc(KNAV_ULTRA_CELLS * sizeof(uint32_t));
+            if (!cursor) {
+                heap_caps_free(cellStart); heap_caps_free(order); heap_caps_free(pois);
+                Serial.println("[MAP] POI index: no memory - POIs disabled");
+                break;
+            }
+            memcpy(cursor, cellStart, KNAV_ULTRA_CELLS * sizeof(uint32_t));
+            for (uint32_t i = 0; i < n; i++) {
+                int32_t c = cellOf(pois[i]);
+                if (c >= 0) order[cursor[c]++] = i;
+            }
+            heap_caps_free(cursor);
+            sPois = pois; sNumPois = n; sPoiCellStart = cellStart; sPoiOrder = order;
+            Serial.printf("[MAP] POI index resident: %lu POIs in %lu cells\n",
+                          (unsigned long)cellStart[KNAV_ULTRA_CELLS], (unsigned long)KNAV_ULTRA_CELLS);
+            break;
         }
-        sCellCache[i].key = -1;
-        sCellCache[i].len = 0;
+        case LS_NODES:
+            sNodes = (DiskRouteNode*)sLd.buf;
+            sNumNodes = sLd.hdr.numRouteNodes;
+            break;
+        case LS_EDGES: {
+            sEdges = (DiskRouteEdge*)sLd.buf;
+            sNumEdges = sLd.hdr.numRouteEdges;
+            if (!sNodes || sNumNodes == 0 || sNumEdges == 0) {
+                heap_caps_free(sEdges); sEdges = nullptr; sNumEdges = 0;
+                break;
+            }
+            // validate once: node edge ranges and edge targets
+            uint32_t badNodes = 0, badEdges = 0;
+            for (uint32_t i = 0; i < sNumNodes; i++) {
+                uint64_t end = (uint64_t)sNodes[i].firstEdge + sNodes[i].edgeCount;
+                if (end > sNumEdges) { sNodes[i].edgeCount = 0; badNodes++; }
+            }
+            for (uint32_t i = 0; i < sNumEdges; i++) {
+                if (sEdges[i].toNode >= sNumNodes) { sEdges[i].flags = 0; sEdges[i].toNode = 0; badEdges++; }
+                if (sEdges[i].dist_hm == 0) sEdges[i].dist_hm = 1;
+            }
+            if (badNodes || badEdges) {
+                Serial.printf("[MAP] graph: %lu nodes / %lu edges with invalid references disabled\n",
+                              (unsigned long)badNodes, (unsigned long)badEdges);
+            }
+            sGraphReady = true;
+            sStat.graphReady = true;
+            Serial.printf("[MAP] routing graph resident: %lu nodes, %lu edges (%lu KB)\n",
+                          (unsigned long)sNumNodes, (unsigned long)sNumEdges,
+                          (unsigned long)((sNumNodes * sizeof(DiskRouteNode) + sNumEdges * sizeof(DiskRouteEdge)) / 1024));
+            break;
+        }
+        default: break;
+    }
+    sLd.buf = nullptr;
+}
+
+static LoadStage nextStage(LoadStage s) {
+    return (s >= LS_EDGES) ? LS_DONE : (LoadStage)((int)s + 1);
+}
+
+// One loader step per background tick. Returns true if work was done.
+static bool loaderTick() {
+    // --- sync with the command state ---
+    uint32_t gen;
+    bool mapLoaded;
+    {
+        NavLock lock;
+        gen = sMapGen;
+        mapLoaded = sStat.mapLoaded;
+        if (sLd.activeGen != gen) {
+            loaderReset();
+            sLd.activeGen = gen;
+            if (!mapLoaded) { sLd.stage = LS_DONE; return false; }
+            sLd.hdr = sHdr;
+            sLd.bound = sFileBound;
+            sLd.useFlash = sUseFlashPart;
+            sLd.part = sFlashPart;
+            strncpy(sLd.path, sMapPath, sizeof(sLd.path) - 1);
+            sLd.path[sizeof(sLd.path) - 1] = 0;
+            sLd.totalBytes = 1;
+            for (int s = LS_DIR0; s <= LS_EDGES; s++) sLd.totalBytes += stageDataBytes(sLd.hdr, (LoadStage)s);
+            sLd.totalDone = 0;
+            sLd.stage = LS_IDLE;
+        }
+        if (sLd.stage == LS_DONE || !mapLoaded) {
+            if (!sLoaderFinished && mapLoaded) loaderFinishLocked();
+            return false;
+        }
+    }
+
+    if (sLd.stage == LS_IDLE) {
+        if (!sLd.rd.open(sLd.useFlash, sLd.part, sLd.path, sLd.bound)) {
+            Serial.println("[MAP] loader: cannot open map source");
+            NavLock lock;
+            loaderFinishLocked();
+            return false;
+        }
+        LoadStage s = LS_DIR0;
+        while (s != LS_DONE && !loaderBeginStage(s)) {
+            if (sLd.buf) { heap_caps_free(sLd.buf); sLd.buf = nullptr; }
+            s = nextStage(s);
+        }
+        if (s == LS_DONE) { NavLock lock; loaderFinishLocked(); }
+        return true;
+    }
+
+    // --- read one chunk (no engine mutex held) ---
+    uint32_t want = std::min<uint32_t>(LOAD_CHUNK, sLd.stageBytes - sLd.stageDone);
+    bool ok;
+    if (sLd.stage <= LS_DIR2) {
+        ok = sLd.rd.readAt(sLd.stageOff + sLd.stageDone, sLd.chunk, want);
+        if (ok) {
+            int tier = (int)sLd.stage - (int)LS_DIR0;
+            uint32_t firstIdx = sLd.stageDone / sizeof(CellDirEntry);
+            uint32_t n = want / sizeof(CellDirEntry);
+            const CellDirEntry* de = (const CellDirEntry*)sLd.chunk;
+            for (uint32_t i = 0; i < n; i++) {
+                if (de[i].length == 0 || de[i].offset == 0) continue;
+                bool valid = de[i].length <= KNAV_MAX_CELL_BYTES && (uint64_t)de[i].offset + de[i].length <= sLd.bound;
+                if (valid) { cellBitmapSet(sLd.buf, firstIdx + i); sLd.dirValid++; }
+                else sLd.dirInvalid++;
+            }
+            (void)tier;
+        }
+    } else {
+        ok = sLd.rd.readAt(sLd.stageOff + sLd.stageDone, sLd.buf + sLd.stageDone, want);
+    }
+    if (!ok) {
+        Serial.printf("[MAP] loader: read failed in stage %d at %lu - map tables incomplete\n",
+                      (int)sLd.stage, (unsigned long)sLd.stageDone);
+        if (sLd.buf) { heap_caps_free(sLd.buf); sLd.buf = nullptr; }
+        NavLock lock;
+        loaderFinishLocked();
+        return true;
+    }
+    sLd.stageDone += want;
+    sLd.totalDone += want;
+
+    {
+        NavLock lock;
+        if (sLd.activeGen == sMapGen) {
+            sStat.mapLoadPct = (uint8_t)std::min<uint64_t>(99, sLd.totalDone * 100 / sLd.totalBytes);
+        }
+        if (sLd.stageDone >= sLd.stageBytes) {
+            LoadStage done = sLd.stage;
+            loaderPublishLocked(done);
+            LoadStage s = nextStage(done);
+            while (s != LS_DONE && !loaderBeginStage(s)) {
+                if (sLd.buf) { heap_caps_free(sLd.buf); sLd.buf = nullptr; }
+                s = nextStage(s);
+            }
+            if (s == LS_DONE) loaderFinishLocked();
+        }
+    }
+    return true;
+}
+
+// =============================================================================
+// Deferred boot work (background task): GPX repair, SD usage, flash->SD mirror
+// =============================================================================
+static bool fileEndsWithGpxClose(File& f) {
+    size_t sz = f.size();
+    if (sz < 7) return false;
+    size_t tailLen = std::min<size_t>(sz, 24);
+    if (!f.seek((uint32_t)(sz - tailLen))) return false;
+    char tail[25] = {0};
+    size_t n = f.read((uint8_t*)tail, tailLen);
+    tail[n] = 0;
+    return strstr(tail, "</gpx>") != nullptr;
+}
+
+static void gpxRepairUnterminated() {
+    IoLock io;
+    if (!SD.exists(GPX_DIR)) return;
+    File dir = SD.open(GPX_DIR);
+    if (!dir || !dir.isDirectory()) { if (dir) dir.close(); return; }
+    int repaired = 0;
+    for (int n = 0; n < 128; n++) {
+        File f = dir.openNextFile();
+        if (!f) break;
+        char path[48];
+        strncpy(path, f.path(), sizeof(path) - 1);
+        path[sizeof(path) - 1] = 0;
+        bool isGpx = !f.isDirectory() && strlen(path) > 4 && strcmp(path + strlen(path) - 4, ".gpx") == 0;
+        bool needsClose = isGpx && f.size() > 0 && !fileEndsWithGpxClose(f);
+        f.close();
+        if (needsClose) {
+            File a = SD.open(path, FILE_APPEND);
+            if (a) {
+                a.print("</trkseg></trk></gpx>\n");
+                a.close();
+                repaired++;
+            }
+        }
+    }
+    dir.close();
+    if (repaired) Serial.printf("[NAV] closed %d unterminated GPX file(s)\n", repaired);
+}
+
+struct MirrorJob {
+    bool active = false;
+    File out;
+    uint64_t total = 0;
+    uint64_t done = 0;
+    uint32_t gen = 0;
+    uint8_t* buf = nullptr;
+};
+static MirrorJob sMirror;
+
+// Real data end of a map (V3: header fileSize; V2: computed from the tables
+// and directories). Runs on the background task without the engine mutex.
+static uint64_t computeDataEnd(MapReader& rd, const KnavHeader& h, bool v3) {
+    if (v3 && h.fileSize) return h.fileSize;
+    uint64_t end = KNAV_HEADER_V2_SIZE;
+    auto upd = [&](uint64_t off, uint64_t count, uint64_t sz) {
+        if (count && off) end = std::max(end, off + count * sz);
+    };
+    upd(h.placesOffset, h.numPlaces, sizeof(DiskPlace));
+    upd(h.routeNodesOffset, h.numRouteNodes, sizeof(DiskRouteNode));
+    upd(h.routeEdgesOffset, h.numRouteEdges, sizeof(DiskRouteEdge));
+    upd(h.poisOffset, h.numPois, sizeof(DiskPoi));
+    const uint32_t dirs[3] = {h.coarseDirOffset, h.fineDirOffset, h.ultraDirOffset};
+    CellDirEntry chunk[256];
+    for (int t = 0; t < 3; t++) {
+        if (!dirs[t]) continue;
+        uint32_t n = (uint32_t)knavDirEntries(t);
+        end = std::max<uint64_t>(end, (uint64_t)dirs[t] + (uint64_t)n * sizeof(CellDirEntry));
+        for (uint32_t i = 0; i < n; i += 256) {
+            uint32_t cnt = std::min<uint32_t>(256, n - i);
+            if (!rd.readAt((uint64_t)dirs[t] + (uint64_t)i * sizeof(CellDirEntry), chunk, cnt * sizeof(CellDirEntry))) return 0;
+            for (uint32_t k = 0; k < cnt; k++) {
+                if (chunk[k].length && chunk[k].offset) {
+                    uint64_t e = (uint64_t)chunk[k].offset + chunk[k].length;
+                    if (e <= rd.bound) end = std::max(end, e);
+                }
+            }
+        }
+    }
+    return end;
+}
+
+static void mirrorStart() {
+    KnavHeader h;
+    bool v3;
+    const esp_partition_t* part;
+    uint64_t bound;
+    uint32_t gen;
+    {
+        NavLock lock;
+        if (!sMirrorPending || !sUseFlashPart || !sFlashPart || !sStat.sdReady || !sStat.sdWritable) { sMirrorPending = false; return; }
+        h = sHdr; v3 = sHdrIsV3; part = sFlashPart; bound = sFileBound; gen = sMapGen;
+        sMirrorPending = false;
+    }
+    MapReader rd;
+    if (!rd.open(true, part, nullptr, bound)) return;
+    uint64_t total = computeDataEnd(rd, h, v3);
+    rd.close();
+    if (total < KNAV_HEADER_V2_SIZE || total > part->size) {
+        Serial.println("[SD] mirror: cannot determine map size, skipped");
+        return;
+    }
+    sMirror.buf = (uint8_t*)heap_caps_malloc(LOAD_CHUNK, MALLOC_CAP_SPIRAM);
+    if (!sMirror.buf) return;
+    {
+        IoLock io;
+        SD.mkdir("/kronos");
+        if (SD.exists(MAP_SD_TMP_PATH)) SD.remove(MAP_SD_TMP_PATH);
+        sMirror.out = SD.open(MAP_SD_TMP_PATH, FILE_WRITE, true);
+    }
+    if (!sMirror.out) {
+        heap_caps_free(sMirror.buf); sMirror.buf = nullptr;
+        Serial.println("[SD] mirror: cannot create temp file");
+        return;
+    }
+    sMirror.total = total;
+    sMirror.done = 0;
+    sMirror.gen = gen;
+    sMirror.active = true;
+    Serial.printf("[SD] mirroring flash map to SD (%lu KB, chunked in background)...\n", (unsigned long)(total / 1024));
+}
+
+static void mirrorAbort(const char* why) {
+    {
+        IoLock io;
+        if (sMirror.out) sMirror.out.close();
+        if (SD.exists(MAP_SD_TMP_PATH)) SD.remove(MAP_SD_TMP_PATH);
+    }
+    if (sMirror.buf) heap_caps_free(sMirror.buf);
+    sMirror.buf = nullptr;
+    sMirror.active = false;
+    Serial.printf("[SD] mirror aborted (%s)\n", why);
+}
+
+static void mirrorTick() {
+    if (!sMirror.active) return;
+    const esp_partition_t* part;
+    {
+        NavLock lock;
+        part = (sMirror.gen == sMapGen) ? sFlashPart : nullptr;
+    }
+    if (!part) { mirrorAbort("map changed"); return; }
+    uint32_t chunk = (uint32_t)std::min<uint64_t>(LOAD_CHUNK, sMirror.total - sMirror.done);
+    if (esp_partition_read(part, (size_t)sMirror.done, sMirror.buf, chunk) != ESP_OK) {
+        mirrorAbort("flash read"); return;
+    }
+    size_t w;
+    {
+        IoLock io;
+        w = sMirror.out.write(sMirror.buf, chunk);
+    }
+    if (w != chunk) { mirrorAbort("SD write failed"); return; }
+    sMirror.done += chunk;
+    if (sMirror.done >= sMirror.total) {
+        {
+            IoLock io;
+            sMirror.out.flush();
+            sMirror.out.close();
+        }
+        heap_caps_free(sMirror.buf); sMirror.buf = nullptr;
+        sMirror.active = false;
+        // publish atomically: nobody may have started an upload meanwhile
+        NavLock lock;
+        if (sMirror.gen != sMapGen || sUploadActive) {
+            IoLock io;
+            SD.remove(MAP_SD_TMP_PATH);
+            Serial.println("[SD] mirror discarded (map changed while copying)");
+            return;
+        }
+        IoLock io;
+        if (SD.exists(MAP_SD_PATH_PRIMARY)) SD.remove(MAP_SD_PATH_PRIMARY);
+        if (SD.rename(MAP_SD_TMP_PATH, MAP_SD_PATH_PRIMARY)) {
+            Serial.printf("[SD] mirror complete: %lu KB written to %s\n", (unsigned long)(sMirror.total / 1024), MAP_SD_PATH_PRIMARY);
+        } else {
+            SD.remove(MAP_SD_TMP_PATH);
+            Serial.println("[SD] mirror: rename failed");
+        }
     }
 }
 
-static double haversineKm(double lat1, double lon1, double lat2, double lon2) {
-    double dLat = (lat2 - lat1) * M_PI / 180.0;
-    double dLon = (lon2 - lon1) * M_PI / 180.0;
-    double a = sin(dLat * 0.5) * sin(dLat * 0.5) +
-               cos(lat1 * M_PI / 180.0) * cos(lat2 * M_PI / 180.0) *
-               sin(dLon * 0.5) * sin(dLon * 0.5);
-    return 6371.0 * 2.0 * atan2(sqrt(a), sqrt(1.0 - a));
+static void deferredBootStep() {
+    bool sdReady;
+    {
+        NavLock lock;
+        sdReady = sStat.sdReady;
+    }
+    if (sdReady) {
+        gpxRepairUnterminated();
+        uint32_t usedMB;
+        {
+            IoLock io;
+            usedMB = (uint32_t)(SD.usedBytes() / (1024ULL * 1024ULL));
+        }
+        NavLock lock;
+        sStat.sdUsedMB = usedMB;
+    }
 }
 
-static float calcBearingDeg(double lat1, double lon1, double lat2, double lon2) {
-    double phi1 = lat1 * M_PI / 180.0;
-    double phi2 = lat2 * M_PI / 180.0;
-    double dLon = (lon2 - lon1) * M_PI / 180.0;
-    double y = sin(dLon) * cos(phi2);
-    double x = cos(phi1) * sin(phi2) - sin(phi1) * cos(phi2) * cos(dLon);
-    double brng = atan2(y, x) * 180.0 / M_PI;
-    return (float)fmod(brng + 360.0, 360.0);
-}
-
-static void updateCurrentPosition() {
+// =============================================================================
+// Position
+// =============================================================================
+static void updateCurrentPositionLocked() {
+    sStat.posAgeSec = 0;
     if (GpsManager::hasFix()) {
         sStat.posSource = POS_SRC_GPS_LIVE;
-        snprintf(sStat.posSourceTag, sizeof(sStat.posSourceTag), "3D GPS (%u SAT)", GpsManager::satellites());
+        snprintf(sStat.posSourceTag, sizeof(sStat.posSourceTag), "3D GPS (%u SAT)", (unsigned)GpsManager::satellites());
         sStat.curLat = GpsManager::latitude();
         sStat.curLon = GpsManager::longitude();
         sStat.headingDeg = GpsManager::courseDeg();
         return;
     }
-    // Check LoRa / Meshtastic Peer Position Fallback!
+    if (GpsManager::hasLastFix()) {
+        sStat.posSource = POS_SRC_SAVED_FIX;
+        sStat.curLat = GpsManager::latitude();
+        sStat.curLon = GpsManager::longitude();
+        time_t fixT = GpsManager::lastFixEpoch();
+        time_t nowT = time(NULL);
+        if (fixT > 0 && timeIsPlausible() && nowT > fixT) {
+            sStat.posAgeSec = (uint32_t)(nowT - fixT);
+            char age[8];
+            fmtAge(age, sizeof(age), sStat.posAgeSec);
+            snprintf(sStat.posSourceTag, sizeof(sStat.posSourceTag), "GPS GESP. (%s)", age);
+        } else {
+            strncpy(sStat.posSourceTag, "GPS GESPEICHERT", sizeof(sStat.posSourceTag));
+        }
+        return;
+    }
     double mLat = 0, mLon = 0;
     char meshName[20] = {0};
-    if (RadioLoRa::getMeshFallbackPosition(mLat, mLon, meshName, sizeof(meshName))) {
+    uint32_t ageSec = 0;
+    if (RadioLoRa::getMeshFallbackPosition(mLat, mLon, meshName, sizeof(meshName), &ageSec)) {
         sStat.posSource = POS_SRC_LORA_MESH;
-        snprintf(sStat.posSourceTag, sizeof(sStat.posSourceTag), "MESH: %s", meshName);
+        sStat.posAgeSec = ageSec;
+        char age[8];
+        fmtAge(age, sizeof(age), ageSec);
+        snprintf(sStat.posSourceTag, sizeof(sStat.posSourceTag), "MESH %.10s (%s)", meshName, age);
         sStat.curLat = mLat;
         sStat.curLon = mLon;
         return;
     }
-    if (GpsManager::hasLastFix()) {
-        sStat.posSource = POS_SRC_SAVED_FIX;
-        strncpy(sStat.posSourceTag, "GPS GESPEICHERT", sizeof(sStat.posSourceTag));
-        sStat.curLat = GpsManager::latitude();
-        sStat.curLon = GpsManager::longitude();
-        return;
-    }
     sStat.posSource = POS_SRC_DEFAULT;
-    strncpy(sStat.posSourceTag, "STUTTGART (LETZTE)", sizeof(sStat.posSourceTag));
-    if (fabs(sStat.curLat) < 1.0 || (fabs(sStat.curLat - 52.5200) < 0.01 && fabs(sStat.curLon - 13.4050) < 0.01)) {
-        sStat.curLat = 48.7758; // Stuttgart Schlossplatz default
-        sStat.curLon = 9.1829;
-    }
+    strncpy(sStat.posSourceTag, "KEINE POSITION", sizeof(sStat.posSourceTag));
+    sStat.curLat = 0.0;
+    sStat.curLon = 0.0;
+    sStat.headingDeg = 0.0f;
 }
 
-bool NavEngine::reloadMap() {
-    clearCellCache();
-    loadWaypointsFromStorage();
+static inline bool havePositionLocked() { return sStat.posSource != POS_SRC_DEFAULT; }
 
-    sStat.sdReady = (instance.getDeviceProbe() & HW_SD_ONLINE) != 0 && SD.cardType() != CARD_NONE;
-    if (!sStat.sdReady) {
-        if (instance.installSD()) {
-            sStat.sdReady = true;
-        }
-    }
-    if (sStat.sdReady) {
-        sStat.sdWritable = testSdWriteCapability();
-        if (!sStat.sdWritable) {
-            Serial.println("[SD] Card is write-protected in CSD, attempting CMD27 hardware unlock...");
-            sStat.sdWritable = tryUnlockSdCardHardware();
-            Serial.printf("[SD] After CMD27 unlock attempt: sdWritable=%d\n", (int)sStat.sdWritable);
-        }
-        sStat.sdTotalMB = (uint32_t)(SD.cardSize() / (1024ULL * 1024ULL));
-        sStat.sdUsedMB  = (uint32_t)(SD.usedBytes() / (1024ULL * 1024ULL));
-    } else {
-        sStat.sdWritable = false;
-        sStat.sdTotalMB = sStat.sdUsedMB = 0;
-    }
+// =============================================================================
+// Routing
+// =============================================================================
+static float modeSpeedKmh(NavMode m) { return (m == NAV_MODE_PED) ? 5.0f : 70.0f; }
 
-    sStat.mapLoaded = false;
-    sStat.ultraLoaded = false;
-    sStat.mapPlaces = N_BUILTIN_CITIES;
-    sStat.mapRouteNodes = 0;
-    sStat.mapPois = 0;
-    sUseFlashPart = false;
-    sIsV2 = false;
-
-    const esp_partition_t* part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_FAT, NULL);
-
-    // If SD is writable and doesn't have /kronos/germany.knav yet, mirror Flash KNAVDE02 onto SD!
-    if (sStat.sdReady && sStat.sdWritable && !SD.exists("/kronos/germany.knav") && part) {
-        KnavHeader fh{};
-        if (esp_partition_read(part, 0, &fh, sizeof(fh)) == ESP_OK &&
-            (memcmp(fh.magic, "KNAVDE02", 8) == 0 || memcmp(fh.magic, "KNAVDE01", 8) == 0)) {
-            SD.mkdir("/kronos");
-            File out = SD.open("/kronos/germany.knav", FILE_WRITE, true);
-            if (out) {
-                Serial.println("[SD] Copying KNAVDE02 map database to SD card /kronos/germany.knav...");
-                uint8_t* copyBuf = (uint8_t*)heap_caps_malloc(32768, MALLOC_CAP_SPIRAM);
-                if (copyBuf) {
-                    uint32_t off = 0;
-                    while (off < part->size) {
-                        uint32_t chunk = min<uint32_t>(32768, part->size - off);
-                        if (esp_partition_read(part, off, copyBuf, chunk) != ESP_OK) break;
-                        if (out.write(copyBuf, chunk) != chunk) break;
-                        off += chunk;
-                    }
-                    heap_caps_free(copyBuf);
-                }
-                out.flush();
-                out.close();
-            }
-        }
-    }
-
-    // 1. Check SD card first for germany.knav (prefers KNAVDE02)
-    if (sStat.sdReady) {
-        const char* candidates[] = {"/kronos/germany.knav", "/germany.knav", "/map/germany.knav"};
-        for (const char* path : candidates) {
-            if (SD.exists(path)) {
-                File f = SD.open(path, FILE_READ);
-                if (f && f.size() >= 40) {
-                    KnavHeader h{};
-                    size_t nr = f.read((uint8_t*)&h, sizeof(h));
-                    if (nr >= 40 && (memcmp(h.magic, "KNAVDE02", 8) == 0 || memcmp(h.magic, "KNAVDE01", 8) == 0)) {
-                        sHdr = h;
-                        sIsV2 = (memcmp(h.magic, "KNAVDE02", 8) == 0);
-                        strncpy(sMapPath, path, sizeof(sMapPath) - 1);
-                        sStat.mapLoaded = true;
-                        sStat.ultraLoaded = sIsV2 && (h.ultraDirOffset > 0);
-                        sStat.mapPlaces = h.numPlaces;
-                        sStat.mapRouteNodes = h.numRouteNodes;
-                        sStat.mapPois = sIsV2 ? h.numPois : 0;
-                        Serial.printf("[NAV] Loaded SD %s (%s): %u places, %u route nodes, %u POIs\n",
-                                      path, sIsV2 ? "V2-ULTRA" : "V1", h.numPlaces, h.numRouteNodes, sStat.mapPois);
-                        f.close();
-                        return true;
-                    }
-                }
-                if (f) f.close();
-            }
-        }
-    }
-
-    // 2. Check internal 9.875 MB QSPI Flash storage partition (0x610000) for KNAVDE02 / KNAVDE01
-    if (part && part->size >= sizeof(KnavHeader)) {
-        KnavHeader h{};
-        if (esp_partition_read(part, 0, &h, sizeof(h)) == ESP_OK &&
-            (memcmp(h.magic, "KNAVDE02", 8) == 0 || memcmp(h.magic, "KNAVDE01", 8) == 0)) {
-            sHdr = h;
-            sIsV2 = (memcmp(h.magic, "KNAVDE02", 8) == 0);
-            sFlashPart = part;
-            sUseFlashPart = true;
-            sStat.mapLoaded = true;
-            sStat.ultraLoaded = sIsV2 && (h.ultraDirOffset > 0);
-            sStat.mapPlaces = h.numPlaces;
-            sStat.mapRouteNodes = h.numRouteNodes;
-            sStat.mapPois = sIsV2 ? h.numPois : 0;
-            Serial.printf("[NAV] Loaded Flash %s (@0x%lx): %u places, %u route nodes, %u POIs, ultra=%d\n",
-                          sIsV2 ? "KNAVDE02" : "KNAVDE01",
-                          (unsigned long)part->address, h.numPlaces, h.numRouteNodes, sStat.mapPois,
-                          (int)sStat.ultraLoaded);
-            return true;
-        }
-    }
-
-    Serial.println("[NAV] Using built-in Stuttgart & DE base map");
-    return false;
+static void setStraightLineRouteLocked(const char* cmd) {
+    sRoute.clear();
+    sRoute.push_back({(int32_t)llround(sStat.curLat * 1e5), (int32_t)llround(sStat.curLon * 1e5)});
+    sRoute.push_back({(int32_t)llround(sStat.destLat * 1e5), (int32_t)llround(sStat.destLon * 1e5)});
+    sStat.routeStraightLine = true;
+    sStat.totalDistKm = (float)haversineKm(sStat.curLat, sStat.curLon, sStat.destLat, sStat.destLon);
+    setTurn(cmd, ICO_ROUTE);
 }
 
-void NavEngine::init() {
-    memset(&sStat, 0, sizeof(sStat));
-    sStat.mode = NAV_MODE_CAR;
-    sStat.curLat = 48.7758; // Stuttgart Schlossplatz
-    sStat.curLon = 9.1829;
-    sStat.nextTurnIcon = ICO_NAVIGATION;
-    strncpy(sStat.nextTurnCmd, "BEREIT", sizeof(sStat.nextTurnCmd));
-    for (int i = 0; i < CELL_CACHE_SLOTS; i++) {
-        sCellCache[i].key = -1;
-        sCellCache[i].data = nullptr;
-        sCellCache[i].len = 0;
-    }
-    reloadMap();
-    updateCurrentPosition();
+static void queueRouteRequestLocked() {
+    sReq.pending = true;
+    sReq.serial = ++sReqSerial;
+    sReq.sLat = sStat.curLat; sReq.sLon = sStat.curLon;
+    sReq.dLat = sStat.destLat; sReq.dLon = sStat.destLon;
+    sReq.mode = sStat.mode;
+    sStat.routingBusy = true;
+    sStat.routeFailed = false;
+    setStraightLineRouteLocked("BERECHNE ROUTE...");
 }
 
-static void updateTurnByTurn() {
-    if (!sStat.activeRoute || sRoute.empty()) return;
+static void updateTurnByTurnLocked() {
+    if (!sStat.activeRoute) return;
 
     if (sStat.mode == NAV_MODE_MESH) {
-        LoraPeerNode peers[16];
-        uint8_t np = RadioLoRa::getPeers(peers, 16);
+        uint8_t np = RadioLoRa::getPeers(sPeerScratch, 16);
         for (uint8_t i = 0; i < np; i++) {
-            if (peers[i].hasPos && strcmp(peers[i].name, sStat.destName) == 0) {
-                sStat.destLat = peers[i].lat;
-                sStat.destLon = peers[i].lon;
+            if (sPeerScratch[i].hasPos && strcmp(sPeerScratch[i].name, sStat.destName) == 0) {
+                sStat.destLat = sPeerScratch[i].lat;
+                sStat.destLon = sPeerScratch[i].lon;
                 break;
             }
         }
     }
 
+    if (!havePositionLocked()) {
+        sStat.remDistKm = 0;
+        sStat.nextTurnDistM = 0;
+        sStat.etaMinutes = 0;
+        setTurn("KEINE POSITION", ICO_LOCATION_SEARCHING);
+        return;
+    }
+
+    // straight-line modes keep the first point glued to the current position
+    if (sStat.routeStraightLine || sStat.mode == NAV_MODE_MESH) {
+        if (sRoute.size() != 2) {
+            sRoute.clear();
+            sRoute.push_back({0, 0});
+            sRoute.push_back({0, 0});
+        }
+        sRoute[0] = {(int32_t)llround(sStat.curLat * 1e5), (int32_t)llround(sStat.curLon * 1e5)};
+        sRoute[1] = {(int32_t)llround(sStat.destLat * 1e5), (int32_t)llround(sStat.destLon * 1e5)};
+        double d = haversineKm(sStat.curLat, sStat.curLon, sStat.destLat, sStat.destLon);
+        sStat.remDistKm = (float)d;
+        sStat.bearingDeg = calcBearingDeg(sStat.curLat, sStat.curLon, sStat.destLat, sStat.destLon);
+        sStat.nextTurnDistM = (uint32_t)(d * 1000.0);
+        if (d < 0.05) {
+            setTurn("ZIEL ERREICHT", ICO_FLAG);
+            sStat.etaMinutes = 0;
+            return;
+        }
+        if (!sStat.routingBusy) {
+            setTurn(sStat.mode == NAV_MODE_MESH ? "LUFTLINIE (MESH)" : "LUFTLINIE", ICO_ROUTE);
+        }
+        float speedKmh = modeSpeedKmh(sStat.mode);
+        if (GpsManager::hasFix() && GpsManager::speedKmh() > 2.5f) speedKmh = GpsManager::speedKmh();
+        sStat.etaMinutes = (uint16_t)std::min(65535.0f, std::max(1.0f, (float)(d / speedKmh * 60.0)));
+        return;
+    }
+
+    if (sRoute.size() < 2) return;
+
     int bestIdx = 0;
     double bestDist = 1e9;
     for (size_t i = 0; i < sRoute.size(); i++) {
         double d = haversineKm(sStat.curLat, sStat.curLon, sRoute[i].lat_e5 * 1e-5, sRoute[i].lon_e5 * 1e-5);
-        if (d < bestDist) {
-            bestDist = d;
-            bestIdx = (int)i;
-        }
+        if (d < bestDist) { bestDist = d; bestIdx = (int)i; }
     }
 
     double remKm = bestDist;
@@ -622,289 +1406,611 @@ static void updateTurnByTurn() {
     sStat.bearingDeg = calcBearingDeg(sStat.curLat, sStat.curLon, sStat.destLat, sStat.destLon);
 
     if (remKm < 0.05) {
-        strncpy(sStat.nextTurnCmd, "ZIEL ERREICHT", sizeof(sStat.nextTurnCmd));
-        sStat.nextTurnIcon = ICO_FLAG;
+        setTurn("ZIEL ERREICHT", ICO_FLAG);
         sStat.nextTurnDistM = 0;
         sStat.etaMinutes = 0;
         return;
     }
 
-    double distToTurnKm = haversineKm(sStat.curLat, sStat.curLon,
-                                      sRoute[min((int)sRoute.size() - 1, bestIdx + 1)].lat_e5 * 1e-5,
-                                      sRoute[min((int)sRoute.size() - 1, bestIdx + 1)].lon_e5 * 1e-5);
+    size_t nextI = std::min(sRoute.size() - 1, (size_t)bestIdx + 1);
+    double distToTurnKm = haversineKm(sStat.curLat, sStat.curLon, sRoute[nextI].lat_e5 * 1e-5, sRoute[nextI].lon_e5 * 1e-5);
     float turnDelta = 0.0f;
     bool foundTurn = false;
-    for (size_t i = bestIdx + 1; i + 1 < sRoute.size(); i++) {
+    for (size_t i = (size_t)bestIdx + 1; i + 1 < sRoute.size(); i++) {
         float b1 = calcBearingDeg(sRoute[i - 1].lat_e5 * 1e-5, sRoute[i - 1].lon_e5 * 1e-5,
                                   sRoute[i].lat_e5 * 1e-5, sRoute[i].lon_e5 * 1e-5);
         float b2 = calcBearingDeg(sRoute[i].lat_e5 * 1e-5, sRoute[i].lon_e5 * 1e-5,
                                   sRoute[i + 1].lat_e5 * 1e-5, sRoute[i + 1].lon_e5 * 1e-5);
         float diff = fmodf(b2 - b1 + 540.0f, 360.0f) - 180.0f;
-        if (fabsf(diff) >= 28.0f) {
-            turnDelta = diff;
-            foundTurn = true;
-            break;
-        }
+        if (fabsf(diff) >= 28.0f) { turnDelta = diff; foundTurn = true; break; }
         distToTurnKm += haversineKm(sRoute[i].lat_e5 * 1e-5, sRoute[i].lon_e5 * 1e-5,
                                     sRoute[i + 1].lat_e5 * 1e-5, sRoute[i + 1].lon_e5 * 1e-5);
     }
 
     sStat.nextTurnDistM = (uint32_t)(distToTurnKm * 1000.0);
-    if (!foundTurn) {
-        strncpy(sStat.nextTurnCmd, "DEM VERLAUF FOLGEN", sizeof(sStat.nextTurnCmd));
-        sStat.nextTurnIcon = ICO_STRAIGHT;
-    } else if (turnDelta > 55.0f) {
-        strncpy(sStat.nextTurnCmd, "RECHTS ABBIEGEN", sizeof(sStat.nextTurnCmd));
-        sStat.nextTurnIcon = ICO_TURN_RIGHT;
-    } else if (turnDelta > 25.0f) {
-        strncpy(sStat.nextTurnCmd, "HALBRECHTS HALTEN", sizeof(sStat.nextTurnCmd));
-        sStat.nextTurnIcon = ICO_TURN_SLIGHT_RIGHT;
-    } else if (turnDelta < -55.0f) {
-        strncpy(sStat.nextTurnCmd, "LINKS ABBIEGEN", sizeof(sStat.nextTurnCmd));
-        sStat.nextTurnIcon = ICO_TURN_LEFT;
+    if (!foundTurn)             setTurn("DEM VERLAUF FOLGEN", ICO_STRAIGHT);
+    else if (turnDelta > 55.0f) setTurn("RECHTS ABBIEGEN", ICO_TURN_RIGHT);
+    else if (turnDelta > 25.0f) setTurn("HALBRECHTS HALTEN", ICO_TURN_SLIGHT_RIGHT);
+    else if (turnDelta < -55.0f) setTurn("LINKS ABBIEGEN", ICO_TURN_LEFT);
+    else                        setTurn("HALBLINKS HALTEN", ICO_TURN_SLIGHT_LEFT);
+
+    float speedKmh = (sStat.mode == NAV_MODE_CAR) ? 75.0f : 5.0f;
+    if (GpsManager::hasFix() && GpsManager::speedKmh() > 2.5f) speedKmh = GpsManager::speedKmh();
+    sStat.etaMinutes = (uint16_t)std::min(65535.0f, std::max(1.0f, (float)(remKm / speedKmh * 60.0)));
+}
+
+// --- A* job (background task, graph pointers captured under the mutex) ------
+struct RouteJob {
+    uint32_t serial = 0, gen = 0;
+    double sLat = 0, sLon = 0, dLat = 0, dLon = 0;
+    NavMode mode = NAV_MODE_CAR;
+    const DiskRouteNode* nodes = nullptr;
+    const DiskRouteEdge* edges = nullptr;
+    uint32_t numNodes = 0, numEdges = 0;
+};
+
+static inline bool edgeUsable(uint8_t flags, bool ped) {
+    return ped ? (flags & KNAV_EDGE_PED) != 0 : (flags & KNAV_EDGE_CAR) != 0;
+}
+static inline uint32_t edgeWeight(const DiskRouteEdge& e, bool ped) {
+    uint32_t w = e.dist_hm;
+    uint8_t rank = knavEdgeRoadRank(e.flags);
+    if (ped) {
+        if (rank >= 4) w *= 4;
+        else if (rank == 3) w *= 2;
     } else {
-        strncpy(sStat.nextTurnCmd, "HALBLINKS HALTEN", sizeof(sStat.nextTurnCmd));
-        sStat.nextTurnIcon = ICO_TURN_SLIGHT_LEFT;
+        if (rank >= 4) w = (w * 6) / 10;
+        else if (rank == 3) w = (w * 8) / 10;
+    }
+    return w < 1 ? 1 : w;
+}
+
+// Nearest graph node (with at least one usable edge) to a coordinate.
+static bool nearestNode(const RouteJob& j, double lat, double lon, bool ped, uint32_t& out, double& distKm) {
+    int32_t lat5 = (int32_t)llround(lat * 1e5), lon5 = (int32_t)llround(lon * 1e5);
+    double lonScale = kmPerDegLon(lat) / 111.32;  // squash longitude so degrees compare fairly
+    int64_t best = INT64_MAX;
+    uint32_t bestIdx = 0;
+    bool found = false;
+    for (uint32_t i = 0; i < j.numNodes; i++) {
+        const DiskRouteNode& n = j.nodes[i];
+        if (n.edgeCount == 0) continue;
+        int64_t dy = (int64_t)n.lat_e5 - lat5;
+        int64_t dx = (int64_t)((n.lon_e5 - lon5) * lonScale);
+        int64_t d = dy * dy + dx * dx;
+        if (d >= best) continue;
+        bool usable = false;
+        uint32_t e0 = n.firstEdge, e1 = n.firstEdge + n.edgeCount;
+        if (e1 > j.numEdges) continue;
+        for (uint32_t k = e0; k < e1 && !usable; k++) usable = edgeUsable(j.edges[k].flags, ped);
+        if (!usable) continue;
+        best = d; bestIdx = i; found = true;
+    }
+    if (!found) return false;
+    out = bestIdx;
+    distKm = haversineKm(lat, lon, j.nodes[bestIdx].lat_e5 * 1e-5, j.nodes[bestIdx].lon_e5 * 1e-5);
+    return true;
+}
+
+static bool runAStar(const RouteJob& j, std::vector<NavRoutePoint>& outRoute) {
+    if (!j.nodes || !j.edges || j.numNodes == 0 || j.numEdges == 0) return false;
+    bool ped = (j.mode == NAV_MODE_PED);
+
+    uint32_t src, dst;
+    double dS, dD;
+    if (!nearestNode(j, j.sLat, j.sLon, ped, src, dS) || !nearestNode(j, j.dLat, j.dLon, ped, dst, dD)) {
+        Serial.println("[NAV] A*: no usable graph node near start/destination");
+        return false;
+    }
+    if (dS > 25.0 || dD > 25.0) {
+        Serial.printf("[NAV] A*: start/dest too far from graph (%.1f / %.1f km)\n", dS, dD);
+        return false;
     }
 
-    float speedKmh = (sStat.mode == NAV_MODE_CAR) ? 75.0f : 5.5f;
-    if (GpsManager::hasFix() && GpsManager::speedKmh() > 2.5f) {
-        speedKmh = GpsManager::speedKmh();
+    uint32_t* gScore = (uint32_t*)psramAlloc((size_t)j.numNodes * 4);
+    uint32_t* parent = (uint32_t*)psramAlloc((size_t)j.numNodes * 4);
+    uint8_t* closed = (uint8_t*)psramAlloc(((size_t)j.numNodes + 7) / 8);
+    if (!gScore || !parent || !closed) {
+        if (gScore) heap_caps_free(gScore);
+        if (parent) heap_caps_free(parent);
+        if (closed) heap_caps_free(closed);
+        Serial.println("[NAV] A*: out of memory");
+        return false;
     }
-    sStat.etaMinutes = (uint16_t)max(1.0f, (float)(remKm / speedKmh * 60.0));
+    memset(gScore, 0xFF, (size_t)j.numNodes * 4);
+    memset(parent, 0xFF, (size_t)j.numNodes * 4);
+    memset(closed, 0, ((size_t)j.numNodes + 7) / 8);
+
+    // Admissible heuristic: true distance in hm scaled by the smallest edge
+    // weight factor of the mode (car: motorways cost 0.6x), using the smaller
+    // of cos(lat) scaling and the legacy 71.5 km/deg so old files stay safe.
+    const double midLat = (j.sLat + j.dLat) * 0.5;
+    const double kmLat = 111.32;
+    const double kmLon = std::min(kmPerDegLon(midLat), 71.5);
+    const double hScale = ped ? 1.0 : 0.6;
+    const int32_t dstLat5 = j.nodes[dst].lat_e5, dstLon5 = j.nodes[dst].lon_e5;
+    auto heur = [&](uint32_t u) -> uint32_t {
+        double dlat = (j.nodes[u].lat_e5 - dstLat5) * 1e-5 * kmLat;
+        double dlon = (j.nodes[u].lon_e5 - dstLon5) * 1e-5 * kmLon;
+        return (uint32_t)(sqrt(dlat * dlat + dlon * dlon) * 10.0 * hScale);
+    };
+
+    using P = std::pair<uint32_t, uint32_t>;   // (f, node)
+    std::priority_queue<P, std::vector<P>, std::greater<P>> pq;
+    gScore[src] = 0;
+    pq.push({heur(src), src});
+
+    uint32_t maxIter = std::min<uint32_t>(j.numNodes * 4u + 10000u, 1500000u);
+    bool reached = (src == dst);
+    while (!pq.empty() && maxIter-- > 0 && !reached) {
+        P top = pq.top();
+        pq.pop();
+        uint32_t u = top.second;
+        if (u >= j.numNodes) continue;
+        if (closed[u >> 3] & (1u << (u & 7))) continue;            // already expanded
+        if (top.first > gScore[u] + heur(u)) continue;             // stale entry
+        closed[u >> 3] |= (uint8_t)(1u << (u & 7));
+        if (u == dst) { reached = true; break; }
+        const DiskRouteNode& n = j.nodes[u];
+        uint32_t e0 = n.firstEdge, e1 = n.firstEdge + n.edgeCount;
+        if (e1 > j.numEdges) continue;
+        uint32_t gu = gScore[u];
+        for (uint32_t k = e0; k < e1; k++) {
+            const DiskRouteEdge& e = j.edges[k];
+            if (!edgeUsable(e.flags, ped)) continue;
+            uint32_t v = e.toNode;
+            if (v >= j.numNodes) continue;
+            if (closed[v >> 3] & (1u << (v & 7))) continue;
+            uint32_t ng = gu + edgeWeight(e, ped);
+            if (ng < gScore[v]) {
+                gScore[v] = ng;
+                parent[v] = u;
+                pq.push({ng + heur(v), v});
+            }
+        }
+    }
+
+    bool ok = false;
+    if (reached || parent[dst] != 0xFFFFFFFFu) {
+        std::vector<NavRoutePoint> rev;
+        rev.push_back({(int32_t)llround(j.dLat * 1e5), (int32_t)llround(j.dLon * 1e5)});
+        uint32_t cur = dst;
+        uint32_t safety = j.numNodes + 2;
+        while (cur != 0xFFFFFFFFu && cur < j.numNodes && safety-- > 0) {
+            rev.push_back({j.nodes[cur].lat_e5, j.nodes[cur].lon_e5});
+            if (cur == src) break;
+            cur = parent[cur];
+        }
+        if (cur == src) {
+            rev.push_back({(int32_t)llround(j.sLat * 1e5), (int32_t)llround(j.sLon * 1e5)});
+            std::reverse(rev.begin(), rev.end());
+            outRoute = std::move(rev);
+            ok = true;
+        }
+    }
+    heap_caps_free(gScore);
+    heap_caps_free(parent);
+    heap_caps_free(closed);
+    return ok;
+}
+
+static void routingTick() {
+    RouteJob job;
+    {
+        NavLock lock;
+        if (!sReq.pending || sRoutingActive) return;
+        if (!sStat.activeRoute) { sReq.pending = false; sStat.routingBusy = false; return; }
+        if (sReq.mode == NAV_MODE_MESH) { sReq.pending = false; sStat.routingBusy = false; return; }
+        if (!sStat.mapLoaded || sHdr.numRouteNodes == 0 || sHdr.numRouteEdges == 0) {
+            sReq.pending = false;
+            sStat.routingBusy = false;
+            sStat.routeFailed = true;
+            setStraightLineRouteLocked("LUFTLINIE");
+            updateTurnByTurnLocked();
+            nav::markDirty(nav::PG_POSITION);
+            Serial.println("[NAV] no routing graph in map - straight line");
+            return;
+        }
+        if (!sGraphReady) {
+            if (sLoaderFinished) {
+                sReq.pending = false;
+                sStat.routingBusy = false;
+                sStat.routeFailed = true;
+                setStraightLineRouteLocked("LUFTLINIE");
+                updateTurnByTurnLocked();
+                nav::markDirty(nav::PG_POSITION);
+                Serial.println("[NAV] routing graph not resident (memory) - straight line");
+            }
+            return;   // graph still loading: keep the request pending
+        }
+        job.serial = sReq.serial;
+        job.gen = sMapGen;
+        job.sLat = sReq.sLat; job.sLon = sReq.sLon; job.dLat = sReq.dLat; job.dLon = sReq.dLon;
+        job.mode = sReq.mode;
+        job.nodes = sNodes; job.edges = sEdges; job.numNodes = sNumNodes; job.numEdges = sNumEdges;
+        sReq.pending = false;
+        sRoutingActive = true;
+    }
+
+    std::vector<NavRoutePoint> route;
+    unsigned long t0 = millis();
+    bool ok = runAStar(job, route);
+    unsigned long dt = millis() - t0;
+
+    NavLock lock;
+    sRoutingActive = false;
+    if (sGraphDropPending) {
+        // the map was unloaded while we were routing: free the old graph now
+        freeGraphBuffers(sDropNodes, sDropEdges);
+        sDropNodes = nullptr; sDropEdges = nullptr;
+        sGraphDropPending = false;
+        ok = false;
+    }
+    if (job.serial != sReqSerial || job.gen != sMapGen || !sStat.activeRoute) {
+        return;   // superseded; a newer request (if any) is still pending
+    }
+    sStat.routingBusy = false;
+    if (ok && route.size() >= 2) {
+        sRoute = std::move(route);
+        sStat.routeStraightLine = false;
+        sStat.routeFailed = false;
+        double totKm = 0;
+        for (size_t i = 0; i + 1 < sRoute.size(); i++) {
+            totKm += haversineKm(sRoute[i].lat_e5 * 1e-5, sRoute[i].lon_e5 * 1e-5,
+                                 sRoute[i + 1].lat_e5 * 1e-5, sRoute[i + 1].lon_e5 * 1e-5);
+        }
+        sStat.totalDistKm = (float)totKm;
+        Serial.printf("[NAV] route %s: %u points, %.1f km, %lu ms\n",
+                      job.mode == NAV_MODE_PED ? "FUSS" : "AUTO", (unsigned)sRoute.size(), totKm, dt);
+    } else {
+        sStat.routeFailed = true;
+        setStraightLineRouteLocked("LUFTLINIE");
+        Serial.printf("[NAV] no road route found (%lu ms) - straight line\n", dt);
+    }
+    updateTurnByTurnLocked();
+    nav::markDirty(nav::PG_POSITION);
+}
+
+// =============================================================================
+// GPX
+// =============================================================================
+static void gpxWriteCloseLocked() {
+    if (!sGpxOpenPath[0]) return;
+    if (sStat.sdReady && sStat.sdWritable) {
+        IoLock io;
+        File f = SD.open(sGpxOpenPath, FILE_APPEND);
+        if (f) {
+            f.print("</trkseg></trk></gpx>\n");
+            f.close();
+        }
+    }
+    sGpxOpenPath[0] = 0;
+    sGpxOpenDay[0] = 0;
+}
+
+static void gpxLogPointLocked(unsigned long now) {
+    if (!sStat.gpxRecording || sStat.posSource != POS_SRC_GPS_LIVE) return;
+    if (now - sLastGpxMs < 5000) return;
+    sLastGpxMs = now;
+
+    NavRoutePoint pt{(int32_t)llround(sStat.curLat * 1e5), (int32_t)llround(sStat.curLon * 1e5)};
+    if (!sGpxTrail.empty() &&
+        abs(sGpxTrail.back().lat_e5 - pt.lat_e5) <= 8 &&
+        abs(sGpxTrail.back().lon_e5 - pt.lon_e5) <= 8) {
+        return;
+    }
+    if (sGpxTrail.size() < 2000) sGpxTrail.push_back(pt);
+    sStat.gpxPoints = (uint32_t)sGpxTrail.size();
+
+    if (!(sStat.sdReady && sStat.sdWritable)) return;
+
+    struct tm ti{};
+    RtcManager::getLocalTimeInfo(&ti);
+    char day[12];
+    snprintf(day, sizeof(day), "%04d-%02d-%02d", ti.tm_year + 1900, ti.tm_mon + 1, ti.tm_mday);
+
+    // day rollover: terminate the previous file
+    if (sGpxOpenPath[0] && strcmp(sGpxOpenDay, day) != 0) gpxWriteCloseLocked();
+
+    IoLock io;
+    if (!SD.exists(GPX_DIR)) SD.mkdir(GPX_DIR);
+    bool needHeader = false;
+    char gpxPath[40];
+    if (sGpxOpenPath[0]) {
+        strncpy(gpxPath, sGpxOpenPath, sizeof(gpxPath));
+        gpxPath[sizeof(gpxPath) - 1] = 0;
+    } else {
+        // (re)open: a file that already exists and is terminated must not be
+        // appended to; use a time-suffixed sibling instead of rewriting it.
+        snprintf(gpxPath, sizeof(gpxPath), "%s/%s.gpx", GPX_DIR, day);
+        File probe = SD.open(gpxPath, FILE_READ);
+        if (!probe) {
+            needHeader = true;
+        } else {
+            bool terminated = fileEndsWithGpxClose(probe);
+            probe.close();
+            if (terminated) {
+                snprintf(gpxPath, sizeof(gpxPath), "%s/%s_%02d%02d.gpx", GPX_DIR, day, ti.tm_hour, ti.tm_min);
+                needHeader = !SD.exists(gpxPath);
+            }
+        }
+    }
+    File f = SD.open(gpxPath, FILE_APPEND);
+    if (!f) return;
+    if (needHeader) {
+        f.print("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+        f.print("<gpx version=\"1.1\" creator=\"WatchOS Ultra\" xmlns=\"http://www.topografix.com/GPX/1/1\"><trk><trkseg>\n");
+    }
+    char timeTag[40] = "";
+    if (timeIsPlausible()) {
+        time_t t = time(NULL);
+        struct tm g{};
+        gmtime_r(&t, &g);
+        snprintf(timeTag, sizeof(timeTag), "<time>%04d-%02d-%02dT%02d:%02d:%02dZ</time>",
+                 g.tm_year + 1900, g.tm_mon + 1, g.tm_mday, g.tm_hour, g.tm_min, g.tm_sec);
+    }
+    f.printf("<trkpt lat=\"%.6f\" lon=\"%.6f\"><ele>%.1f</ele>%s</trkpt>\n",
+             sStat.curLat, sStat.curLon, GpsManager::altitudeM(), timeTag);
+    f.close();
+    strncpy(sGpxOpenPath, gpxPath, sizeof(sGpxOpenPath) - 1);
+    sGpxOpenPath[sizeof(sGpxOpenPath) - 1] = 0;
+    strncpy(sGpxOpenDay, day, sizeof(sGpxOpenDay) - 1);
+    sGpxOpenDay[sizeof(sGpxOpenDay) - 1] = 0;
+}
+
+// =============================================================================
+// Public: lifecycle
+// =============================================================================
+void NavEngine::init() {
+    NavLock lock;
+    if (sInited) return;
+    memset(&sStat, 0, sizeof(sStat));
+    sStat.mode = NAV_MODE_CAR;
+    sStat.posSource = POS_SRC_DEFAULT;
+    strncpy(sStat.posSourceTag, "KEINE POSITION", sizeof(sStat.posSourceTag));
+    sStat.curLat = 0.0;
+    sStat.curLon = 0.0;
+    setTurn("BEREIT", ICO_NAVIGATION);
+    for (int i = 0; i < CELL_CACHE_SLOTS; i++) {
+        sCellCache[i].key = -1;
+        sCellCache[i].data = nullptr;
+        sCellCache[i].len = 0;
+        sCellCache[i].lastUsed = 0;
+    }
+    sInitMs = millis();
+    reloadMap();                       // header + SD detection only; bulk loading happens in loop()
+    updateCurrentPositionLocked();
+    sInited = true;
 }
 
 void NavEngine::loop(unsigned long now) {
+    {
+        NavLock lock;
+        if (!sInited) return;
+    }
+
+    // deferred boot work, ~2 s after init so the UI is up first
+    if (!sDeferredBootDone && now - sInitMs >= 2000) {
+        sDeferredBootDone = true;
+        deferredBootStep();
+    }
+
+    // one bulk I/O step per tick: table loading first, then the mirror copy
+    bool did = loaderTick();
+    if (!did && sDeferredBootDone) {
+        if (!sMirror.active) {
+            bool pending;
+            { NavLock lock; pending = sMirrorPending; }
+            if (pending) mirrorStart();
+        }
+        if (sMirror.active) mirrorTick();
+    }
+
+    routingTick();
+
     static unsigned long lastTick = 0;
     if (now - lastTick < 1000) return;
     lastTick = now;
 
-    updateCurrentPosition();
+    NavLock lock;
+    PosSource before = sStat.posSource;
+    updateCurrentPositionLocked();
     if (sStat.activeRoute) {
-        updateTurnByTurn();
-    }
-
-    // GPX Track recording (every 5s when enabled)
-    if (sStat.gpxRecording && now - sLastGpxMs >= 5000) {
-        sLastGpxMs = now;
-        NavRoutePoint pt{(int32_t)(sStat.curLat * 1e5), (int32_t)(sStat.curLon * 1e5)};
-        if (sGpxTrail.empty() ||
-            abs(sGpxTrail.back().lat_e5 - pt.lat_e5) > 8 ||
-            abs(sGpxTrail.back().lon_e5 - pt.lon_e5) > 8) {
-            if (sGpxTrail.size() < 2000) sGpxTrail.push_back(pt);
-            sStat.gpxPoints = (uint32_t)sGpxTrail.size();
-
-            if (sStat.sdReady && sStat.sdWritable) {
-                if (!SD.exists("/tracks")) SD.mkdir("/tracks");
-                struct tm ti;
-                RtcManager::getLocalTimeInfo(&ti);
-                char gpxPath[40];
-                snprintf(gpxPath, sizeof(gpxPath), "/tracks/%04d-%02d-%02d.gpx",
-                         ti.tm_year + 1900, ti.tm_mon + 1, ti.tm_mday);
-                bool isNew = !SD.exists(gpxPath);
-                File f = SD.open(gpxPath, FILE_APPEND);
-                if (f) {
-                    if (isNew) {
-                        f.println("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
-                        f.println("<gpx version=\"1.1\" creator=\"KRONOS WatchOS Ultra\"><trk><trkseg>");
-                    }
-                    f.printf("<trkpt lat=\"%.6f\" lon=\"%.6f\"><ele>%.1f</ele></trkpt>\n",
-                             sStat.curLat, sStat.curLon, GpsManager::altitudeM());
-                    f.close();
-                }
-            }
+        if (sRouteWaitingForPos && havePositionLocked() && sStat.mode != NAV_MODE_MESH) {
+            sRouteWaitingForPos = false;
+            queueRouteRequestLocked();
         }
+        updateTurnByTurnLocked();
     }
+    if (before != sStat.posSource) nav::markDirty(nav::PG_POSITION);
+    gpxLogPointLocked(now);
 }
 
-const NavStatus& NavEngine::status() { return sStat; }
+NavStatus NavEngine::status() {
+    NavLock lock;
+    return sStat;
+}
+
+// =============================================================================
+// Public: mode & route
+// =============================================================================
 void NavEngine::setMode(NavMode m) {
+    NavLock lock;
     if (sStat.mode == m) return;
     sStat.mode = m;
     if (sStat.activeRoute) {
-        startNavigation(sStat.destName, sStat.destLat, sStat.destLon);
+        sStat.routeFailed = false;
+        if (m == NAV_MODE_MESH) {
+            sReq.pending = false;
+            sStat.routingBusy = false;
+            sRouteWaitingForPos = false;
+            setStraightLineRouteLocked("LUFTLINIE (MESH)");
+        } else if (havePositionLocked()) {
+            queueRouteRequestLocked();
+        } else {
+            sRouteWaitingForPos = true;
+            sRoute.clear();
+            setTurn("KEINE POSITION", ICO_LOCATION_SEARCHING);
+        }
+        updateTurnByTurnLocked();
     }
+    nav::markDirty(nav::PG_POSITION);
 }
-NavMode NavEngine::getMode() { return sStat.mode; }
-bool NavEngine::isNavigating() { return sStat.activeRoute; }
+
+NavMode NavEngine::getMode() {
+    NavLock lock;
+    return sStat.mode;
+}
+
+bool NavEngine::isNavigating() {
+    NavLock lock;
+    return sStat.activeRoute;
+}
+
+bool NavEngine::isRoutingBusy() {
+    NavLock lock;
+    return sStat.routingBusy;
+}
 
 void NavEngine::stopNavigation() {
+    NavLock lock;
     sStat.activeRoute = false;
+    sStat.routingBusy = false;
+    sStat.routeStraightLine = false;
+    sStat.routeFailed = false;
+    sReq.pending = false;
+    sRouteWaitingForPos = false;
     sRoute.clear();
-    strncpy(sStat.nextTurnCmd, "BEREIT", sizeof(sStat.nextTurnCmd));
+    sStat.remDistKm = 0;
+    sStat.totalDistKm = 0;
+    sStat.nextTurnDistM = 0;
+    sStat.etaMinutes = 0;
+    setTurn("BEREIT", ICO_NAVIGATION);
     nav::markDirty(nav::PG_POSITION);
 }
 
 bool NavEngine::startNavigation(const char* name, double destLat, double destLon) {
-    updateCurrentPosition();
-    strncpy(sStat.destName, name ? name : "Ziel", sizeof(sStat.destName) - 1);
+    NavLock lock;
+    if (!(destLat >= -90.0 && destLat <= 90.0 && destLon >= -180.0 && destLon <= 180.0)) return false;
+    updateCurrentPositionLocked();
+    strncpy(sStat.destName, (name && name[0]) ? name : "Ziel", sizeof(sStat.destName) - 1);
     sStat.destName[sizeof(sStat.destName) - 1] = 0;
     sStat.destLat = destLat;
     sStat.destLon = destLon;
+    sStat.activeRoute = true;
+    sStat.routeFailed = false;
+    sStat.routeStraightLine = false;
+    sStat.routingBusy = false;
+    sReq.pending = false;
+    sRouteWaitingForPos = false;
     sRoute.clear();
 
-    bool routed = false;
-    if (sStat.mapLoaded && sHdr.numRouteNodes > 0 && sHdr.numRouteEdges > 0 &&
-        sStat.mode != NAV_MODE_MESH) {
-        MapReader mr;
-        if (mr.open()) {
-            size_t nodesBytes = sHdr.numRouteNodes * sizeof(DiskRouteNode);
-            size_t edgesBytes = sHdr.numRouteEdges * sizeof(DiskRouteEdge);
-            DiskRouteNode* nodes = (DiskRouteNode*)heap_caps_malloc(nodesBytes, MALLOC_CAP_SPIRAM);
-            DiskRouteEdge* edges = (DiskRouteEdge*)heap_caps_malloc(edgesBytes, MALLOC_CAP_SPIRAM);
-            if (nodes && edges) {
-                mr.readAt(sHdr.routeNodesOffset, nodes, nodesBytes);
-                mr.readAt(sHdr.routeEdgesOffset, edges, edgesBytes);
-
-                int32_t sLat5 = (int32_t)(sStat.curLat * 1e5);
-                int32_t sLon5 = (int32_t)(sStat.curLon * 1e5);
-                int32_t dLat5 = (int32_t)(destLat * 1e5);
-                int32_t dLon5 = (int32_t)(destLon * 1e5);
-
-                uint32_t srcNode = 0, dstNode = 0;
-                int64_t bestSrcD = 0x7FFFFFFFFFFFFFFFLL, bestDstD = 0x7FFFFFFFFFFFFFFFLL;
-                for (uint32_t i = 0; i < sHdr.numRouteNodes; i++) {
-                    if (nodes[i].edgeCount == 0) continue;
-                    int64_t dsy = nodes[i].lat_e5 - sLat5, dsx = nodes[i].lon_e5 - sLon5;
-                    int64_t ds = dsy * dsy + dsx * dsx;
-                    if (ds < bestSrcD) { bestSrcD = ds; srcNode = i; }
-
-                    int64_t ddy = nodes[i].lat_e5 - dLat5, ddx = nodes[i].lon_e5 - dLon5;
-                    int64_t dd = ddy * ddy + ddx * ddx;
-                    if (dd < bestDstD) { bestDstD = dd; dstNode = i; }
-                }
-
-                uint32_t* gScore = (uint32_t*)heap_caps_malloc(sHdr.numRouteNodes * 4, MALLOC_CAP_SPIRAM);
-                uint32_t* parent = (uint32_t*)heap_caps_malloc(sHdr.numRouteNodes * 4, MALLOC_CAP_SPIRAM);
-                if (gScore && parent) {
-                    memset(gScore, 0xFF, sHdr.numRouteNodes * 4);
-                    memset(parent, 0xFF, sHdr.numRouteNodes * 4);
-                    using P = std::pair<uint32_t, uint32_t>;
-                    std::priority_queue<P, std::vector<P>, std::greater<P>> pq;
-                    bool pedMode = (sStat.mode == NAV_MODE_PED);
-
-                    auto heur = [&](uint32_t u) -> uint32_t {
-                        double dlat = (nodes[u].lat_e5 - nodes[dstNode].lat_e5) * 1e-5 * 111.32;
-                        double dlon = (nodes[u].lon_e5 - nodes[dstNode].lon_e5) * 1e-5 * 71.5;
-                        return (uint32_t)(sqrt(dlat * dlat + dlon * dlon) * 6.0);
-                    };
-
-                    gScore[srcNode] = 0;
-                    pq.push({heur(srcNode), srcNode});
-                    uint32_t maxIter = 70000;
-                    while (!pq.empty() && maxIter-- > 0) {
-                        auto [fval, u] = pq.top();
-                        pq.pop();
-                        if (u == dstNode) break;
-                        uint32_t gu = gScore[u];
-                        for (uint16_t k = 0; k < nodes[u].edgeCount; k++) {
-                            const DiskRouteEdge& e = edges[nodes[u].firstEdge + k];
-                            uint8_t cls = (e.flags >> 2) & 0x0F;
-                            uint32_t w = e.dist_hm;
-                            if (pedMode) {
-                                if (cls == FEAT_MOTORWAY || cls == 8) w *= 4;
-                            } else {
-                                if (cls == FEAT_MOTORWAY || cls == 8) w = (w * 6) / 10;
-                                else if (cls == FEAT_PRIMARY || cls == 7) w = (w * 8) / 10;
-                            }
-                            uint32_t ng = gu + max<uint32_t>(1U, w);
-                            if (ng < gScore[e.toNode]) {
-                                gScore[e.toNode] = ng;
-                                parent[e.toNode] = u;
-                                pq.push({ng + heur(e.toNode), e.toNode});
-                            }
-                        }
-                    }
-
-                    if (parent[dstNode] != 0xFFFFFFFFU || srcNode == dstNode) {
-                        std::vector<NavRoutePoint> rev;
-                        rev.push_back({dLat5, dLon5});
-                        uint32_t cur = dstNode;
-                        uint32_t safety = 2000;
-                        while (cur != srcNode && cur != 0xFFFFFFFFU && safety-- > 0) {
-                            rev.push_back({nodes[cur].lat_e5, nodes[cur].lon_e5});
-                            cur = parent[cur];
-                        }
-                        rev.push_back({nodes[srcNode].lat_e5, nodes[srcNode].lon_e5});
-                        rev.push_back({sLat5, sLon5});
-                        std::reverse(rev.begin(), rev.end());
-                        sRoute = std::move(rev);
-                        routed = true;
-                    }
-                }
-                if (gScore) heap_caps_free(gScore);
-                if (parent) heap_caps_free(parent);
-            }
-            if (nodes) heap_caps_free(nodes);
-            if (edges) heap_caps_free(edges);
-            mr.close();
-        }
+    if (!havePositionLocked()) {
+        // keep the destination; route as soon as a position shows up
+        sRouteWaitingForPos = (sStat.mode != NAV_MODE_MESH);
+        sStat.routeFailed = true;
+        sStat.totalDistKm = 0;
+        setTurn("KEINE POSITION", ICO_LOCATION_SEARCHING);
+        Serial.printf("[NAV] destination %s set, waiting for a position\n", sStat.destName);
+        nav::markDirty(nav::PG_POSITION);
+        return true;
     }
-
-    if (!routed) {
-        const int steps = 16;
-        for (int i = 0; i <= steps; i++) {
-            double t = (double)i / steps;
-            double bend = sin(t * M_PI) * 0.06 * ((sStat.mode == NAV_MODE_PED) ? -0.5 : 1.0);
-            double la = sStat.curLat + (destLat - sStat.curLat) * t + bend * (destLon - sStat.curLon) * 0.25;
-            double lo = sStat.curLon + (destLon - sStat.curLon) * t - bend * (destLat - sStat.curLat) * 0.25;
-            sRoute.push_back({(int32_t)(la * 1e5), (int32_t)(lo * 1e5)});
-        }
+    if (sStat.mode == NAV_MODE_MESH) {
+        setStraightLineRouteLocked("LUFTLINIE (MESH)");
+    } else {
+        queueRouteRequestLocked();
     }
-
-    double totKm = 0;
-    for (size_t i = 0; i + 1 < sRoute.size(); i++) {
-        totKm += haversineKm(sRoute[i].lat_e5 * 1e-5, sRoute[i].lon_e5 * 1e-5,
-                             sRoute[i + 1].lat_e5 * 1e-5, sRoute[i + 1].lon_e5 * 1e-5);
-    }
-    sStat.totalDistKm = (float)totKm;
-    sStat.activeRoute = true;
-    updateTurnByTurn();
+    updateTurnByTurnLocked();
     nav::markDirty(nav::PG_POSITION);
     return true;
 }
 
-static bool matchPrefixCaseInsensitive(const char* hay, const char* needle) {
-    if (!needle || !needle[0]) return true;
-    for (const char* h = hay; *h; h++) {
+// =============================================================================
+// Public: search
+// =============================================================================
+// Case folding for ASCII and the German 2-byte umlauts (C3 84/A4, 96/B6, 9C/BC).
+static inline void foldStep(const char*& p, uint16_t& out) {
+    uint8_t c = (uint8_t)*p;
+    if (c == 0xC3 && p[1]) {
+        uint8_t c2 = (uint8_t)p[1];
+        p += 2;
+        if (c2 == 0x84 || c2 == 0xA4) out = 0xE4;      // ä
+        else if (c2 == 0x96 || c2 == 0xB6) out = 0xF6; // ö
+        else if (c2 == 0x9C || c2 == 0xBC) out = 0xFC; // ü
+        else if (c2 == 0x9F) out = 0xDF;               // ß
+        else out = 0xC300 | c2;
+        return;
+    }
+    p++;
+    if (c >= 'A' && c <= 'Z') c += 32;
+    out = c;
+}
+
+// 2 = prefix match, 1 = substring match, 0 = no match
+static int matchQuality(const char* hay, const char* needle) {
+    if (!needle || !needle[0]) return 2;
+    int best = 0;
+    for (const char* h = hay; *h; ) {
         const char* p = h;
         const char* n = needle;
-        while (*p && *n) {
-            char c1 = (*p >= 'A' && *p <= 'Z') ? (*p + 32) : *p;
-            char c2 = (*n >= 'A' && *n <= 'Z') ? (*n + 32) : *n;
-            if (c1 != c2) break;
-            p++; n++;
+        bool ok = true;
+        while (*n) {
+            if (!*p) { ok = false; break; }
+            uint16_t a, b;
+            foldStep(p, a);
+            foldStep(n, b);
+            if (a != b) { ok = false; break; }
         }
-        if (!*n) return true;
+        if (ok) {
+            if (h == hay) return 2;
+            best = 1;
+        }
+        uint16_t skip;
+        foldStep(h, skip);
     }
+    return best;
+}
+
+static void placeToNav(const DiskPlace& p, NavPlace& dst) {
+    strncpy(dst.name, p.name, sizeof(dst.name) - 1);
+    dst.name[sizeof(dst.name) - 1] = 0;
+    dst.lat = p.lat_e5 * 1e-5;
+    dst.lon = p.lon_e5 * 1e-5;
+    dst.pop = p.pop;
+    dst.rank = p.rank;
+}
+
+static bool isDupName(const NavPlace* out, int count, const char* name) {
+    for (int k = 0; k < count; k++) if (strcmp(out[k].name, name) == 0) return true;
     return false;
 }
 
 int NavEngine::searchPlaces(const char* query, NavPlace* out, int maxOut) {
     if (!out || maxOut <= 0) return 0;
+    NavLock lock;
     int count = 0;
+    bool wantMesh = query && strcmp(query, "@mesh") == 0;
+    bool wantPoi  = query && strcmp(query, "@poi") == 0;
+    bool emptyQ   = !query || !query[0];
 
-    // 1. Live LoRa / Meshtastic peers with coordinates
-    LoraPeerNode peers[16];
-    uint8_t np = RadioLoRa::getPeers(peers, 16);
+    // 1. mesh peers with a position (rank 0)
+    uint8_t np = RadioLoRa::getPeers(sPeerScratch, 16);
     for (uint8_t i = 0; i < np && count < maxOut; i++) {
-        if (!peers[i].hasPos) continue;
-        if (matchPrefixCaseInsensitive(peers[i].name, query) ||
-            (query && strcmp(query, "@mesh") == 0)) {
+        if (!sPeerScratch[i].hasPos) continue;
+        if (wantMesh || matchQuality(sPeerScratch[i].name, query) > 0) {
             NavPlace& dst = out[count++];
-            snprintf(dst.name, sizeof(dst.name), "%s", peers[i].name);
-            dst.lat = peers[i].lat;
-            dst.lon = peers[i].lon;
+            snprintf(dst.name, sizeof(dst.name), "%s", sPeerScratch[i].name);
+            dst.lat = sPeerScratch[i].lat;
+            dst.lon = sPeerScratch[i].lon;
             dst.pop = 0;
             dst.rank = 0;
         }
     }
-    if (query && strcmp(query, "@mesh") == 0) return count;
+    if (wantMesh) return count;
 
-    // 2. User-saved 1-click POIs
+    // 2. saved waypoints (rank 5), newest first
     for (int i = sNumWaypoints - 1; i >= 0 && count < maxOut; i--) {
-        if (matchPrefixCaseInsensitive(sWaypoints[i].name, query) ||
-            (query && strcmp(query, "@poi") == 0)) {
+        if (wantPoi || matchQuality(sWaypoints[i].name, query) > 0) {
             NavPlace& dst = out[count++];
             snprintf(dst.name, sizeof(dst.name), "%s", sWaypoints[i].name);
             dst.lat = sWaypoints[i].lat;
@@ -913,93 +2019,114 @@ int NavEngine::searchPlaces(const char* query, NavPlace* out, int maxOut) {
             dst.rank = 5;
         }
     }
+    if (wantPoi) return count;
 
-    // 3. Built-in Stuttgart + Adjacent Landkreise priority list when query is empty (TOP view)
-    if (!query || !query[0]) {
-        for (int i = 0; i < min(18, N_BUILTIN_CITIES) && count < maxOut; i++) {
-            out[count++] = BUILTIN_CITIES[i];
-        }
-    }
-
-    // 4. Search `germany.knav` places table if loaded
-    if (sStat.mapLoaded && sHdr.numPlaces > 0 && count < maxOut) {
-        MapReader mr;
-        if (mr.open()) {
-            uint32_t curOff = sHdr.placesOffset;
-            const int batchSize = 64;
-            DiskPlace batch[batchSize];
-            uint32_t rem = min<uint32_t>(sHdr.numPlaces, (query && query[0]) ? sHdr.numPlaces : 500);
-            while (rem > 0 && count < maxOut) {
-                uint32_t n = min<uint32_t>(rem, batchSize);
-                if (!mr.readAt(curOff, batch, n * sizeof(DiskPlace))) break;
-                curOff += n * sizeof(DiskPlace);
-                for (uint32_t i = 0; i < n && count < maxOut; i++) {
-                    if (matchPrefixCaseInsensitive(batch[i].name, query)) {
-                        // Avoid duplicating built-in Stuttgart entries already added
-                        bool dup = false;
-                        for (int k = 0; k < count; k++) {
-                            if (strcmp(out[k].name, batch[i].name) == 0) { dup = true; break; }
-                        }
-                        if (dup) continue;
-                        NavPlace& dst = out[count++];
-                        strncpy(dst.name, batch[i].name, sizeof(dst.name) - 1);
-                        dst.name[sizeof(dst.name) - 1] = 0;
-                        dst.lat = batch[i].lat_e5 * 1e-5;
-                        dst.lon = batch[i].lon_e5 * 1e-5;
-                        dst.pop = batch[i].pop;
-                        dst.rank = batch[i].rank;
+    // 3. map place table (PSRAM)
+    if (sPlaces && sNumPlaces > 0 && count < maxOut) {
+        if (emptyQ) {
+            if (havePositionLocked()) {
+                // nearest rank<=2 places to the current position (top-K by squared scaled degrees)
+                struct Cand { uint32_t idx; double d2; };
+                static Cand cand[64];
+                int nC = 0;
+                int K = std::min(maxOut - count, 64);
+                double lonScale = kmPerDegLon(sStat.curLat) / 111.32;
+                for (uint32_t i = 0; i < sNumPlaces; i++) {
+                    const DiskPlace& p = sPlaces[i];
+                    if (p.rank > 2) continue;
+                    double dy = p.lat_e5 * 1e-5 - sStat.curLat;
+                    double dx = (p.lon_e5 * 1e-5 - sStat.curLon) * lonScale;
+                    double d2 = dy * dy + dx * dx;
+                    if (nC < K) {
+                        int j = nC++;
+                        while (j > 0 && cand[j - 1].d2 > d2) { cand[j] = cand[j - 1]; j--; }
+                        cand[j] = {i, d2};
+                    } else if (d2 < cand[nC - 1].d2) {
+                        int j = nC - 1;
+                        while (j > 0 && cand[j - 1].d2 > d2) { cand[j] = cand[j - 1]; j--; }
+                        cand[j] = {i, d2};
                     }
                 }
-                rem -= n;
+                for (int i = 0; i < nC && count < maxOut; i++) {
+                    const DiskPlace& p = sPlaces[cand[i].idx];
+                    if (isDupName(out, count, p.name)) continue;
+                    placeToNav(p, out[count++]);
+                }
+            } else {
+                // no position: the table is sorted by importance
+                for (uint32_t i = 0; i < sNumPlaces && count < maxOut; i++) {
+                    if (isDupName(out, count, sPlaces[i].name)) continue;
+                    placeToNav(sPlaces[i], out[count++]);
+                }
             }
-            mr.close();
+        } else {
+            // prefix matches first, then substring matches (table order = importance)
+            for (int pass = 2; pass >= 1 && count < maxOut; pass--) {
+                for (uint32_t i = 0; i < sNumPlaces && count < maxOut; i++) {
+                    if (matchQuality(sPlaces[i].name, query) != pass) continue;
+                    if (isDupName(out, count, sPlaces[i].name)) continue;
+                    placeToNav(sPlaces[i], out[count++]);
+                }
+            }
         }
+        return count;
     }
 
-    // 5. Built-in German cities fallback
+    // 4. fallback while no place table is resident: built-in city list
     for (int i = 0; i < N_BUILTIN_CITIES && count < maxOut; i++) {
-        if (matchPrefixCaseInsensitive(BUILTIN_CITIES[i].name, query)) {
-            bool dup = false;
-            for (int k = 0; k < count; k++) {
-                if (strcmp(out[k].name, BUILTIN_CITIES[i].name) == 0) { dup = true; break; }
-            }
-            if (!dup) out[count++] = BUILTIN_CITIES[i];
+        if (matchQuality(BUILTIN_CITIES[i].name, query) > 0 && !isDupName(out, count, BUILTIN_CITIES[i].name)) {
+            out[count++] = BUILTIN_CITIES[i];
         }
     }
     return count;
 }
 
+// =============================================================================
+// Public: GPX & waypoints
+// =============================================================================
 void NavEngine::setTrackRecording(bool rec) {
+    NavLock lock;
+    if (sStat.gpxRecording == rec) return;
     sStat.gpxRecording = rec;
-    if (rec) sLastGpxMs = 0;
+    if (rec) {
+        sLastGpxMs = 0;
+    } else {
+        gpxWriteCloseLocked();
+    }
 }
-bool NavEngine::isTrackRecording() { return sStat.gpxRecording; }
+
+bool NavEngine::isTrackRecording() {
+    NavLock lock;
+    return sStat.gpxRecording;
+}
 
 bool NavEngine::markWaypoint(const char* label) {
-    updateCurrentPosition();
+    NavLock lock;
+    updateCurrentPositionLocked();
+    if (!havePositionLocked()) {
+        Serial.println("[NAV] waypoint not saved: no position");
+        return false;
+    }
     int idx = sNumWaypoints;
     if (idx >= MAX_USER_WAYPOINTS) {
-        // Shift oldest out
         for (int i = 0; i + 1 < MAX_USER_WAYPOINTS; i++) sWaypoints[i] = sWaypoints[i + 1];
         idx = MAX_USER_WAYPOINTS - 1;
     } else {
         sNumWaypoints++;
     }
-    if (label && label[0]) {
-        snprintf(sWaypoints[idx].name, sizeof(sWaypoints[idx].name), "%s #%d", label, idx + 1);
-    } else {
-        snprintf(sWaypoints[idx].name, sizeof(sWaypoints[idx].name), "POI #%d", idx + 1);
-    }
+    if (label && label[0]) snprintf(sWaypoints[idx].name, sizeof(sWaypoints[idx].name), "%s #%d", label, idx + 1);
+    else                   snprintf(sWaypoints[idx].name, sizeof(sWaypoints[idx].name), "POI #%d", idx + 1);
     sWaypoints[idx].lat = sStat.curLat;
     sWaypoints[idx].lon = sStat.curLon;
     saveWaypointsToNvs();
 
     if (sStat.sdReady && sStat.sdWritable) {
+        IoLock io;
         File f = SD.open("/waypoints.csv", FILE_APPEND);
         if (f) {
-            f.printf("%lu,%s,%.6f,%.6f,%.1f\n",
+            f.printf("%lu,%s,%.6f,%.6f,%.1f,%s\n",
                      (unsigned long)time(NULL), sWaypoints[idx].name,
-                     sStat.curLat, sStat.curLon, GpsManager::altitudeM());
+                     sStat.curLat, sStat.curLon, GpsManager::altitudeM(), sStat.posSourceTag);
             f.close();
         }
     }
@@ -1008,16 +2135,14 @@ bool NavEngine::markWaypoint(const char* label) {
 }
 
 // =============================================================================
-// Google-Maps-Style Vector Map Renderer (Buildings, Forests, Farmland, Streets, POIs)
+// Rendering primitives (RGB565 software rasteriser)
 // =============================================================================
 static inline uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
     return ((uint16_t)(r & 0xF8) << 8) | ((uint16_t)(g & 0xFC) << 3) | (b >> 3);
 }
 
 static inline void putPx(uint16_t* buf, int w, int h, int x, int y, uint16_t col) {
-    if ((unsigned)x < (unsigned)w && (unsigned)y < (unsigned)h) {
-        buf[y * w + x] = col;
-    }
+    if ((unsigned)x < (unsigned)w && (unsigned)y < (unsigned)h) buf[y * w + x] = col;
 }
 
 static void drawLine(uint16_t* buf, int w, int h, int x0, int y0, int x1, int y1, uint16_t col, int thickness = 1) {
@@ -1027,7 +2152,7 @@ static void drawLine(uint16_t* buf, int w, int h, int x0, int y0, int x1, int y1
     int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
     int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
     int err = dx + dy;
-    int maxSteps = w + h + 240;
+    int maxSteps = w + h + 480;
     while (maxSteps-- > 0) {
         if (thickness <= 1) {
             putPx(buf, w, h, x0, y0, col);
@@ -1043,8 +2168,7 @@ static void drawLine(uint16_t* buf, int w, int h, int x0, int y0, int x1, int y1
             int r = thickness / 2;
             for (int ty = -r; ty <= r; ty++)
                 for (int tx = -r; tx <= r; tx++)
-                    if (tx * tx + ty * ty <= r * r + 1)
-                        putPx(buf, w, h, x0 + tx, y0 + ty, col);
+                    if (tx * tx + ty * ty <= r * r + 1) putPx(buf, w, h, x0 + tx, y0 + ty, col);
         }
         if (x0 == x1 && y0 == y1) break;
         int e2 = 2 * err;
@@ -1053,11 +2177,9 @@ static void drawLine(uint16_t* buf, int w, int h, int x0, int y0, int x1, int y1
     }
 }
 
-// Fast Scanline Polygon Fill for Forests, Parks, Farmland, Water Bodies, and Building Footprints
 static void drawFilledPolygon(uint16_t* buf, int w, int h, const int16_t* px, const int16_t* py, int npts, uint16_t fillCol) {
     if (npts < 3) return;
-    int minY = py[0], maxY = py[0];
-    int minX = px[0], maxX = px[0];
+    int minY = py[0], maxY = py[0], minX = px[0], maxX = px[0];
     for (int i = 1; i < npts; i++) {
         if (py[i] < minY) minY = py[i];
         if (py[i] > maxY) maxY = py[i];
@@ -1065,77 +2187,64 @@ static void drawFilledPolygon(uint16_t* buf, int w, int h, const int16_t* px, co
         if (px[i] > maxX) maxX = px[i];
     }
     if (maxX < 0 || minX >= w || maxY < 0 || minY >= h) return;
-    minY = max(0, minY);
-    maxY = min(h - 1, maxY);
+    minY = std::max(0, minY);
+    maxY = std::min(h - 1, maxY);
 
-    int nodes[32];
+    int nodes[64];
     for (int y = minY; y <= maxY; y++) {
         int nNodes = 0;
         int j = npts - 1;
         for (int i = 0; i < npts; i++) {
             int yi = py[i], yj = py[j];
             if ((yi < y && yj >= y) || (yj < y && yi >= y)) {
-                if (nNodes < 32) {
-                    nodes[nNodes++] = px[i] + (y - yi) * (px[j] - px[i]) / (yj - yi);
-                }
+                if (nNodes < 64) nodes[nNodes++] = px[i] + (y - yi) * (px[j] - px[i]) / (yj - yi);
             }
             j = i;
         }
-        // Insertion sort node X coordinates
         for (int i = 1; i < nNodes; i++) {
             int v = nodes[i];
             int k = i - 1;
-            while (k >= 0 && nodes[k] > v) {
-                nodes[k + 1] = nodes[k];
-                k--;
-            }
+            while (k >= 0 && nodes[k] > v) { nodes[k + 1] = nodes[k]; k--; }
             nodes[k + 1] = v;
         }
         uint16_t* row = buf + y * w;
         for (int i = 0; i + 1 < nNodes; i += 2) {
-            int x0 = max(0, nodes[i]);
-            int x1 = min(w - 1, nodes[i + 1]);
-            for (int x = x0; x <= x1; x++) {
-                row[x] = fillCol;
-            }
+            int x0 = std::max(0, nodes[i]);
+            int x1 = std::min(w - 1, nodes[i + 1]);
+            for (int x = x0; x <= x1; x++) row[x] = fillCol;
         }
     }
 }
 
 static void drawFilledCircle(uint16_t* buf, int w, int h, int cx, int cy, int r, uint16_t col) {
-    for (int dy = -r; dy <= r; dy++) {
-        for (int dx = -r; dx <= r; dx++) {
+    for (int dy = -r; dy <= r; dy++)
+        for (int dx = -r; dx <= r; dx++)
             if (dx * dx + dy * dy <= r * r) putPx(buf, w, h, cx + dx, cy + dy, col);
-        }
-    }
 }
 
 static void drawRing(uint16_t* buf, int w, int h, int cx, int cy, int r, uint16_t col) {
-    int r2Min = (r - 1) * (r - 1);
-    int r2Max = (r + 1) * (r + 1);
-    for (int dy = -r - 1; dy <= r + 1; dy++) {
+    int r2Min = (r - 1) * (r - 1), r2Max = (r + 1) * (r + 1);
+    for (int dy = -r - 1; dy <= r + 1; dy++)
         for (int dx = -r - 1; dx <= r + 1; dx++) {
             int d2 = dx * dx + dy * dy;
             if (d2 >= r2Min && d2 <= r2Max) putPx(buf, w, h, cx + dx, cy + dy, col);
         }
-    }
 }
 
 static void drawRoundedBadge(uint16_t* buf, int w, int h, int cx, int cy, int r, uint16_t bgCol, uint16_t borderCol) {
-    for (int dy = -r; dy <= r; dy++) {
+    for (int dy = -r; dy <= r; dy++)
         for (int dx = -r; dx <= r; dx++) {
             int d2 = dx * dx + dy * dy;
             if (d2 <= (r - 1) * (r - 1)) putPx(buf, w, h, cx + dx, cy + dy, bgCol);
             else if (d2 <= r * r) putPx(buf, w, h, cx + dx, cy + dy, borderCol);
         }
-    }
 }
 
 static const uint8_t MINI_FONT[][5] = {
     {0x00,0x00,0x00,0x00,0x00}, // space (32)
-    {0x00,0x00,0x5F,0x00,0x00}, // ! (33)
-    {0x00,0x00,0x00,0x00,0x00}, // " (34)
-    {0x14,0x7F,0x14,0x7F,0x14}, // # (35)
+    {0x00,0x00,0x5F,0x00,0x00}, // !
+    {0x00,0x00,0x00,0x00,0x00}, // "
+    {0x14,0x7F,0x14,0x7F,0x14}, // #
     {0x00,0x00,0x00,0x00,0x00}, // $
     {0x23,0x13,0x08,0x64,0x62}, // %
     {0x00,0x00,0x00,0x00,0x00}, // &
@@ -1204,6 +2313,8 @@ static void drawMapText(uint16_t* buf, int w, int h, int x, int y, const char* t
             else if (c2 == 0xBC || c2 == 0x9C) c = 'U';
             else if (c2 == 0x9F) c = 'S';
             else c = ' ';
+        } else if (c >= 0x80) {
+            c = ' ';
         }
         if (c >= 'a' && c <= 'z') c -= 32;
         if (c < 32 || c > 'Z') c = ' ';
@@ -1222,65 +2333,61 @@ static void drawMapText(uint16_t* buf, int w, int h, int x, int y, const char* t
     }
 }
 
-// Tier: 0=Coarse (32x32 DE), 1=Fine (256x256 DE), 2=Ultra (128x128 Stuttgart+Landkreise)
-static const uint8_t* getCachedCellData(MapReader& mr, int tier, int cellIdx, uint32_t& outLen) {
-    int32_t key = (tier << 20) | cellIdx;
-    sCacheClock++;
-    for (int i = 0; i < CELL_CACHE_SLOTS; i++) {
-        if (sCellCache[i].key == key) {
-            sCellCache[i].lastUsed = sCacheClock;
-            outLen = sCellCache[i].len;
-            return sCellCache[i].data;
-        }
+static int textPixelWidth(const char* txt, int maxChars) {
+    int n = 0;
+    for (int i = 0; txt[i] && n < maxChars; i++) {
+        if ((uint8_t)txt[i] == 0xC3 && txt[i + 1]) i++;
+        n++;
     }
+    return n * 6;
+}
 
-    uint32_t baseDir = (tier == 2) ? sHdr.ultraDirOffset :
-                       (tier == 1) ? sHdr.fineDirOffset : sHdr.coarseDirOffset;
-    if (baseDir == 0) { outLen = 0; return nullptr; }
-
-    uint32_t dirOff = baseDir + cellIdx * sizeof(CellDirEntry);
-    CellDirEntry de{};
-    if (!mr.readAt(dirOff, &de, sizeof(de)) || de.length == 0 || de.length > 65536) {
-        outLen = 0;
-        return nullptr;
+// =============================================================================
+// Map rendering
+// =============================================================================
+struct LabelBox { int x0, y0, x1, y1; };
+static bool labelFits(const LabelBox* placed, int n, const LabelBox& b) {
+    for (int i = 0; i < n; i++) {
+        if (!(b.x1 < placed[i].x0 || b.x0 > placed[i].x1 || b.y1 < placed[i].y0 || b.y0 > placed[i].y1)) return false;
     }
+    return true;
+}
 
-    int victim = 0;
-    for (int i = 1; i < CELL_CACHE_SLOTS; i++) {
-        if (sCellCache[i].key == -1) { victim = i; break; }
-        if (sCellCache[i].lastUsed < sCellCache[victim].lastUsed) victim = i;
-    }
-    if (sCellCache[victim].data) {
-        heap_caps_free(sCellCache[victim].data);
-        sCellCache[victim].data = nullptr;
-    }
-
-    uint8_t* buf = (uint8_t*)heap_caps_malloc(de.length, MALLOC_CAP_SPIRAM);
-    if (!buf) { outLen = 0; return nullptr; }
-    if (!mr.readAt(de.offset, buf, de.length)) {
-        heap_caps_free(buf);
-        outLen = 0;
-        return nullptr;
-    }
-
-    sCellCache[victim].key = key;
-    sCellCache[victim].lastUsed = sCacheClock;
-    sCellCache[victim].data = buf;
-    sCellCache[victim].len = de.length;
-    outLen = de.length;
-    return buf;
+// Shrinks a cell range symmetrically around its centre so it has at most
+// maxW x maxH cells.
+static void limitCellRange(int& c0, int& c1, int maxN) {
+    int n = c1 - c0 + 1;
+    if (n <= maxN) return;
+    int mid = (c0 + c1) / 2;
+    c0 = mid - maxN / 2;
+    c1 = c0 + maxN - 1;
 }
 
 void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double viewLon, int zoom) {
     if (!buf || w <= 0 || h <= 0) return;
+    zoom = std::clamp(zoom, 3, 18);
+    NavLock lock;
 
-    // 1. Dark Google-Maps-Night-style base canvas
+    bool noPosHint = false;
+    if (fabs(viewLat) < 0.01 && fabs(viewLon) < 0.01) {
+        // "no position": centre on the map
+        if (sStat.mapLoaded && sHdrIsV3 && sHdr.bboxMaxLat_e5 > sHdr.bboxMinLat_e5 && sHdr.bboxMaxLon_e5 > sHdr.bboxMinLon_e5) {
+            viewLat = (sHdr.bboxMinLat_e5 + sHdr.bboxMaxLat_e5) * 0.5e-5;
+            viewLon = (sHdr.bboxMinLon_e5 + sHdr.bboxMaxLon_e5) * 0.5e-5;
+        } else {
+            viewLat = DE_CENTER_LAT;
+            viewLon = DE_CENTER_LON;
+        }
+        noPosHint = true;
+    }
+
+    // 1. base canvas
     uint16_t bgCol = (zoom >= 13) ? rgb565(15, 20, 28) : rgb565(10, 14, 22);
     uint16_t gridCol = rgb565(20, 27, 40);
     for (int i = 0; i < w * h; i++) buf[i] = bgCol;
 
     double lonPerPx = 360.0 / (256.0 * pow(2.0, (double)zoom));
-    double cosLat = cos(viewLat * M_PI / 180.0);
+    double cosLat = cos(deg2rad(viewLat));
     if (cosLat < 0.2) cosLat = 0.2;
     double latPerPx = lonPerPx * cosLat;
 
@@ -1289,17 +2396,14 @@ void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double vi
         sy = (int)(h * 0.5 - (lat - viewLat) / latPerPx);
     };
 
-    // Subtle coordinate grid at low/medium zoom
     if (zoom <= 13) {
-        for (int gx = (w / 2) % 48; gx < w; gx += 48) {
+        for (int gx = (w / 2) % 48; gx < w; gx += 48)
             for (int y = 0; y < h; y += 2) buf[y * w + gx] = gridCol;
-        }
-        for (int gy = (h / 2) % 48; gy < h; gy += 48) {
+        for (int gy = (h / 2) % 48; gy < h; gy += 48)
             for (int x = 0; x < w; x += 2) buf[gy * w + x] = gridCol;
-        }
     }
 
-    // 2. Germany border outline at overview zoom levels
+    // 2. German border outline at overview zoom
     if (zoom <= 11) {
         uint16_t borderCol = rgb565(56, 74, 102);
         for (int i = 0; i + 1 < N_BORDER_PTS; i++) {
@@ -1315,37 +2419,29 @@ void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double vi
     double minLon = viewLon - (w * 0.58) * lonPerPx;
     double maxLon = viewLon + (w * 0.58) * lonPerPx;
 
-    // Helper lambda to render a cell's segments (used for Coarse, Fine, and Ultra Stuttgart tiers)
+    int16_t polyX[64], polyY[64];
+
     auto renderCellBuffer = [&](const uint8_t* cdata, uint32_t clen, double baseLat, double baseLon,
                                 double cellLatH, double cellLonW, bool passPolys) {
         if (!cdata || clen < 2) return;
-        uint16_t nseg = *(const uint16_t*)cdata;
+        uint16_t nseg = (uint16_t)(cdata[0] | (cdata[1] << 8));
         size_t pos = 2;
-        int16_t polyX[64], polyY[64];
 
         for (uint16_t s = 0; s < nseg && pos + 2 <= clen; s++) {
-            uint8_t rawCls = cdata[pos++];
+            uint8_t cls = cdata[pos++];
             uint8_t npts = cdata[pos++];
-            if (pos + npts * 2 > clen) break;
+            if (pos + (size_t)npts * 2 > clen) break;
+            if (cls >= FEAT_CLASS_COUNT) { pos += (size_t)npts * 2; continue; }
+            bool isPoly = (cls <= FEAT_LAST_POLYGON);
 
-            // Remap legacy V1 classes (0..8) to V2 FeatureClass (6..14)
-            uint8_t cls = sIsV2 ? rawCls : (rawCls + 6);
-            bool isPoly = (cls <= FEAT_BUILDING);
-
-            if (passPolys != isPoly) {
-                pos += npts * 2;
-                continue;
-            }
-            if (!passPolys && zoom < 12 && (cls == FEAT_PATH || cls == FEAT_RESIDENTIAL)) {
-                pos += npts * 2;
-                continue;
-            }
-            if (passPolys && cls == FEAT_BUILDING && zoom < 13) {
-                pos += npts * 2;
+            if (passPolys != isPoly ||
+                (!passPolys && zoom < 12 && (cls == FEAT_PATH || cls == FEAT_RESIDENTIAL)) ||
+                (passPolys && cls == FEAT_BUILDING && zoom < 13)) {
+                pos += (size_t)npts * 2;
                 continue;
             }
 
-            int cnt = min<int>(npts, 64);
+            int cnt = std::min<int>(npts, 64);
             for (int k = 0; k < cnt; k++) {
                 uint8_t qx = cdata[pos + k * 2];
                 uint8_t qy = cdata[pos + k * 2 + 1];
@@ -1356,47 +2452,33 @@ void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double vi
                 polyX[k] = (int16_t)constrain(sx, -200, w + 200);
                 polyY[k] = (int16_t)constrain(sy, -200, h + 200);
             }
-            pos += npts * 2;
+            pos += (size_t)npts * 2;
 
             if (passPolys) {
                 if (cls == FEAT_FARMLAND) {
-                    // Agriculture / Farmland / Vineyards (warm earth-olive tint + field border)
                     drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(26, 36, 20));
-                    for (int k = 0; k + 1 < cnt; k++) {
-                        drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], rgb565(40, 54, 30), 1);
-                    }
+                    for (int k = 0; k + 1 < cnt; k++) drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], rgb565(40, 54, 30), 1);
                 } else if (cls == FEAT_FOREST) {
-                    // Forest / Woodland (rich dark emerald green + canopy edge)
                     drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(16, 52, 28));
-                    for (int k = 0; k + 1 < cnt; k++) {
-                        drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], rgb565(28, 78, 44), 1);
-                    }
+                    for (int k = 0; k + 1 < cnt; k++) drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], rgb565(28, 78, 44), 1);
                 } else if (cls == FEAT_PARK) {
-                    // City Park / Meadow
                     drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(22, 68, 36));
                 } else if (cls == FEAT_URBAN) {
-                    // Urban residential/commercial block
                     drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(22, 28, 38));
                 } else if (cls == FEAT_WATER_POLY) {
-                    // Lake / Neckar river polygon
                     drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(20, 88, 156));
                 } else if (cls == FEAT_BUILDING) {
-                    // 3D-style Building Footprint + Roof Outline!
                     uint16_t bFill = (zoom >= 15) ? rgb565(46, 54, 70) : rgb565(38, 45, 58);
                     uint16_t bEdge = (zoom >= 15) ? rgb565(82, 94, 118) : rgb565(60, 70, 88);
                     drawFilledPolygon(buf, w, h, polyX, polyY, cnt, bFill);
                     if (zoom >= 14) {
-                        for (int k = 0; k + 1 < cnt; k++) {
-                            drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], bEdge, 1);
-                        }
+                        for (int k = 0; k + 1 < cnt; k++) drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], bEdge, 1);
                     }
                 }
             } else {
-                // Linear features: Roads, Paths, Railways, Waterways
                 uint16_t coreCol = rgb565(100, 112, 132);
                 uint16_t caseCol = 0;
                 int coreW = 1, caseW = 0;
-
                 switch (cls) {
                     case FEAT_WATER:
                         coreCol = rgb565(28, 138, 220);
@@ -1404,19 +2486,16 @@ void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double vi
                         break;
                     case FEAT_BOUNDARY:
                         coreCol = rgb565(75, 95, 125);
-                        coreW = 1;
                         break;
                     case FEAT_RAIL:
                         coreCol = rgb565(115, 125, 155);
                         coreW = (zoom >= 14) ? 2 : 1;
                         break;
                     case FEAT_PATH:
-                        // Footpath / Cycleway / Forest Trail
                         coreCol = rgb565(92, 165, 112);
                         coreW = (zoom >= 15) ? 2 : 1;
                         break;
                     case FEAT_RESIDENTIAL:
-                        // Google-Maps-style Residential Street with dark casing
                         coreCol = rgb565(132, 145, 168);
                         caseCol = rgb565(32, 38, 50);
                         coreW = (zoom >= 16) ? 4 : (zoom >= 15) ? 3 : (zoom >= 14) ? 2 : 1;
@@ -1435,197 +2514,162 @@ void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double vi
                         caseW = (zoom >= 12) ? (coreW + 2) : 0;
                         break;
                     case FEAT_PRIMARY:
-                        // Bundesstraße (Google Maps warm yellow-gold)
                         coreCol = rgb565(245, 192, 38);
                         caseCol = rgb565(70, 52, 12);
                         coreW = (zoom >= 14) ? 4 : 2;
                         caseW = (zoom >= 12) ? (coreW + 2) : 0;
                         break;
                     case FEAT_MOTORWAY:
-                        // Autobahn (bright orange-amber)
                         coreCol = rgb565(255, 110, 28);
                         caseCol = rgb565(85, 34, 10);
                         coreW = (zoom >= 13) ? 4 : (zoom >= 9) ? 2 : 1;
                         caseW = (zoom >= 11) ? (coreW + 2) : 0;
                         break;
+                    default:
+                        break;
                 }
-
                 if (caseW > 0) {
-                    for (int k = 0; k + 1 < cnt; k++) {
-                        drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], caseCol, caseW);
-                    }
+                    for (int k = 0; k + 1 < cnt; k++) drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], caseCol, caseW);
                 }
-                for (int k = 0; k + 1 < cnt; k++) {
-                    drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], coreCol, coreW);
-                }
+                for (int k = 0; k + 1 < cnt; k++) drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], coreCol, coreW);
             }
         }
     };
 
-    // 3. Render vector tiles from `germany.knav` (SD or Flash)
-    if (sStat.mapLoaded) {
-        MapReader mr;
-        if (mr.open()) {
-            bool inStuttgartMetro = sStat.ultraLoaded && (zoom >= 13) &&
-                                    (maxLat >= STU_MIN_LAT && minLat <= STU_MAX_LAT &&
-                                     maxLon >= STU_MIN_LON && minLon <= STU_MAX_LON);
+    // ultra cell range of the viewport (also used for the POI index)
+    const double stgLatSpan = KNAV_STG_MAX_LAT - KNAV_STG_MIN_LAT;
+    const double stgLonSpan = KNAV_STG_MAX_LON - KNAV_STG_MIN_LON;
+    bool viewTouchesStg = (maxLat >= KNAV_STG_MIN_LAT && minLat <= KNAV_STG_MAX_LAT &&
+                           maxLon >= KNAV_STG_MIN_LON && minLon <= KNAV_STG_MAX_LON);
+    int ucy0 = 0, ucy1 = -1, ucx0 = 0, ucx1 = -1;
+    if (viewTouchesStg) {
+        ucy0 = std::clamp((int)((minLat - KNAV_STG_MIN_LAT) / stgLatSpan * KNAV_ULTRA_NY), 0, KNAV_ULTRA_NY - 1);
+        ucy1 = std::clamp((int)((maxLat - KNAV_STG_MIN_LAT) / stgLatSpan * KNAV_ULTRA_NY), 0, KNAV_ULTRA_NY - 1);
+        ucx0 = std::clamp((int)((minLon - KNAV_STG_MIN_LON) / stgLonSpan * KNAV_ULTRA_NX), 0, KNAV_ULTRA_NX - 1);
+        ucx1 = std::clamp((int)((maxLon - KNAV_STG_MIN_LON) / stgLonSpan * KNAV_ULTRA_NX), 0, KNAV_ULTRA_NX - 1);
+    }
 
-            if (inStuttgartMetro) {
-                double latSpan = STU_MAX_LAT - STU_MIN_LAT;
-                double lonSpan = STU_MAX_LON - STU_MIN_LON;
-                int cy0 = std::clamp((int)((minLat - STU_MIN_LAT) / latSpan * ULTRA_NY), 0, ULTRA_NY - 1);
-                int cy1 = std::clamp((int)((maxLat - STU_MIN_LAT) / latSpan * ULTRA_NY), 0, ULTRA_NY - 1);
-                int cx0 = std::clamp((int)((minLon - STU_MIN_LON) / lonSpan * ULTRA_NX), 0, ULTRA_NX - 1);
-                int cx1 = std::clamp((int)((maxLon - STU_MIN_LON) / lonSpan * ULTRA_NX), 0, ULTRA_NX - 1);
+    // 3. vector tiles
+    if (sStat.mapLoaded && sMapRd.valid) {
+        bool ultraOk = sStat.ultraLoaded && zoom >= 13 && viewTouchesStg &&
+                       (ucx1 - ucx0 + 1) <= 12 && (ucy1 - ucy0 + 1) <= 8;
 
-                if (cy1 - cy0 <= 6 && cx1 - cx0 <= 6) {
-                    double cellLatH = latSpan / ULTRA_NY;
-                    double cellLonW = lonSpan / ULTRA_NX;
-                    // Pass 1: Filled polygons (Farmland, Forests, Parks, Water, Urban, 3D Buildings)
-                    for (int cy = cy0; cy <= cy1; cy++) {
-                        for (int cx = cx0; cx <= cx1; cx++) {
-                            uint32_t clen = 0;
-                            const uint8_t* cdata = getCachedCellData(mr, 2, cy * ULTRA_NX + cx, clen);
-                            renderCellBuffer(cdata, clen, STU_MIN_LAT + cy * cellLatH,
-                                             STU_MIN_LON + cx * cellLonW, cellLatH, cellLonW, true);
-                        }
-                    }
-                    // Pass 2: Cased streets, footpaths, railways, waterways
-                    for (int cy = cy0; cy <= cy1; cy++) {
-                        for (int cx = cx0; cx <= cx1; cx++) {
-                            uint32_t clen = 0;
-                            const uint8_t* cdata = getCachedCellData(mr, 2, cy * ULTRA_NX + cx, clen);
-                            renderCellBuffer(cdata, clen, STU_MIN_LAT + cy * cellLatH,
-                                             STU_MIN_LON + cx * cellLonW, cellLatH, cellLonW, false);
-                        }
+        if (ultraOk) {
+            double cellLatH = stgLatSpan / KNAV_ULTRA_NY;
+            double cellLonW = stgLonSpan / KNAV_ULTRA_NX;
+            for (int pass = 0; pass < 2; pass++) {
+                for (int cy = ucy0; cy <= ucy1; cy++) {
+                    for (int cx = ucx0; cx <= ucx1; cx++) {
+                        uint32_t clen = 0;
+                        const uint8_t* cdata = getCachedCellData(2, (uint32_t)(cy * KNAV_ULTRA_NX + cx), clen);
+                        renderCellBuffer(cdata, clen, KNAV_STG_MIN_LAT + cy * cellLatH,
+                                         KNAV_STG_MIN_LON + cx * cellLonW, cellLatH, cellLonW, pass == 0);
                     }
                 }
             }
-
-            // Also render Fine (256x256) or Coarse (32x32) Germany grid if outside Ultra coverage or zoomed out
-            if (!inStuttgartMetro) {
-                bool useFine = (zoom >= 10);
-                int nx = useFine ? FINE_NX : COARSE_NX;
-                int ny = useFine ? FINE_NY : COARSE_NY;
-                double latSpan = DE_MAX_LAT - DE_MIN_LAT;
-                double lonSpan = DE_MAX_LON - DE_MIN_LON;
-
-                int cy0 = std::clamp((int)((minLat - DE_MIN_LAT) / latSpan * ny), 0, ny - 1);
-                int cy1 = std::clamp((int)((maxLat - DE_MIN_LAT) / latSpan * ny), 0, ny - 1);
-                int cx0 = std::clamp((int)((minLon - DE_MIN_LON) / lonSpan * nx), 0, nx - 1);
-                int cx1 = std::clamp((int)((maxLon - DE_MIN_LON) / lonSpan * nx), 0, nx - 1);
-
-                if (useFine && (cy1 - cy0 > 5 || cx1 - cx0 > 5)) {
-                    useFine = false;
-                    nx = COARSE_NX; ny = COARSE_NY;
-                    cy0 = std::clamp((int)((minLat - DE_MIN_LAT) / latSpan * ny), 0, ny - 1);
-                    cy1 = std::clamp((int)((maxLat - DE_MIN_LAT) / latSpan * ny), 0, ny - 1);
-                    cx0 = std::clamp((int)((minLon - DE_MIN_LON) / lonSpan * nx), 0, nx - 1);
-                    cx1 = std::clamp((int)((maxLon - DE_MIN_LON) / lonSpan * nx), 0, nx - 1);
-                }
-
-                double cellLatH = latSpan / ny;
-                double cellLonW = lonSpan / nx;
-                int tier = useFine ? 1 : 0;
-
+        } else {
+            // Fine (256x256) when the viewport fits 8x6 fine cells, else coarse (32x32),
+            // capped to 16x10 coarse cells around the centre.
+            bool useFine = (zoom >= 10) && sHdr.fineDirOffset != 0;
+            const double latSpan = KNAV_DE_MAX_LAT - KNAV_DE_MIN_LAT;
+            const double lonSpan = KNAV_DE_MAX_LON - KNAV_DE_MIN_LON;
+            int nx = useFine ? KNAV_FINE_NX : KNAV_COARSE_NX;
+            int ny = useFine ? KNAV_FINE_NY : KNAV_COARSE_NY;
+            auto cellRange = [&](int& cy0, int& cy1, int& cx0, int& cx1) {
+                cy0 = std::clamp((int)((minLat - KNAV_DE_MIN_LAT) / latSpan * ny), 0, ny - 1);
+                cy1 = std::clamp((int)((maxLat - KNAV_DE_MIN_LAT) / latSpan * ny), 0, ny - 1);
+                cx0 = std::clamp((int)((minLon - KNAV_DE_MIN_LON) / lonSpan * nx), 0, nx - 1);
+                cx1 = std::clamp((int)((maxLon - KNAV_DE_MIN_LON) / lonSpan * nx), 0, nx - 1);
+            };
+            int cy0, cy1, cx0, cx1;
+            cellRange(cy0, cy1, cx0, cx1);
+            if (useFine && (cy1 - cy0 + 1 > 6 || cx1 - cx0 + 1 > 8)) {
+                useFine = false;
+                nx = KNAV_COARSE_NX; ny = KNAV_COARSE_NY;
+                cellRange(cy0, cy1, cx0, cx1);
+            }
+            if (!useFine) {
+                limitCellRange(cx0, cx1, 16);
+                limitCellRange(cy0, cy1, 10);
+            }
+            double cellLatH = latSpan / ny;
+            double cellLonW = lonSpan / nx;
+            int tier = useFine ? 1 : 0;
+            if (dirOffsetForTier(tier) != 0) {
                 for (int pass = 0; pass < 2; pass++) {
-                    bool passPolys = (pass == 0);
                     for (int cy = cy0; cy <= cy1; cy++) {
                         for (int cx = cx0; cx <= cx1; cx++) {
                             uint32_t clen = 0;
-                            const uint8_t* cdata = getCachedCellData(mr, tier, cy * nx + cx, clen);
-                            renderCellBuffer(cdata, clen, DE_MIN_LAT + cy * cellLatH,
-                                             DE_MIN_LON + cx * cellLonW, cellLatH, cellLonW, passPolys);
+                            const uint8_t* cdata = getCachedCellData(tier, (uint32_t)(cy * nx + cx), clen);
+                            renderCellBuffer(cdata, clen, KNAV_DE_MIN_LAT + cy * cellLatH,
+                                             KNAV_DE_MIN_LON + cx * cellLonW, cellLatH, cellLonW, pass == 0);
                         }
                     }
                 }
             }
-
-            // 4. Render POIs & Street Names from `poisOffset` at street zoom (zoom >= 13)!
-            if (sIsV2 && sHdr.numPois > 0 && sHdr.poisOffset > 0 && zoom >= 13) {
-                int32_t minLat5 = (int32_t)(minLat * 1e5);
-                int32_t maxLat5 = (int32_t)(maxLat * 1e5);
-                int32_t minLon5 = (int32_t)(minLon * 1e5);
-                int32_t maxLon5 = (int32_t)(maxLon * 1e5);
-
-                // Binary search first POI with lat_e5 >= minLat5
-                uint32_t lo = 0, hi = sHdr.numPois;
-                while (lo < hi) {
-                    uint32_t mid = (lo + hi) / 2;
-                    DiskPoi probe{};
-                    if (!mr.readAt(sHdr.poisOffset + mid * sizeof(DiskPoi), &probe, sizeof(probe))) break;
-                    if (probe.lat_e5 < minLat5) lo = mid + 1;
-                    else hi = mid;
-                }
-
-                // Track placed label boxes to prevent overlapping street/POI labels
-                struct LabelBox { int x0, y0, x1, y1; };
-                LabelBox placed[28];
-                int nPlaced = 0;
-
-                const int batchN = 48;
-                DiskPoi batch[batchN];
-                uint32_t idx = lo;
-                bool done = false;
-                while (idx < sHdr.numPois && !done && nPlaced < 26) {
-                    uint32_t cnt = min<uint32_t>(batchN, sHdr.numPois - idx);
-                    if (!mr.readAt(sHdr.poisOffset + idx * sizeof(DiskPoi), batch, cnt * sizeof(DiskPoi))) break;
-                    idx += cnt;
-
-                    for (uint32_t i = 0; i < cnt; i++) {
-                        const DiskPoi& p = batch[i];
-                        if (p.lat_e5 > maxLat5) { done = true; break; }
-                        if (p.lon_e5 < minLon5 || p.lon_e5 > maxLon5) continue;
-                        if (p.type == 7 && zoom < 14) continue; // Street names at zoom >= 14
-
-                        int sx, sy;
-                        project(p.lat_e5 * 1e-5, p.lon_e5 * 1e-5, sx, sy);
-                        if (sx < 14 || sx >= w - 50 || sy < 14 || sy >= h - 16) continue;
-
-                        int txtW = min<int>((int)strlen(p.name), 15) * 6 + 14;
-                        int bx0 = sx - 6, by0 = sy - 7, bx1 = sx + txtW, by1 = sy + 9;
-                        bool overlap = false;
-                        for (int b = 0; b < nPlaced; b++) {
-                            if (!(bx1 < placed[b].x0 || bx0 > placed[b].x1 ||
-                                  by1 < placed[b].y0 || by0 > placed[b].y1)) {
-                                overlap = true;
-                                break;
-                            }
-                        }
-                        if (overlap) continue;
-                        if (nPlaced < 28) placed[nPlaced++] = {bx0, by0, bx1, by1};
-
-                        if (p.type == 7) {
-                            // Street Name Label
-                            drawMapText(buf, w, h, sx, sy - 3, p.name, rgb565(185, 200, 222), rgb565(10, 14, 22), 16);
-                        } else {
-                            // Google-Maps-style POI Icon Badge + Label
-                            uint16_t badgeCol = rgb565(50, 140, 250);
-                            char sym[2] = {'*', 0};
-                            switch (p.type) {
-                                case 0: badgeCol = rgb565(30, 185, 95);  sym[0] = 'S'; break; // S-Bahn/U-Bahn/Transit
-                                case 1: badgeCol = rgb565(40, 130, 245); sym[0] = 'P'; break; // Parking
-                                case 2: badgeCol = rgb565(245, 140, 30); sym[0] = 'T'; break; // Tankstelle
-                                case 3: badgeCol = rgb565(240, 155, 45); sym[0] = 'R'; break; // Restaurant/Cafe
-                                case 4: badgeCol = rgb565(40, 185, 220); sym[0] = 'M'; break; // Supermarkt/Shop
-                                case 5: badgeCol = rgb565(245, 65, 75);  sym[0] = '+'; break; // Klinik/Apotheke
-                                case 6: badgeCol = rgb565(215, 175, 45); sym[0] = '*'; break; // Sehenswürdigkeit
-                            }
-                            drawRoundedBadge(buf, w, h, sx, sy, 6, badgeCol, rgb565(255, 255, 255));
-                            drawMapText(buf, w, h, sx - 2, sy - 3, sym, rgb565(255, 255, 255), badgeCol, 1);
-                            if (zoom >= 14 && p.name[0]) {
-                                drawMapText(buf, w, h, sx + 9, sy - 3, p.name, rgb565(230, 238, 250), rgb565(8, 12, 18), 14);
-                            }
-                        }
-                    }
-                }
-            }
-
-            mr.close();
         }
     }
 
-    // 5. Draw GPX recorded breadcrumb trail (amber line)
+    LabelBox placed[40];
+    int nPlaced = 0;
+
+    // 4. POIs & street names from the in-PSRAM index (zoom >= 13)
+    if (sPois && sPoiCellStart && sPoiOrder && zoom >= 13 && viewTouchesStg) {
+        int py0 = ucy0, py1 = ucy1, px0 = ucx0, px1 = ucx1;
+        limitCellRange(px0, px1, 12);
+        limitCellRange(py0, py1, 8);
+        int32_t minLat5 = (int32_t)(minLat * 1e5), maxLat5 = (int32_t)(maxLat * 1e5);
+        int32_t minLon5 = (int32_t)(minLon * 1e5), maxLon5 = (int32_t)(maxLon * 1e5);
+        int poiPlaced = 0;
+        for (int cy = py0; cy <= py1 && poiPlaced < 26; cy++) {
+            for (int cx = px0; cx <= px1 && poiPlaced < 26; cx++) {
+                if (cy < 0 || cy >= KNAV_ULTRA_NY || cx < 0 || cx >= KNAV_ULTRA_NX) continue;
+                uint32_t c = (uint32_t)(cy * KNAV_ULTRA_NX + cx);
+                for (uint32_t k = sPoiCellStart[c]; k < sPoiCellStart[c + 1] && poiPlaced < 26; k++) {
+                    uint32_t pi = sPoiOrder[k];
+                    if (pi >= sNumPois) continue;
+                    const DiskPoi& p = sPois[pi];
+                    if (p.lat_e5 < minLat5 || p.lat_e5 > maxLat5 || p.lon_e5 < minLon5 || p.lon_e5 > maxLon5) continue;
+                    if (p.category == POI_STREET && zoom < 14) continue;
+                    if (p.category == POI_NONE || p.category >= POI_CATEGORY_COUNT) continue;
+
+                    int sx, sy;
+                    project(p.lat_e5 * 1e-5, p.lon_e5 * 1e-5, sx, sy);
+                    if (sx < 14 || sx >= w - 50 || sy < 14 || sy >= h - 16) continue;
+
+                    int txtW = textPixelWidth(p.name, 15) + 14;
+                    LabelBox b{sx - 6, sy - 7, sx + txtW, sy + 9};
+                    if (!labelFits(placed, nPlaced, b)) continue;
+                    if (nPlaced < 40) placed[nPlaced++] = b;
+                    poiPlaced++;
+
+                    if (p.category == POI_STREET) {
+                        drawMapText(buf, w, h, sx, sy - 3, p.name, rgb565(185, 200, 222), rgb565(10, 14, 22), 16);
+                    } else {
+                        uint16_t badgeCol = rgb565(50, 140, 250);
+                        char sym[2] = {'*', 0};
+                        switch (p.category) {
+                            case POI_TRANSIT: badgeCol = rgb565(30, 185, 95);  sym[0] = 'S'; break;
+                            case POI_PARKING: badgeCol = rgb565(40, 130, 245); sym[0] = 'P'; break;
+                            case POI_FUEL:    badgeCol = rgb565(245, 140, 30); sym[0] = 'T'; break;
+                            case POI_FOOD:    badgeCol = rgb565(240, 155, 45); sym[0] = 'R'; break;
+                            case POI_SHOP:    badgeCol = rgb565(40, 185, 220); sym[0] = 'M'; break;
+                            case POI_HEALTH:  badgeCol = rgb565(245, 65, 75);  sym[0] = '+'; break;
+                            case POI_SIGHT:   badgeCol = rgb565(215, 175, 45); sym[0] = '*'; break;
+                            default: break;
+                        }
+                        drawRoundedBadge(buf, w, h, sx, sy, 6, badgeCol, rgb565(255, 255, 255));
+                        drawMapText(buf, w, h, sx - 2, sy - 3, sym, rgb565(255, 255, 255), badgeCol, 1);
+                        if (zoom >= 14 && p.name[0]) {
+                            drawMapText(buf, w, h, sx + 9, sy - 3, p.name, rgb565(230, 238, 250), rgb565(8, 12, 18), 14);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 5. GPX breadcrumb trail
     if (sGpxTrail.size() >= 2) {
         uint16_t gpxCol = rgb565(255, 200, 30);
         for (size_t i = 0; i + 1 < sGpxTrail.size(); i++) {
@@ -1636,16 +2680,24 @@ void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double vi
         }
     }
 
-    // 6. Draw Active Navigation Route Polyline (glowing cyan/lime)
-    if (sStat.activeRoute && sRoute.size() >= 2) {
-        uint16_t routeHalo = rgb565(0, 90, 110);
-        uint16_t routeCore = (sStat.mode == NAV_MODE_PED) ? rgb565(50, 235, 110) : rgb565(0, 245, 212);
-        for (size_t i = 0; i + 1 < sRoute.size(); i++) {
-            int x0, y0, x1, y1;
-            project(sRoute[i].lat_e5 * 1e-5, sRoute[i].lon_e5 * 1e-5, x0, y0);
-            project(sRoute[i + 1].lat_e5 * 1e-5, sRoute[i + 1].lon_e5 * 1e-5, x1, y1);
-            drawLine(buf, w, h, x0, y0, x1, y1, routeHalo, 4);
-            drawLine(buf, w, h, x0, y0, x1, y1, routeCore, 2);
+    // 6. active route (straight line = thinner line without halo) + destination
+    if (sStat.activeRoute) {
+        if (sRoute.size() >= 2 && havePositionLocked()) {
+            bool straight = sStat.routeStraightLine || sStat.mode == NAV_MODE_MESH;
+            uint16_t routeHalo = rgb565(0, 90, 110);
+            uint16_t routeCore = (sStat.mode == NAV_MODE_MESH) ? rgb565(195, 90, 255) :
+                                 (sStat.mode == NAV_MODE_PED)  ? rgb565(50, 235, 110) : rgb565(0, 245, 212);
+            for (size_t i = 0; i + 1 < sRoute.size(); i++) {
+                int x0, y0, x1, y1;
+                project(sRoute[i].lat_e5 * 1e-5, sRoute[i].lon_e5 * 1e-5, x0, y0);
+                project(sRoute[i + 1].lat_e5 * 1e-5, sRoute[i + 1].lon_e5 * 1e-5, x1, y1);
+                if (straight) {
+                    drawLine(buf, w, h, x0, y0, x1, y1, routeCore, 2);
+                } else {
+                    drawLine(buf, w, h, x0, y0, x1, y1, routeHalo, 4);
+                    drawLine(buf, w, h, x0, y0, x1, y1, routeCore, 2);
+                }
+            }
         }
         int dx, dy;
         project(sStat.destLat, sStat.destLon, dx, dy);
@@ -1654,7 +2706,7 @@ void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double vi
         drawMapText(buf, w, h, dx + 10, dy - 4, sStat.destName, rgb565(255, 120, 120), rgb565(0, 0, 0));
     }
 
-    // 7. Draw User-Saved 1-Click POI Waypoints
+    // 7. saved waypoints
     for (int i = 0; i < sNumWaypoints; i++) {
         int wx, wy;
         project(sWaypoints[i].lat, sWaypoints[i].lon, wx, wy);
@@ -1664,47 +2716,67 @@ void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double vi
         }
     }
 
-    // 8. Draw City / Town Names & Dots
-    uint16_t cityDotCol = rgb565(225, 235, 250);
-    uint16_t cityTxtCol = rgb565(210, 225, 245);
-    for (int i = 0; i < N_BUILTIN_CITIES; i++) {
-        if (zoom <= 7 && BUILTIN_CITIES[i].rank > 1 && i > 0) continue;
-        int sx, sy;
-        project(BUILTIN_CITIES[i].lat, BUILTIN_CITIES[i].lon, sx, sy);
-        if (sx >= 10 && sx < w - 45 && sy >= 10 && sy < h - 10) {
-            drawFilledCircle(buf, w, h, sx, sy, 2, cityDotCol);
-            drawMapText(buf, w, h, sx + 5, sy - 3, BUILTIN_CITIES[i].name, cityTxtCol, rgb565(5, 8, 14), 16);
+    // 8. place labels: map place table (rank by zoom) or the built-in fallback list
+    {
+        uint16_t cityDotCol = rgb565(225, 235, 250);
+        uint16_t cityTxtCol = rgb565(210, 225, 245);
+        uint8_t maxRank = (zoom <= 7) ? 1 : (zoom <= 10) ? 2 : (zoom <= 13) ? 3 : 4;
+        int labels = 0;
+        auto tryLabel = [&](const char* name, double lat, double lon, uint8_t rank) {
+            if (rank > maxRank || labels >= 22) return;
+            if (lat < minLat || lat > maxLat || lon < minLon || lon > maxLon) return;
+            int sx, sy;
+            project(lat, lon, sx, sy);
+            if (sx < 10 || sx >= w - 45 || sy < 10 || sy >= h - 10) return;
+            int tw = textPixelWidth(name, 16);
+            LabelBox b{sx - 4, sy - 6, sx + 6 + tw, sy + 6};
+            if (!labelFits(placed, nPlaced, b)) return;
+            if (nPlaced < 40) placed[nPlaced++] = b;
+            labels++;
+            drawFilledCircle(buf, w, h, sx, sy, (rank <= 1) ? 3 : 2, cityDotCol);
+            drawMapText(buf, w, h, sx + 5, sy - 3, name, cityTxtCol, rgb565(5, 8, 14), 16);
+        };
+        if (sPlaces && sNumPlaces > 0) {
+            for (uint32_t i = 0; i < sNumPlaces && labels < 22; i++) {
+                const DiskPlace& p = sPlaces[i];
+                tryLabel(p.name, p.lat_e5 * 1e-5, p.lon_e5 * 1e-5, p.rank);
+            }
+        } else {
+            for (int i = 0; i < N_BUILTIN_CITIES; i++) {
+                tryLabel(BUILTIN_CITIES[i].name, BUILTIN_CITIES[i].lat, BUILTIN_CITIES[i].lon, BUILTIN_CITIES[i].rank);
+            }
         }
     }
 
-    // 9. Draw Live LoRa / Meshtastic Peer Nodes on the Map!
-    LoraPeerNode peers[16];
-    uint8_t nPeers = RadioLoRa::getPeers(peers, 16);
+    // 9. mesh peers
+    uint8_t nPeers = RadioLoRa::getPeers(sPeerScratch, 16);
     for (uint8_t i = 0; i < nPeers; i++) {
-        if (!peers[i].hasPos) continue;
+        if (!sPeerScratch[i].hasPos) continue;
         int px, py;
-        project(peers[i].lat, peers[i].lon, px, py);
+        project(sPeerScratch[i].lat, sPeerScratch[i].lon, px, py);
         if (px >= -10 && px < w + 10 && py >= -10 && py < h + 10) {
-            uint16_t pCol = peers[i].isSos ? rgb565(255, 50, 60) : rgb565(195, 90, 255);
+            uint16_t pCol = sPeerScratch[i].isSos ? rgb565(255, 50, 60) : rgb565(195, 90, 255);
             drawFilledCircle(buf, w, h, px, py, 5, pCol);
             drawRing(buf, w, h, px, py, 7, rgb565(255, 255, 255));
-            drawMapText(buf, w, h, px + 9, py - 3, peers[i].name, pCol, rgb565(0, 0, 0));
+            drawMapText(buf, w, h, px + 9, py - 3, sPeerScratch[i].name, pCol, rgb565(0, 0, 0));
         }
     }
 
-    // 10. Draw Current Position Marker ("You are here" GPS / LoRa Mesh Assisted)
-    int ux, uy;
-    project(sStat.curLat, sStat.curLon, ux, uy);
-    if (ux >= -12 && ux < w + 12 && uy >= -12 && uy < h + 12) {
-        uint16_t myCol = (sStat.posSource == POS_SRC_GPS_LIVE)  ? rgb565(48, 209, 88) :
-                         (sStat.posSource == POS_SRC_LORA_MESH) ? rgb565(191, 90, 242) :
-                                                                  rgb565(10, 132, 255);
-        drawRing(buf, w, h, ux, uy, 11, myCol);
-        drawFilledCircle(buf, w, h, ux, uy, 5, myCol);
-        drawRing(buf, w, h, ux, uy, 6, rgb565(255, 255, 255));
+    // 10. own position (only when known)
+    if (havePositionLocked()) {
+        int ux, uy;
+        project(sStat.curLat, sStat.curLon, ux, uy);
+        if (ux >= -12 && ux < w + 12 && uy >= -12 && uy < h + 12) {
+            uint16_t myCol = (sStat.posSource == POS_SRC_GPS_LIVE)  ? rgb565(48, 209, 88) :
+                             (sStat.posSource == POS_SRC_LORA_MESH) ? rgb565(191, 90, 242) :
+                                                                      rgb565(10, 132, 255);
+            drawRing(buf, w, h, ux, uy, 11, myCol);
+            drawFilledCircle(buf, w, h, ux, uy, 5, myCol);
+            drawRing(buf, w, h, ux, uy, 6, rgb565(255, 255, 255));
+        }
     }
 
-    // 11. Scale bar in bottom-left corner of map canvas
+    // 11. scale bar (60 px)
     double barKm = lonPerPx * cosLat * 111.32 * 60.0;
     char scaleTxt[20];
     if (barKm >= 10.0) snprintf(scaleTxt, sizeof(scaleTxt), "%.0f KM", barKm);
@@ -1714,26 +2786,61 @@ void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double vi
     drawLine(buf, w, h, 12, h - 16, 12, h - 8, rgb565(220, 230, 240), 1);
     drawLine(buf, w, h, 72, h - 16, 72, h - 8, rgb565(220, 230, 240), 1);
     drawMapText(buf, w, h, 16, h - 23, scaleTxt, rgb565(220, 230, 240), rgb565(0, 0, 0));
+
+    // 12. hints
+    if (noPosHint) {
+        const char* hint = "KEINE POSITION";
+        int tw = textPixelWidth(hint, 18);
+        drawMapText(buf, w, h, (w - tw) / 2, 10, hint, rgb565(255, 190, 60), rgb565(0, 0, 0));
+    }
+    if (sStat.mapLoaded && !sLoaderFinished) {
+        char ld[24];
+        snprintf(ld, sizeof(ld), "KARTE LAEDT %u%%", (unsigned)sStat.mapLoadPct);
+        int tw = textPixelWidth(ld, 18);
+        drawMapText(buf, w, h, w - tw - 10, h - 23, ld, rgb565(170, 185, 210), rgb565(0, 0, 0));
+    }
 }
 
+// =============================================================================
+// Public: SD upload
+// =============================================================================
 bool NavEngine::beginSdUpload(const char* path, uint32_t totalSize) {
-    if (!sStat.sdReady && !instance.installSD()) return false;
-    sStat.sdReady = true;
-    clearCellCache();
-    digitalWrite(LORA_CS, HIGH);
-    digitalWrite(NFC_CS, HIGH);
-    SD.mkdir("/kronos");
-    sUploadFile = SD.open(path, FILE_WRITE, true);
-    if (!sUploadFile) {
-        sUploadFile = SD.open("/germany.knav", FILE_WRITE, true);
+    NavLock lock;
+    if (sUploadActive) {
+        IoLock io;
+        sUploadFile.close();
+        sUploadActive = false;
     }
-    if (!sUploadFile) return false;
+    if (!sStat.sdReady) {
+        IoLock io;
+        if (!instance.installSD()) return false;
+        sStat.sdReady = true;
+    }
+    // unload the current map: the file is about to be overwritten. A running
+    // mirror copy writes to its own temp file and aborts itself on the
+    // generation change, so it cannot collide with the upload.
+    unloadMapLocked();
+    sMirrorPending = false;
+
+    IoLock io;
+    SD.mkdir("/kronos");
+    const char* p = (path && path[0]) ? path : MAP_SD_PATH_PRIMARY;
+    sUploadFile = SD.open(p, FILE_WRITE, true);
+    if (!sUploadFile) sUploadFile = SD.open("/germany.knav", FILE_WRITE, true);
+    if (!sUploadFile) {
+        Serial.println("[SD] upload: cannot create map file");
+        return false;
+    }
     sUploadRemaining = totalSize;
+    sUploadActive = true;
+    Serial.printf("[SD] upload started: %s (%lu bytes)\n", p, (unsigned long)totalSize);
     return true;
 }
 
 bool NavEngine::writeSdUploadChunk(const uint8_t* data, size_t len) {
-    if (!sUploadFile) return false;
+    NavLock lock;
+    if (!sUploadActive || !sUploadFile || !data) return false;
+    IoLock io;
     size_t w = sUploadFile.write(data, len);
     if (w != len) return false;
     if (sUploadRemaining >= len) sUploadRemaining -= (uint32_t)len;
@@ -1742,10 +2849,21 @@ bool NavEngine::writeSdUploadChunk(const uint8_t* data, size_t len) {
 }
 
 bool NavEngine::endSdUpload() {
-    if (sUploadFile) {
-        sUploadFile.flush();
-        sUploadFile.close();
+    NavLock lock;
+    if (sUploadActive) {
+        {
+            IoLock io;
+            sUploadFile.flush();
+            sUploadFile.close();
+        }
+        sUploadActive = false;
+        if (sUploadRemaining > 0) {
+            Serial.printf("[SD] upload finished short by %lu bytes\n", (unsigned long)sUploadRemaining);
+        } else {
+            Serial.println("[SD] upload finished, reloading map");
+        }
     }
-    return reloadMap();
+    bool ok = reloadMap();
+    nav::markDirty(nav::PG_POSITION);
+    return ok;
 }
-

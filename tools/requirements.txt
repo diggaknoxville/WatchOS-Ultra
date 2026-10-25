@@ -1,0 +1,7 @@
+# Host tools (tools/watchctl.py, tools/upload_map_sd.py, tools/fonts/*.py)
+#   pip install -r tools/requirements.txt
+pyserial>=3.5,<4
+Pillow>=10,<12
+fonttools>=4.40,<5
+# optional: IANA zone name for `watchctl.py time` (falls back to the UTC offset)
+tzlocal>=5,<6

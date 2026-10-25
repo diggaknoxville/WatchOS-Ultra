@@ -3,13 +3,14 @@
 #include "PowerManager.h"
 #include <Wire.h>
 #include <sys/time.h>
-#include <WiFi.h>
 #include <Preferences.h>
 
 bool RtcManager::rtcReady = false;
 unsigned long RtcManager::lastMaintenance = 0;
 
-static const time_t MIN_VALID_EPOCH = 1735689600;   // 2025-01-01T00:00:00Z
+static uint32_t sHwMask = 0;
+static bool sRtcValidAtBoot = false;                // first RTC read at boot was plausible
+static bool sSyncedSinceBoot = false;               // syncFromEpoch() succeeded since boot
 static char sTzName[40] = "Europe/Berlin";          // IANA name of the active zone
 
 // IANA zone -> POSIX TZ rule (automatic DST). Unknown zones fall back to a
@@ -96,8 +97,9 @@ time_t RtcManager::epochFromUtc(int y, int m, int d, int h, int mi, int s) {
     const unsigned yoe = (unsigned)(y - era * 400);
     const unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
     const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    const long days = (long)era * 146097 + (long)doe - 719468;
-    return (time_t)(days * 86400L + h * 3600L + mi * 60L + s);
+    const long long days = (long long)era * 146097 + (long long)doe - 719468;
+    // 64-bit arithmetic: time_t is 64 bit on ESP-IDF 5, no 2038 overflow
+    return (time_t)(days * 86400LL + h * 3600LL + mi * 60LL + s);
 }
 
 time_t RtcManager::utcFromRtc(const RTC_DateTime& dt) {
@@ -133,11 +135,14 @@ void RtcManager::writeRtcUtc(time_t utcEpoch) {
     if (PowerManager::lockI2C(30)) {
         instance.rtc.setDateTime(dt);
         PowerManager::unlockI2C();
+    } else {
+        Serial.println("[RTC] write skipped (I2C busy)");
     }
 }
 
+void RtcManager::setHardwareMask(uint32_t mask) { sHwMask = mask; }
+
 bool RtcManager::init() {
-    Serial.println("[RTC] PCF85063 (UTC master) via instance.rtc");
     {
         Preferences p;
         if (p.begin("kronos_time", false)) {
@@ -149,37 +154,67 @@ bool RtcManager::init() {
             p.end();
         }
     }
-    rtcReady = true;
+    const uint32_t mask = sHwMask ? sHwMask : instance.getDeviceProbe();
+    rtcReady = (mask & HW_RTC_ONLINE) != 0;
+    Serial.printf("[RTC] PCF85063 (UTC master) via instance.rtc: %s\n", rtcReady ? "online" : "NOT FOUND");
     applyTimezone();
-    updateSystemTimeFromRtc();
-    return true;
+    if (rtcReady) {
+        updateSystemTimeFromRtc();
+    } else {
+        // No RTC: the only possible source is an external sync later on.
+        // Seed the system clock with the last persisted time so logs and
+        // relative calculations are sane, but keep isTimeValid() false.
+        time_t last = SettingsStorage::getLastKnownTime();
+        if (last >= MIN_VALID_EPOCH) {
+            struct timeval tv = { .tv_sec = last, .tv_usec = 0 };
+            settimeofday(&tv, NULL);
+        }
+    }
+    return rtcReady;
 }
 
 void RtcManager::updateSystemTimeFromRtc() {
-    RTC_DateTime dt;
-    if (PowerManager::lockI2C(30)) {
-        dt = instance.rtc.getDateTime();
-        PowerManager::unlockI2C();
-    }
-    time_t ep = utcFromRtc(dt);
-    if (dt.getYear() >= 2025 && dt.getYear() <= 2099 && ep >= MIN_VALID_EPOCH) {
-        struct timeval tv = { .tv_sec = ep, .tv_usec = 0 };
-        settimeofday(&tv, NULL);
-        SettingsStorage::saveLastKnownTime(ep);
-        struct tm lt; localtime_r(&ep, &lt);
-        Serial.printf("[RTC] UTC %04d-%02d-%02d %02d:%02d:%02d -> local %02d:%02d (%s)\n",
-                      dt.getYear(), dt.getMonth(), dt.getDay(), dt.getHour(), dt.getMinute(),
-                      dt.getSecond(), lt.tm_hour, lt.tm_min, SettingsStorage::get().tzPosix);
+    if (!rtcReady) return;
+    // A transient I2C lock timeout must not be mistaken for an invalid RTC:
+    // return without touching the system clock, the RTC or NVS.
+    if (!PowerManager::lockI2C(30)) {
+        Serial.println("[RTC] read skipped (I2C busy)");
         return;
     }
-    // RTC lost power / never set: restore the last persisted UTC time and push
-    // it back so the RTC keeps counting from a sane value.
-    time_t last = SettingsStorage::getLastKnownTime();
-    if (last < MIN_VALID_EPOCH) last = MIN_VALID_EPOCH;
-    struct timeval tv = { .tv_sec = last, .tv_usec = 0 };
-    settimeofday(&tv, NULL);
-    writeRtcUtc(last);
-    Serial.println("[RTC] RTC invalid -> restored last known time from NVS");
+    RTC_DateTime dt = instance.rtc.getDateTime();
+    PowerManager::unlockI2C();
+
+    const time_t ep = utcFromRtc(dt);
+    const bool plausible = dt.getYear() >= 2025 && dt.getYear() <= 2099 && ep >= MIN_VALID_EPOCH;
+    if (plausible) {
+        const time_t sys = time(NULL);
+        const long long drift = (long long)ep - (long long)sys;
+        if (!sRtcValidAtBoot || drift > 1 || drift < -1) {
+            struct timeval tv = { .tv_sec = ep, .tv_usec = 0 };
+            settimeofday(&tv, NULL);
+        }
+        sRtcValidAtBoot = true;
+        SettingsStorage::saveLastKnownTime(ep);
+        struct tm lt; localtime_r(&ep, &lt);
+        Serial.printf("[RTC] UTC %04d-%02d-%02d %02d:%02d:%02d -> local %02d:%02d (%s) drift %+llds\n",
+                      dt.getYear(), dt.getMonth(), dt.getDay(), dt.getHour(), dt.getMinute(),
+                      dt.getSecond(), lt.tm_hour, lt.tm_min, SettingsStorage::get().tzPosix, drift);
+        return;
+    }
+
+    // The read succeeded but the RTC content is implausible (lost backup power
+    // / never set). Restore the last persisted UTC time if we have one so the
+    // RTC keeps counting from a sane value; the time stays "invalid" until a
+    // real sync source (phone, GPS, USB) arrives.
+    const time_t last = SettingsStorage::getLastKnownTime();
+    if (last >= MIN_VALID_EPOCH) {
+        struct timeval tv = { .tv_sec = last, .tv_usec = 0 };
+        settimeofday(&tv, NULL);
+        writeRtcUtc(last);
+        Serial.println("[RTC] RTC invalid -> restored last known time from NVS (time not trusted until synced)");
+    } else {
+        Serial.println("[RTC] RTC invalid and no last known time -> waiting for sync");
+    }
 }
 
 void RtcManager::syncFromEpoch(time_t utcEpoch, int32_t tzOffsetSec, const char* ianaZone) {
@@ -191,26 +226,12 @@ void RtcManager::syncFromEpoch(time_t utcEpoch, int32_t tzOffsetSec, const char*
     writeRtcUtc(utcEpoch);
     SettingsStorage::saveLastKnownTime(utcEpoch);
     sLastSync = utcEpoch;
+    sSyncedSinceBoot = true;
+    persistSync();
 
     struct tm lt; localtime_r(&utcEpoch, &lt);
     Serial.printf("[RTC] Synced: local %04d-%02d-%02d %02d:%02d:%02d\n",
                   lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday, lt.tm_hour, lt.tm_min, lt.tm_sec);
-}
-
-void RtcManager::syncFromNtp(const char* ntpServer) {
-    if (WiFi.status() != WL_CONNECTED) return;
-    configTzTime(SettingsStorage::get().tzPosix, ntpServer, "time.google.com", "time.cloudflare.com");
-    struct tm info;
-    if (getLocalTime(&info, 6000)) {
-        time_t ep = time(NULL);
-        writeRtcUtc(ep);
-        SettingsStorage::saveLastKnownTime(ep);
-        sLastSync = ep;
-        noteSyncSource("NTP");
-        Serial.println("[RTC] NTP sync successful");
-    } else {
-        Serial.println("[RTC] NTP sync timeout");
-    }
 }
 
 void RtcManager::getLocalTimeInfo(struct tm* info) {
@@ -229,14 +250,25 @@ long RtcManager::utcOffsetSec() {
                   epochFromUtc(gt.tm_year + 1900, gt.tm_mon + 1, gt.tm_mday, gt.tm_hour, gt.tm_min, gt.tm_sec));
 }
 bool RtcManager::isRtcOnline() { return rtcReady; }
-bool RtcManager::isTimeValid() { return time(NULL) >= MIN_VALID_EPOCH + 86400; }
+
+bool RtcManager::isTimeValid() {
+    // Valid only with a real source: plausible RTC content at boot (battery
+    // backed, previously synced) or an external sync since boot. A restored
+    // NVS timestamp alone never makes the time valid.
+    if (!sRtcValidAtBoot && !sSyncedSinceBoot) return false;
+    return time(NULL) >= MIN_VALID_EPOCH;
+}
 
 void RtcManager::periodicMaintenance() {
     unsigned long now = millis();
-    if (now - lastMaintenance > 600000) {   // every 10 min
+    if (now - lastMaintenance > 3600000UL) {   // hourly
         lastMaintenance = now;
-        // RTC crystal is the reference: re-seed the system clock from it and
-        // persist a recovery timestamp.
-        updateSystemTimeFromRtc();
+        if (rtcReady) {
+            // RTC crystal is the reference: re-seed the system clock only if it
+            // drifted by more than 1 s, and persist a recovery timestamp.
+            updateSystemTimeFromRtc();
+        } else if (isTimeValid()) {
+            SettingsStorage::saveLastKnownTime(time(NULL));
+        }
     }
 }

@@ -1,24 +1,87 @@
 #!/usr/bin/env python3
-"""KronosOS host tool for the T-Watch Ultra (USB serial).
+"""WatchOS Ultra host tool: talks to the watch's USB-CDC serial console.
 
-  watchctl.py time                 set RTC to this PC's clock + timezone
-  watchctl.py shot out.png [c r]   screenshot (optionally jump to tile c,r first)
-  watchctl.py tour outdir          screenshot every tile
+  watchctl.py [--port PORT] time                      set RTC to this PC's clock + time zone
+  watchctl.py [--port PORT] shot OUT.png [--page P]   screenshot (optionally jump to page P first)
+  watchctl.py [--port PORT] tour OUTDIR               screenshot every watch face and page
+  watchctl.py [--port PORT] goto P                    navigate to page P (name or id)
+  watchctl.py [--port PORT] face F                    select watch face F (name or index)
+  watchctl.py [--port PORT] notify TITLE BODY         show a notification
+  watchctl.py [--port PORT] bench [--seconds N]       collect [PERF] frame statistics (idle + swipes)
+  watchctl.py [--port PORT] dmabench                  time one full-frame DMA push (firmware 'B')
+  watchctl.py [--port PORT] gestures                  synthetic swipe/key navigation test
+  watchctl.py list-ports                              list serial ports
+
+The port is taken from --port, else the WATCHCTL_PORT environment variable,
+else auto-detected (Espressif USB VID 0x303A, or the only port present).
+Works on Linux, macOS and Windows (COMx).
+
+Requirements: pyserial, Pillow (for screenshots); optional: tzlocal (zone name).
 """
-import sys, time, datetime, struct
-import serial
+import argparse
+import datetime
+import os
+import re
+import struct
+import sys
+import time
 
-PORT = "/dev/ttyACM0"
-TILES = [(1, 0, "ailimits"), (2, 0, "activity"), (3, 0, "position"), (4, 0, "lora"), (5, 0, "system"), (6, 0, "connect"), (0, 1, "control")]
+import serial
+import serial.tools.list_ports
+
+BAUD = 115200
+ESPRESSIF_VID = 0x303A
+
+# Page ids: must match `enum PageId` in include/ui/Navigator.h (firmware 'G' command).
+PAGES = {
+    "launcher": 0, "face": 1, "ailimits": 2, "activity": 3, "agenda": 4,
+    "position": 5, "lora": 6, "system": 7,
+    "control": 8, "notifs": 9,
+    "app_calendar": 10, "app_navi": 11, "app_stopwatch": 12, "app_lora": 13,
+    "app_connect": 14, "app_settings": 15, "app_faces": 16, "app_power": 17,
+    "app_media": 18,
+}
+CAROUSEL = ["launcher", "face", "ailimits", "activity", "agenda", "position", "lora", "system"]
+SHEETS = ["control", "notifs"]
+APPS = ["app_calendar", "app_navi", "app_stopwatch", "app_lora", "app_connect",
+        "app_settings", "app_faces", "app_power", "app_media"]
+
+# Watch faces: must match `enum WatchFaceId` in include/Config.h (firmware 'F' command).
 FACES = [
     "modular", "chrono", "minimal", "wayfinder", "tourbillon",
     "casio", "bauhaus", "cyberpunk", "wordclock", "neon_horizon",
-    "flieger", "diver", "radar", "lifetime"
+    "flieger", "diver", "radar", "lifetime",
 ]
 
 
-def open_port():
-    s = serial.Serial(PORT, 115200, timeout=0.5, dsrdtr=False, rtscts=False)
+class WatchError(RuntimeError):
+    pass
+
+
+# ----------------------------------------------------------------------------- port
+def list_ports():
+    return list(serial.tools.list_ports.comports())
+
+
+def detect_port():
+    ports = list_ports()
+    espressif = [p for p in ports if p.vid == ESPRESSIF_VID]
+    if len(espressif) == 1:
+        return espressif[0].device
+    if len(espressif) > 1:
+        raise WatchError("several Espressif devices found, use --port: " +
+                         ", ".join(p.device for p in espressif))
+    if len(ports) == 1:
+        return ports[0].device
+    if not ports:
+        raise WatchError("no serial port found (is the watch connected?)")
+    raise WatchError("cannot pick a port, use --port: " + ", ".join(p.device for p in ports))
+
+
+def open_port(port):
+    port = port or os.environ.get("WATCHCTL_PORT") or detect_port()
+    s = serial.Serial(port, BAUD, timeout=0.5, dsrdtr=False, rtscts=False)
+    # do not toggle DTR/RTS: on the ESP32-S3 USB-CDC that would reset the chip
     s.dtr = False
     s.rts = False
     time.sleep(0.3)
@@ -26,165 +89,355 @@ def open_port():
     return s
 
 
+# ----------------------------------------------------------------------------- helpers
+def read_line(s):
+    return s.readline().decode(errors="replace").strip()
+
+
+def wait_line(s, prefix, timeout=5.0):
+    """Return the first line starting with `prefix` within timeout."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        line = read_line(s)
+        if line.startswith(prefix):
+            return line
+    raise WatchError(f"timeout waiting for '{prefix}'")
+
+
+def page_id(p):
+    if isinstance(p, int):
+        return p
+    p = str(p).strip().lower()
+    if p.isdigit():
+        return int(p)
+    if p in PAGES:
+        return PAGES[p]
+    raise WatchError(f"unknown page '{p}', known: {', '.join(PAGES)}")
+
+
+def face_index(f):
+    f = str(f).strip().lower()
+    if f.isdigit():
+        i = int(f)
+    elif f in FACES:
+        i = FACES.index(f)
+    else:
+        raise WatchError(f"unknown face '{f}', known: {', '.join(FACES)}")
+    if not 0 <= i < len(FACES):
+        raise WatchError(f"face index out of range: {i}")
+    return i
+
+
+def goto(s, page, settle=0.6):
+    pid = page_id(page)
+    s.write(f"G{pid}\n".encode())
+    line = wait_line(s, "PAGE", 3.0)
+    time.sleep(settle)                       # let the transition finish
+    return line
+
+
+def set_face(s, face, settle=0.8):
+    idx = face_index(face)
+    s.write(f"F{idx}\n".encode())
+    line = wait_line(s, "FACE", 3.0)
+    time.sleep(settle)
+    return line
+
+
 def local_zone():
+    """IANA zone name of this PC, '' if unknown (the watch then uses the offset)."""
     try:
-        p = __import__("os").path.realpath("/etc/localtime")
-        return p.split("zoneinfo/")[1] if "zoneinfo/" in p else ""
+        import tzlocal  # optional dependency
+        name = tzlocal.get_localzone_name()
+        if name:
+            return name
     except Exception:
-        return ""
+        pass
+    tz = datetime.datetime.now().astimezone().tzinfo
+    key = getattr(tz, "key", None)            # zoneinfo.ZoneInfo
+    if key:
+        return key
+    if os.name == "posix":
+        env = os.environ.get("TZ", "")
+        if "/" in env:
+            return env.lstrip(":")
+        try:
+            p = os.path.realpath("/etc/localtime")
+            if "zoneinfo/" in p:
+                return p.split("zoneinfo/")[-1]
+        except OSError:
+            pass
+    return ""
 
 
-def cmd_time(s):
+# ----------------------------------------------------------------------------- commands
+def cmd_time(s, args):
     now = time.time()
     off = int(datetime.datetime.now().astimezone().utcoffset().total_seconds())
     zone = local_zone()
+    s.reset_input_buffer()
     s.write(f"T{int(round(now))},{off},{zone}\n".encode())
-    deadline = time.time() + 3
-    while time.time() < deadline:
-        line = s.readline().decode(errors="replace").strip()
-        if line.startswith("TIME_SET") or "Synced" in line:
-            print(line)
-    print(f"sent epoch={int(now)} offset={off} zone={zone}")
+    line = wait_line(s, "TIME_SET", 5.0)
+    print(line)
+    print(f"sent epoch={int(now)} offset={off} zone={zone or '(offset only)'}")
 
 
-def wait_line(s, prefix, timeout=5):
+SNAP_RE = re.compile(r"^SNAP (\d+) (\d+) (\d+)$")
+
+
+def _read_exact(s, need, timeout):
+    data = bytearray()
     deadline = time.time() + timeout
-    while time.time() < deadline:
-        line = s.readline().decode(errors="replace").strip()
-        if line.startswith(prefix):
-            return line
-    raise TimeoutError(prefix)
+    while len(data) < need and time.time() < deadline:
+        chunk = s.read(need - len(data))
+        if chunk:
+            data += chunk
+    return bytes(data)
 
 
-def snapshot(s, path):
+def _snapshot_once(s, path):
     from PIL import Image
     s.reset_input_buffer()
     s.write(b"S\n")
-    hdr = wait_line(s, "SNAP")
-    _, w, h, stride = hdr.split()
-    w, h, stride = int(w), int(h), int(stride)
+    # exact header line; other log lines before it are skipped
+    deadline = time.time() + 5.0
+    m = None
+    while time.time() < deadline:
+        line = read_line(s)
+        if line == "SNAP_FAIL":
+            raise WatchError("firmware could not take a snapshot (SNAP_FAIL)")
+        m = SNAP_RE.match(line)
+        if m:
+            break
+    if not m:
+        raise WatchError("no SNAP header")
+    w, h, stride = (int(x) for x in m.groups())
     need = stride * h
-    data = bytearray()
-    deadline = time.time() + 20
-    while len(data) < need and time.time() < deadline:
-        data += s.read(need - len(data))
-    if len(data) < need:
-        raise RuntimeError(f"short read {len(data)}/{need}")
-    img = Image.new("RGB", (w, h))
-    px = img.load()
+    data = _read_exact(s, need, timeout=30.0)
+    if len(data) != need:
+        raise WatchError(f"short read {len(data)}/{need}")
+    # trailer: "\nEND\n" must follow the pixel data immediately
+    trailer = _read_exact(s, 5, timeout=3.0)
+    if trailer != b"\nEND\n":
+        raise WatchError(f"stream corrupted (trailer {trailer!r}); background log interleaved?")
+    # RGB565 little endian -> RGB888
+    px = bytearray(w * h * 3)
+    row_fmt = "<%dH" % w
+    o = 0
     for y in range(h):
-        row = y * stride
-        for x in range(w):
-            v = data[row + 2 * x] | (data[row + 2 * x + 1] << 8)
-            px[x, y] = (((v >> 11) & 31) * 255 // 31, ((v >> 5) & 63) * 255 // 63, (v & 31) * 255 // 31)
-    img.save(path)
+        row = struct.unpack_from(row_fmt, data, y * stride)
+        for v in row:
+            px[o] = ((v >> 11) & 31) * 255 // 31
+            px[o + 1] = ((v >> 5) & 63) * 255 // 63
+            px[o + 2] = (v & 31) * 255 // 31
+            o += 3
+    Image.frombytes("RGB", (w, h), bytes(px)).save(path)
     print(f"saved {path} ({w}x{h})")
 
 
-def goto(s, p):
-    s.write(f"G{p}\n".encode())
-    deadline = time.time() + 2
-    while time.time() < deadline:
-        line = s.readline().decode(errors="replace").strip()
-        if line.startswith("PAGE"):
-            break
-    time.sleep(0.6)
+def snapshot(s, path, retries=3):
+    last = None
+    for attempt in range(1, retries + 1):
+        try:
+            return _snapshot_once(s, path)
+        except WatchError as e:
+            last = e
+            print(f"  snapshot attempt {attempt} failed: {e}")
+            time.sleep(0.5)
+    raise WatchError(f"screenshot failed after {retries} attempts: {last}")
+
+
+def cmd_shot(s, args):
+    if args.page is not None:
+        goto(s, args.page)
+    snapshot(s, args.out)
+
+
+def cmd_tour(s, args):
+    os.makedirs(args.outdir, exist_ok=True)
+    goto(s, "face")
+    for i, name in enumerate(FACES):
+        set_face(s, i)
+        snapshot(s, os.path.join(args.outdir, f"face_{i:02d}_{name}.png"))
+    set_face(s, 0)
+    for name in CAROUSEL + SHEETS + APPS:
+        try:
+            goto(s, name)
+        except WatchError as e:
+            print(f"  skipping {name}: {e}")
+            continue
+        snapshot(s, os.path.join(args.outdir, f"{name}.png"))
+    goto(s, "face")
+
+
+def cmd_goto(s, args):
+    print(goto(s, args.page))
+
+
+def cmd_face(s, args):
+    print(set_face(s, args.face))
+
+
+def cmd_notify(s, args):
+    title = args.title.replace("|", "/")
+    s.write(f"N{title}|{args.body}\n".encode())
+    print("sent")
+
+
+def _perf(s, on):
+    """Set the firmware's [PERF] logging (the 'P' command toggles, so check the answer)."""
+    for _ in range(2):
+        s.write(b"P\n")
+        line = wait_line(s, "PERF", 3.0)
+        if line.endswith("on") == on:
+            return
+
+
+def _collect_perf(s, seconds, label):
+    end = time.time() + seconds
+    n = 0
+    while time.time() < end:
+        line = read_line(s)
+        if line.startswith("[PERF]"):
+            print(f"{label:14s} {line}")
+            n += 1
+    if n == 0:
+        print(f"{label:14s} (no [PERF] lines)")
+
+
+def cmd_bench(s, args):
+    # Honest benchmark: the firmware prints one [PERF] line per second while
+    # perf logging is on. Idle watch face first, then synthetic swipes
+    # (face -> right neighbour -> back) injected with the 'D' command.
+    goto(s, "face")
+    _perf(s, True)
+    try:
+        _collect_perf(s, args.seconds, "idle-face")
+        for name, cmd in (("swipe-left", "D330,250,80,250,260"),
+                          ("swipe-right", "D80,250,330,250,260")):
+            s.write((cmd + "\n").encode())
+            _collect_perf(s, 2.2, name)
+    finally:
+        _perf(s, False)
+        goto(s, "face")
+
+
+def cmd_dmabench(s, args):
+    s.reset_input_buffer()
+    s.write(b"B\n")
+    print(wait_line(s, "BENCH", 10.0))
+
+
+def cmd_gestures(s, args):
+    # end-to-end navigation test with synthetic swipes (prints [NAV] stats)
+    steps = [
+        ("face -> ailimits (swipe left)",     "D330,250,80,250,260"),
+        ("ailimits -> face (swipe right)",    "D80,250,330,250,260"),
+        ("face -> control (swipe down)",      "D205,120,205,430,300"),
+        ("control -> face (swipe up)",        "D205,420,205,90,300"),
+        ("face -> notifications (swipe up)",  "D205,420,205,90,300"),
+        ("notifications -> face (down)",      "D205,160,205,460,300"),
+        ("face -> launcher (swipe right)",    "D80,250,330,250,260"),
+        ("launcher -> face (side key)",       "K"),
+        ("face -> launcher (side key)",       "K"),
+        ("launcher -> face (side key)",       "K"),
+        ("power menu (long key)",             "L"),
+        ("power -> home (bottom edge up)",    "D205,496,205,120,300"),
+        ("face: small drag cancels",          "D330,250,290,250,200"),
+        ("diagonal swipe ~30deg (->ailimits)", "D330,200,150,310,260"),
+        ("fast flick 90 ms / 120 px",         "D300,250,180,250,90"),
+        ("short slow drag 35%",               "D300,250,155,250,600"),
+        ("steep diagonal on page",            "D300,180,190,330,250"),
+        ("flick back to face (side key)",     "K"),
+        ("face: diagonal down -> control",    "D180,120,240,330,250"),
+        ("control: flick up closes",          "D205,350,205,240,80"),
+    ]
+    goto(s, "face")
+    time.sleep(2.5)                               # let neighbour surfaces prerender
+    for name, cmd in steps:
+        s.reset_input_buffer()
+        s.write((cmd + "\n").encode())
+        end = time.time() + 3.0
+        got = []
+        while time.time() < end:
+            line = read_line(s)
+            if line.startswith("[NAV]") or line.startswith("KEY"):
+                got.append(line)
+        print(f"{name:38s} {' | '.join(got) if got else '(no transition)'}")
+        time.sleep(0.8)
+    goto(s, "face")
+
+
+def cmd_list_ports(args):
+    ports = list_ports()
+    if not ports:
+        print("no serial ports found")
+    for p in ports:
+        vid = f"{p.vid:04X}" if p.vid is not None else "----"
+        pid = f"{p.pid:04X}" if p.pid is not None else "----"
+        mark = "  <- Espressif" if p.vid == ESPRESSIF_VID else ""
+        print(f"{p.device:12s} {vid}:{pid}  {p.description}{mark}")
+
+
+# ----------------------------------------------------------------------------- main
+def build_parser():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--port", help="serial port (default: $WATCHCTL_PORT or auto-detect)")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("time", help="sync RTC + time zone from this PC").set_defaults(fn=cmd_time)
+
+    p = sub.add_parser("shot", help="screenshot to PNG")
+    p.add_argument("out")
+    p.add_argument("--page", help="navigate to this page first (name or id)")
+    p.set_defaults(fn=cmd_shot)
+
+    p = sub.add_parser("tour", help="screenshot all faces and pages")
+    p.add_argument("outdir")
+    p.set_defaults(fn=cmd_tour)
+
+    p = sub.add_parser("goto", help="navigate to a page")
+    p.add_argument("page")
+    p.set_defaults(fn=cmd_goto)
+
+    p = sub.add_parser("face", help="select a watch face")
+    p.add_argument("face")
+    p.set_defaults(fn=cmd_face)
+
+    p = sub.add_parser("notify", help="show a notification")
+    p.add_argument("title")
+    p.add_argument("body")
+    p.set_defaults(fn=cmd_notify)
+
+    p = sub.add_parser("bench", help="collect [PERF] frame statistics")
+    p.add_argument("--seconds", type=float, default=3.2, help="idle collection time")
+    p.set_defaults(fn=cmd_bench)
+
+    sub.add_parser("dmabench", help="time one full-frame DMA push").set_defaults(fn=cmd_dmabench)
+    sub.add_parser("gestures", help="synthetic navigation test").set_defaults(fn=cmd_gestures)
+    sub.add_parser("list-ports", help="list serial ports").set_defaults(fn=None)
+    return ap
 
 
 def main():
-    if len(sys.argv) < 2:
-        print(__doc__); return
-    s = open_port()
-    op = sys.argv[1]
-    if op == "time":
-        cmd_time(s)
-    elif op == "shot":
-        if len(sys.argv) >= 4:
-            goto(s, int(sys.argv[3]))
-        snapshot(s, sys.argv[2])
-    elif op == "tour":
-        out = sys.argv[2]
-        __import__("os").makedirs(out, exist_ok=True)
-        goto(s, 0, 0)
-        for i, name in enumerate(FACES):
-            s.write(f"F{i}\n".encode())
-            wait_line(s, "FACE")
-            time.sleep(0.8)
-            snapshot(s, f"{out}/face_{name}.png")
-        s.write(b"F0\n")
-        wait_line(s, "FACE")
-        for c, r, name in TILES:
-            goto(s, c, r)
-            snapshot(s, f"{out}/{name}.png")
-        goto(s, 0, 0)
-    elif op == "bench":
-        # idle watch face, then animated page flips; prints the [PERF] lines
-        goto(s, 0, 0)
-        s.write(b"P\n")
-        def collect(sec, label):
-            end = time.time() + sec
-            while time.time() < end:
-                line = s.readline().decode(errors="replace").strip()
-                if line.startswith("[PERF]"):
-                    print(f"{label:10s} {line}")
-        collect(3.2, "idle-face")
-        for col in (1, 2, 1, 0):
-            s.write(f"W{col}\n".encode())
-            collect(1.1, f"swipe->{col}")
-        s.write(b"P\n")
-    elif op == "rendercost":
-        # full-screen render time of every tile and every watch face
-        for i, name in enumerate(FACES):
-            s.write(f"F{i}\n".encode()); wait_line(s, "FACE"); time.sleep(0.3)
-            s.write(b"R0,0\n"); print(f"face {name:8s}", wait_line(s, "RENDER", 8))
-        s.write(b"F0\n"); wait_line(s, "FACE")
-        for c, r, name in TILES:
-            s.write(f"R{c},{r}\n".encode()); print(f"tile {name:8s}", wait_line(s, "RENDER", 8))
-        goto(s, 0, 0)
-    elif op == "gestures":
-        # end-to-end navigation test with synthetic swipes (prints [NAV] stats)
-        steps = [
-            ("face -> activity (swipe left)",    "D330,250,80,250,260"),
-            ("activity -> face (swipe right)",   "D80,250,330,250,260"),
-            ("face -> control (swipe down)",     "D205,120,205,430,300"),
-            ("control -> face (swipe up)",       "D205,420,205,90,300"),
-            ("face -> notifications (swipe up)", "D205,420,205,90,300"),
-            ("notifications -> face (down)",     "D205,160,205,460,300"),
-            ("face -> launcher (swipe right)",   "D80,250,330,250,260"),
-            ("launcher -> face (side key)",      "K"),
-            ("face -> launcher (side key)",      "K"),
-            ("launcher -> face (side key)",      "K"),
-            ("power menu (long key)",            "L"),
-            ("power -> home (bottom edge up)",   "D205,496,205,120,300"),
-            ("face: small drag cancels",         "D330,250,290,250,200"),
-            ("diagonal swipe ~30deg (->activity)","D330,200,150,310,260"),
-            ("fast flick 90 ms / 120 px (->agenda)","D300,250,180,250,90"),
-            ("short slow drag 35% (->position)", "D300,250,155,250,600"),
-            ("steep diagonal on page (->lora)",  "D300,180,190,330,250"),
-            ("flick back to face (side key)",    "K"),
-            ("face: diagonal down -> control",   "D180,120,240,330,250"),
-            ("control: flick up closes",         "D205,350,205,240,80"),
-        ]
-        time.sleep(2.5)                               # let neighbour surfaces prerender
-        for name, cmd in steps:
-            s.reset_input_buffer()
-            s.write((cmd + "\n").encode())
-            end = time.time() + 3.0
-            got = []
-            while time.time() < end:
-                line = s.readline().decode(errors="replace").strip()
-                if line.startswith("[NAV]") or line.startswith("KEY"):
-                    got.append(line)
-            print(f"{name:36s} {' | '.join(got) if got else '(no transition)'}")
-            time.sleep(0.8)
-    elif op == "notify":
-        s.write(f"N{sys.argv[2]}|{sys.argv[3]}\n".encode())
-    elif op == "face":
-        s.write(f"F{sys.argv[2]}\n".encode())
-        print(wait_line(s, "FACE"))
-    else:
-        print(__doc__)
+    args = build_parser().parse_args()
+    try:
+        if args.cmd == "list-ports":
+            cmd_list_ports(args)
+            return 0
+        s = open_port(args.port)
+        try:
+            args.fn(s, args)
+        finally:
+            s.close()
+    except WatchError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    except serial.SerialException as e:
+        print(f"serial error: {e}", file=sys.stderr)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

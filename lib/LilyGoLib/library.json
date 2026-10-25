@@ -1,7 +1,7 @@
 {
   "name": "LilyGoLib",
-  "version": "0.1.0",
-  "description": "LilyGo Arduino library",
+  "version": "0.1.0-watchos.1",
+  "description": "LilyGo Arduino library (WatchOS Ultra fork: async QSPI push, 10 ms LVGL refresh, flush instrumentation)",
   "keywords": "lilygo,t-watch,t-lora-pager",
   "authors": [
     {
@@ -33,23 +33,27 @@
   "dependencies": [
     {
       "name": "RadioLib",
-      "version": "7.1.2"
+      "version": "7.4.0"
     },
     {
       "name": "lvgl",
-      "version": "9.2.2"
+      "version": "9.4.0"
     },
     {
       "name": "XPowersLib",
-      "version": "0.2.9"
+      "version": "0.3.3"
     },
     {
       "name": "SensorLib",
-      "version": "0.3.1"
+      "version": "0.3.3"
     }
   ],
-  "examples": ["examples/*/*.ino"],
-  "frameworks": ["arduino"],
+  "examples": [
+    "examples/*/*.ino"
+  ],
+  "frameworks": [
+    "arduino"
+  ],
   "platforms": "esp32",
   "headers": "LilyGoLib.h"
 }

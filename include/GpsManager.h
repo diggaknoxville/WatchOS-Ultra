@@ -7,7 +7,7 @@ struct GpsSatInfo {
     uint8_t elevation;  // 0..90 deg
     uint16_t azimuth;   // 0..359 deg
     uint8_t snr;        // 0..99 dB-Hz
-    bool used;
+    bool used;          // listed in the active-satellite set of $xxGSA
 };
 
 // u-blox GNSS on the T-Watch Ultra (instance.gps, Serial1 @ 38400).
@@ -16,7 +16,9 @@ struct GpsSatInfo {
 //   * acquisition window at boot and every 6 h -> disciplines the RTC from
 //     satellite UTC, then powers down again
 //   * continuous while the POSITION screen is open (setLive)
-// Last fix and last GNSS time sync are persisted in NVS.
+// Last fix and last GNSS time sync are persisted in NVS. There is no default
+// position: latitude()/longitude() return 0,0 and hasLastFix() is false until
+// a verified fix has been seen.
 class GpsManager {
 public:
     static void init();
@@ -28,7 +30,7 @@ public:
 
     static bool isOnline();                  // module detected at boot
     static bool isPowered();
-    static bool hasFix();
+    static bool hasFix();                    // live fix; stays true <= 10 s after power-down
     static uint8_t satellites();
     static double latitude();
     static double longitude();
@@ -41,6 +43,7 @@ public:
     static time_t lastTimeSyncEpoch();
     static uint32_t searchSeconds();         // time since power-on without fix
 
-    // GNSS Skyplot satellite table (parsed from $GPGSV / $GLGSV / $GAGSV / $GBGSV)
+    // GNSS Skyplot satellite table (parsed from $GPGSV / $GLGSV / $GAGSV / $GBGSV,
+    // `used` from $xxGSA). Entries not seen for 30 s are dropped.
     static uint8_t getSatellitesInView(GpsSatInfo* out, uint8_t maxOut);
 };

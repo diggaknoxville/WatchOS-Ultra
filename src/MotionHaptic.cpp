@@ -8,6 +8,7 @@
 #include <time.h>
 #include <math.h>
 
+static uint32_t sHwMask = 0;
 static bool drvReady = false;
 static bool sensorOnline = false;
 static MotionHaptic::WristWakeCallback wristWakeCb = nullptr;
@@ -16,13 +17,19 @@ static MotionHaptic::WristWakeCallback wristWakeCb = nullptr;
 static uint32_t dayKey = 0;            // local yyyymmdd of the tracked day
 static uint32_t stepsToday = 0;
 static uint32_t filteredFalseSteps = 0;
-static uint16_t learnedCadenceSpm = 106; // adaptive learned walking cadence (steps/min)
+static uint16_t learnedCadenceSpm = 106; // EMA of the wearer's walking cadence (steps/min), see header
+static uint16_t cadenceSamples = 0;    // number of EMA updates; the window is used from 20 on
 static uint32_t history[6] = {0};      // completed days, oldest first
 static bool goalNotified = false;
 static bool dirty = false;
 static uint32_t lifetimePending = 0;   // flushed to the lifetime counter on persist
 static unsigned long lastPersist = 0;
 static unsigned long lastPoll = 0;
+
+// ---- haptic queue (producers: any task; consumer: updateMotion on the bg task) ----
+static QueueHandle_t sHapticQueue = nullptr;          // 4 entries of int (HapticPattern)
+static unsigned long sLastHapticMs = 0;
+static const unsigned long HAPTIC_MIN_GAP_MS = 70;    // let one effect finish before the next
 
 // ---- BHI260AP callbacks & real-time 6DoF Euler orientation ----
 static uint32_t lastSensorCount = 0;
@@ -31,14 +38,13 @@ static volatile bool countUpdated = false;
 static volatile bool wristEvent = false;
 static volatile uint16_t pendingActivityBitmap = 0;
 static volatile bool activityUpdated = false;
-static volatile int sPendingHaptic = -1;
 
 static float sRawRoll = 0.0f, sRawPitch = 0.0f, sRawYaw = 0.0f;
 static float sRollZero = 0.0f, sPitchZero = 0.0f, sYawZero = 0.0f;
 static float sPrevRoll = 0.0f, sPrevPitch = 0.0f, sPrevYaw = 0.0f;
 static float sWristJitterDeg = 0.0f; // smoothed angular velocity/jitter (detects hand shaking/waving)
 
-// ---- Adaptive Step Cadence Gate & Sleep Classifier ----
+// ---- Step cadence gate & sleep classifier ----
 static ActivityState sActState = ACT_STILL;
 static bool sBhiWalking = false;
 static bool sBhiRunning = false;
@@ -47,15 +53,26 @@ static bool sBhiVehicle = false;
 static bool sBhiTilting = false;
 
 static uint32_t sBufferedSteps = 0;          // 4-step confirmation buffer
-static uint8_t  sRhythmicStreak = 0;         // consecutive rhythmic step intervals
+static uint8_t  sRhythmicStreak = 0;         // consecutive rhythmic step batches
 static unsigned long sLastStepBatchMs = 0;
 static unsigned long sLastConfirmedWalkMs = 0;
 static unsigned long sStillStartMs = 0;
 static bool sSleeping = false;
 
+// Absolute plausibility limits for the interval between two steps.
+static const float CAD_ABS_MIN_MS = 240.0f;          // 250 spm: faster than any human step
+static const float CAD_ABS_MAX_MS = 1450.0f;         // ~41 spm: slower than a shuffle
+static const unsigned long BOUT_GAP_MS = 3000;       // a longer gap = new bout, interval not a cadence
+static const uint16_t CAD_LEARN_MIN_SAMPLES = 20;    // learned window only after this many updates
+
 static void playHapticOnI2c(HapticPattern pattern) {
     if (!drvReady || !SettingsStorage::get().hapticEnabled) return;
-    if (!PowerManager::lockI2C(15)) return;
+    if (!PowerManager::lockI2C(15)) {
+        // bus busy: put it back at the head of the queue and retry next loop
+        int p = (int)pattern;
+        if (sHapticQueue) xQueueSendToFront(sHapticQueue, &p, 0);
+        return;
+    }
     instance.drv.selectLibrary(1);
     instance.drv.setMode(SensorDRV2605::MODE_INTTRIG);
     switch (pattern) {
@@ -78,6 +95,7 @@ static void persist() {
     p.putUInt("steps", stepsToday);
     p.putUInt("fsteps", filteredFalseSteps);
     p.putUShort("cadence", learnedCadenceSpm);
+    p.putUShort("cad_n", cadenceSamples);
     p.putFloat("r0", sRollZero);
     p.putFloat("p0", sPitchZero);
     p.putFloat("y0", sYawZero);
@@ -150,11 +168,19 @@ static void onGameRotVec(uint8_t, uint8_t* data, uint32_t, uint64_t*, void*) {
     }
 }
 
+void MotionHaptic::setHardwareMask(uint32_t mask) { sHwMask = mask; }
+
 bool MotionHaptic::init() {
-    Serial.println("[HAPTIC] DRV2605 via instance.drv");
-    instance.drv.selectLibrary(1);
-    instance.drv.setMode(SensorDRV2605::MODE_INTTRIG);
-    drvReady = true;
+    const uint32_t mask = sHwMask ? sHwMask : instance.getDeviceProbe();
+    drvReady = (mask & HW_DRV_ONLINE) != 0;
+    sensorOnline = (mask & HW_BHI260AP_ONLINE) != 0;
+
+    if (!sHapticQueue) sHapticQueue = xQueueCreate(4, sizeof(int));
+    Serial.printf("[HAPTIC] DRV2605 via instance.drv: %s\n", drvReady ? "online" : "NOT FOUND");
+    if (drvReady) {
+        instance.drv.selectLibrary(1);
+        instance.drv.setMode(SensorDRV2605::MODE_INTTRIG);
+    }
 
     Preferences p;
     if (p.begin("kronos_fit", false)) {
@@ -162,7 +188,8 @@ bool MotionHaptic::init() {
         stepsToday = p.getUInt("steps", 0);
         filteredFalseSteps = p.getUInt("fsteps", 0);
         learnedCadenceSpm = p.getUShort("cadence", 106);
-        if (learnedCadenceSpm < 70 || learnedCadenceSpm > 175) learnedCadenceSpm = 106;
+        cadenceSamples = p.getUShort("cad_n", 0);
+        if (learnedCadenceSpm < 70 || learnedCadenceSpm > 175) { learnedCadenceSpm = 106; cadenceSamples = 0; }
         sRollZero = p.getFloat("r0", 0.0f);
         sPitchZero = p.getFloat("p0", 0.0f);
         sYawZero = p.getFloat("y0", 0.0f);
@@ -173,7 +200,6 @@ bool MotionHaptic::init() {
 
     sStillStartMs = millis();
 
-    sensorOnline = (instance.getDeviceProbe() & HW_BHI260AP_ONLINE) != 0;
     if (sensorOnline) {
         instance.sensor.configure(SensorBHI260AP::STEP_COUNTER, 1.0f, 0);
         instance.sensor.onResultEvent(SensorBHI260AP::STEP_COUNTER, onStepCounter);
@@ -182,14 +208,14 @@ bool MotionHaptic::init() {
         // Hardware Activity Recognition DSP (Walking, Running, Cycling, Vehicle, Still, Tilting)
         instance.sensor.configure(SensorBHI260AP::ACTIVITY_RECOGNITION, 1.0f, 0);
         instance.sensor.onResultEvent(SensorBHI260AP::ACTIVITY_RECOGNITION, onActivityRec);
-        // 6DoF Game Rotation Vector (20 Hz) for Bubble Level, Gyro Compass & Hand-Waving rejection
+        // 6DoF Game Rotation Vector (20 Hz) for bubble level, gyro compass & hand-waving rejection
         instance.sensor.configure(SensorBHI260AP::GAME_ROTATION_VECTOR, 20.0f, 0);
         instance.sensor.onResultEvent(SensorBHI260AP::GAME_ROTATION_VECTOR, onGameRotVec);
     }
-    Serial.printf("[FIT] BHI260AP %s, restored %lu steps (%lu filtered, cadence %u SPM)\n",
+    Serial.printf("[FIT] BHI260AP %s, restored %lu steps (%lu filtered, cadence %u SPM from %u samples)\n",
                   sensorOnline ? "online" : "OFFLINE", (unsigned long)stepsToday,
-                  (unsigned long)filteredFalseSteps, (unsigned)learnedCadenceSpm);
-    return true;
+                  (unsigned long)filteredFalseSteps, (unsigned)learnedCadenceSpm, (unsigned)cadenceSamples);
+    return drvReady || sensorOnline;
 }
 
 static void commitVerifiedSteps(uint32_t count, unsigned long now) {
@@ -218,10 +244,13 @@ static void commitVerifiedSteps(uint32_t count, unsigned long now) {
 }
 
 void MotionHaptic::updateMotion(unsigned long now) {
-    int hp = sPendingHaptic;
-    if (hp >= 0) {
-        sPendingHaptic = -1;
-        playHapticOnI2c((HapticPattern)hp);
+    // Haptic queue: one effect per pass, with a minimum gap so none is swallowed
+    if (sHapticQueue && now - sLastHapticMs >= HAPTIC_MIN_GAP_MS) {
+        int hp;
+        if (xQueueReceive(sHapticQueue, &hp, 0) == pdTRUE) {
+            sLastHapticMs = now;
+            playHapticOnI2c((HapticPattern)hp);
+        }
     }
 
     // Throttle sensor FIFO polling during Smart Sleep to save power
@@ -255,7 +284,7 @@ void MotionHaptic::updateMotion(unsigned long now) {
         if (bm & (1 << 13)) { sBhiTilting = true; }
     }
 
-    // 2. Adaptive Step Cadence Gate & Hand-Waving Rejection
+    // 2. Step cadence gate & hand-waving rejection
     if (countUpdated) {
         countUpdated = false;
         uint32_t c = pendingCount;
@@ -263,45 +292,61 @@ void MotionHaptic::updateMotion(unsigned long now) {
         lastSensorCount = c;
 
         if (delta > 0 && delta < 500) {
-            unsigned long dt = sLastStepBatchMs ? (now - sLastStepBatchMs) : 0;
+            const unsigned long dt = sLastStepBatchMs ? (now - sLastStepBatchMs) : 0;
             sLastStepBatchMs = now;
 
-            // Check if this looks like hand-waving / wrist shaking:
-            //  - High rotational wrist jitter (> 22 deg/sample) while NOT in confirmed walking state, OR
-            //  - Isolated 1-2 step spike after > 4.5 seconds of pause with tilting
-            float msPerStep = (dt > 0 && delta > 0) ? ((float)dt / (float)delta) : 600.0f;
-            bool plausibleCadence = (dt == 0) || (msPerStep >= 240.0f && msPerStep <= 1450.0f);
-            bool wristWaving = (sWristJitterDeg > 24.0f && !sBhiWalking && !sBhiRunning) ||
-                               (sBhiTilting && !sBhiWalking && delta <= 2 && sRhythmicStreak == 0);
+            // The step counter arrives in batches. The interval between two
+            // batches divided by the step delta approximates the cadence only
+            // while walking continuously. After a pause (> BOUT_GAP_MS) the
+            // interval spans the pause itself, so the first batch of a new bout
+            // is NOT classified: it is buffered and confirmed by the next batch.
+            const bool boutStart = (dt == 0 || dt > BOUT_GAP_MS);
+            const float msPerStep = boutStart ? 0.0f : ((float)dt / (float)delta);
+            const bool inBout = (now - sLastConfirmedWalkMs < 4000) || sBhiWalking || sBhiRunning;
+
+            // Plausibility window: absolute limits inside a confirmed bout or
+            // while the BHI reports running; the learned walking cadence +/- 35 %
+            // (clamped to the absolute limits) when confirming a new bout.
+            float minMs = CAD_ABS_MIN_MS, maxMs = CAD_ABS_MAX_MS;
+            if (!inBout && !sBhiRunning && cadenceSamples >= CAD_LEARN_MIN_SAMPLES) {
+                const float learnedMs = 60000.0f / (float)learnedCadenceSpm;
+                minMs = fmaxf(CAD_ABS_MIN_MS, learnedMs * 0.65f);
+                maxMs = fminf(CAD_ABS_MAX_MS, learnedMs * 1.35f);
+            }
+            const bool plausibleCadence = boutStart || (msPerStep >= minMs && msPerStep <= maxMs);
+
+            // Hand-waving / wrist shaking:
+            //  - high rotational wrist jitter (> 24 deg/sample) while NOT in confirmed walking state, OR
+            //  - isolated 1-2 step spike with tilting and no rhythm so far
+            const bool wristWaving = (sWristJitterDeg > 24.0f && !sBhiWalking && !sBhiRunning) ||
+                                     (sBhiTilting && !sBhiWalking && delta <= 2 && sRhythmicStreak == 0);
 
             if (wristWaving || !plausibleCadence) {
-                // Reject buffered & current false steps as hand waving!
+                // Reject buffered & current steps as hand motion
                 filteredFalseSteps += delta + sBufferedSteps;
                 sBufferedSteps = 0;
                 sRhythmicStreak = 0;
                 sActState = ACT_HAND_MOTION;
                 dirty = true;
                 nav::markDirty(nav::PG_ACTIVITY);
+            } else if (inBout) {
+                // Active walking bout: commit immediately, adapt the learned cadence
+                commitVerifiedSteps(sBufferedSteps + delta, now);
+                sBufferedSteps = 0;
+                if (!boutStart && !sBhiRunning && msPerStep >= 320.0f && msPerStep <= 1000.0f) {
+                    const float instSpm = 60000.0f / msPerStep;
+                    learnedCadenceSpm = (uint16_t)lroundf(learnedCadenceSpm * 0.90f + instSpm * 0.10f);
+                    if (cadenceSamples < 60000) cadenceSamples++;
+                }
+                sActState = ((!boutStart && msPerStep < 430.0f) || sBhiRunning) ? ACT_RUNNING : ACT_WALKING;
             } else {
-                // Plausible step rhythm
-                if (now - sLastConfirmedWalkMs < 4000 || sBhiWalking || sBhiRunning) {
-                    // Already in an active walking bout -> commit immediately and adapt learned cadence
-                    commitVerifiedSteps(sBufferedSteps + delta, now);
+                // New bout: require 4 buffered steps or 3 rhythmic batches before committing
+                sBufferedSteps += delta;
+                if (!boutStart) sRhythmicStreak++;
+                if (sBufferedSteps >= 4 || sRhythmicStreak >= 3) {
+                    commitVerifiedSteps(sBufferedSteps, now);
                     sBufferedSteps = 0;
-                    if (msPerStep >= 320.0f && msPerStep <= 1000.0f) {
-                        float instSpm = 60000.0f / msPerStep;
-                        learnedCadenceSpm = (uint16_t)lroundf(learnedCadenceSpm * 0.90f + instSpm * 0.10f);
-                    }
-                    sActState = (msPerStep < 430.0f || sBhiRunning) ? ACT_RUNNING : ACT_WALKING;
-                } else {
-                    // Require a 4-step rhythmic gate before committing a new walking bout
-                    sBufferedSteps += delta;
-                    sRhythmicStreak++;
-                    if (sBufferedSteps >= 4 || sRhythmicStreak >= 3) {
-                        commitVerifiedSteps(sBufferedSteps, now);
-                        sBufferedSteps = 0;
-                        sActState = ACT_WALKING;
-                    }
+                    sActState = ACT_WALKING;
                 }
             }
         }
@@ -317,7 +362,7 @@ void MotionHaptic::updateMotion(unsigned long now) {
         nav::markDirty(nav::PG_ACTIVITY);
     }
 
-    // 3. Smart Sleep / Bedtime Classifier
+    // 3. Smart Sleep / bedtime classifier
     struct tm lt;
     RtcManager::getLocalTimeInfo(&lt);
     bool isNightWindow = (lt.tm_hour >= 22 || lt.tm_hour < 7);
@@ -329,7 +374,7 @@ void MotionHaptic::updateMotion(unsigned long now) {
             (stillDurMs > 35UL * 60UL * 1000UL && flatBedPosture && !PowerManager::isVbusConnected())) {
             if (!sSleeping) {
                 sSleeping = true;
-                Serial.println("[FIT] Entered Smart Sleep Mode (wrist-wake suppressed, deep power saving)");
+                Serial.println("[FIT] Entered Smart Sleep Mode (wrist-wake suppressed, display sleep after 6 s)");
                 nav::markDirty(nav::PG_ACTIVITY);
             }
             sActState = ACT_SLEEPING;
@@ -344,10 +389,10 @@ void MotionHaptic::updateMotion(unsigned long now) {
 
     if (dirty && now - lastPersist > 60000) { lastPersist = now; persist(); }
 
-    // 4. Wrist-Wake with Smart Sleep suppression
+    // 4. Wrist-wake with Smart Sleep suppression
     if (wristEvent) {
         wristEvent = false;
-        // Do NOT wake the display from wrist turns in bed while sleeping!
+        // Do NOT wake the display from wrist turns in bed while sleeping
         if (!sSleeping && SettingsStorage::get().wristWakeEnabled && PowerManager::getPowerState() != POWER_ACTIVE) {
             PowerManager::handleActivity();
             triggerHaptic(HAPTIC_TICK);
@@ -357,10 +402,14 @@ void MotionHaptic::updateMotion(unsigned long now) {
 }
 
 void MotionHaptic::triggerHaptic(HapticPattern pattern) {
-    if (!drvReady || !SettingsStorage::get().hapticEnabled) return;
-    sPendingHaptic = (int)pattern;
+    if (!drvReady || !SettingsStorage::get().hapticEnabled || !sHapticQueue) return;
+    int p = (int)pattern;
+    xQueueSend(sHapticQueue, &p, 0);     // queue full (4) -> effect dropped
 }
 
+// Gravity direction derived from the orientation (Euler angles of the game
+// rotation vector), not a raw accelerometer sample: no linear acceleration,
+// always unit length. Sufficient for the bubble level.
 void MotionHaptic::getAccel(float &ax, float &ay, float &az) {
     float r = (sRawRoll - sRollZero) * (float)M_PI / 180.0f;
     float p = (sRawPitch - sPitchZero) * (float)M_PI / 180.0f;
@@ -409,7 +458,19 @@ const char* MotionHaptic::getActivityLabel() {
     }
 }
 
-void MotionHaptic::resetSteps() { stepsToday = 0; filteredFalseSteps = 0; dirty = true; }
+void MotionHaptic::resetSteps() {
+    stepsToday = 0;
+    filteredFalseSteps = 0;
+    sBufferedSteps = 0;
+    sRhythmicStreak = 0;
+    goalNotified = false;          // the goal can be reached again today
+    dirty = true;
+    nav::markDirty(nav::PG_ACTIVITY);
+    nav::markDirty(nav::PG_FACE);
+}
+
+// Approximations without a user profile: a fixed 0.75 m stride and
+// ~0.042 kcal per step (about a 70 kg person walking). Shown as estimates.
 float MotionHaptic::getDistanceKm() { return (stepsToday * 0.75f) / 1000.0f; }
 uint32_t MotionHaptic::getCalories() { return (uint32_t)(stepsToday * 0.042f); }
 bool MotionHaptic::isSensorOnline() { return sensorOnline; }

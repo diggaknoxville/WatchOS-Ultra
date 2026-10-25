@@ -19,6 +19,14 @@
 TaskHandle_t uiTaskHandle = NULL;
 TaskHandle_t bgTaskHandle = NULL;
 
+// Stack sizes. The background task hosts the WebServer request handlers
+// (multipart OTA/SD upload, JSON building), NavEngine's asynchronous route
+// computation, Meshtastic packet decoding and the BLE payload parser; 12 KB
+// left no headroom. The UI task builds LVGL pages with several KB of local
+// arrays (place pools, peer tables) inside event callbacks.
+static const uint32_t UI_TASK_STACK = 28 * 1024;
+static const uint32_t BG_TASK_STACK = 16 * 1024;
+
 void backgroundTask(void* parameter) {
     Serial.println("[OS] Background services running on core 0");
 
@@ -38,6 +46,7 @@ void backgroundTask(void* parameter) {
         RadioLoRa::loop(now);
         NavEngine::loop(now);
         SettingsStorage::loop(now);
+        NotificationStore::loop(now);
         RtcManager::periodicMaintenance();
         vTaskDelay(pdMS_TO_TICKS(10));
     }
@@ -53,20 +62,30 @@ void uiTask(void* parameter) {
 
     for (;;) {
         unsigned long now = millis();
-        // any touch interaction keeps the display awake
+        // Any touch interaction keeps the display awake. PowerManager ignores
+        // this for 800 ms after requestSleep() so the triggering touch cannot
+        // re-wake the display.
         if (lv_display_get_inactive_time(NULL) < 150) {
             PowerManager::handleActivity();
         }
         DisplayEngine::update(now);
         uint32_t next = lv_timer_handler();          // ms until LVGL needs us again
-        vTaskDelay(pdMS_TO_TICKS(next < 2 ? 1 : (next > 5 ? 5 : next)));
+
+        if (PowerManager::isLowPowerState()) {
+            // AOD: 10 Hz is plenty for a clock face and touch-to-wake.
+            // SLEEP: display is off; 4 Hz keeps touch/key wake responsive
+            // without burning CPU on invisible rendering.
+            vTaskDelay(pdMS_TO_TICKS(PowerManager::getPowerState() == POWER_SLEEP ? 250 : 100));
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(next < 2 ? 1 : (next > 5 ? 5 : next)));
+        }
     }
 }
 
 static void printHardware(uint32_t p) {
     struct { uint32_t bit; const char* name; } hw[] = {
         {HW_PMU_ONLINE, "PMU AXP2101"}, {HW_RTC_ONLINE, "RTC PCF85063"},
-        {HW_TOUCH_ONLINE, "Touch"}, {HW_DRV_ONLINE, "Haptic DRV2605"},
+        {HW_TOUCH_ONLINE, "Touch CST9217"}, {HW_DRV_ONLINE, "Haptic DRV2605"},
         {HW_BHI260AP_ONLINE, "IMU BHI260AP"}, {HW_GPS_ONLINE, "GNSS u-blox"},
         {HW_RADIO_ONLINE, "LoRa SX1262"}, {HW_NFC_ONLINE, "NFC ST25R3916"},
         {HW_SD_ONLINE, "microSD"}, {HW_EXPAND_ONLINE, "IO XL9555"},
@@ -81,7 +100,7 @@ void setup() {
     Serial.begin(115200);
     delay(200);
     Serial.println("\n=======================================================");
-    Serial.println("        KRONOS OS  //  LilyGo T-Watch Ultra            ");
+    Serial.printf("   WatchOS Ultra %s (build %s)  //  LilyGo T-Watch Ultra\n", OS_VERSION, OS_BUILD);
     Serial.println("=======================================================");
 
     // 0. Full hardware bring-up (AMOLED, touch, AXP2101, PCF85063, BHI260,
@@ -90,6 +109,8 @@ void setup() {
     uint32_t probe = instance.begin(NO_INIT_FATFS | NO_HW_NFC);
     instance.setBrightness(180);
     printHardware(probe);
+    RtcManager::setHardwareMask(probe);       // rtcReady only with HW_RTC_ONLINE
+    MotionHaptic::setHardwareMask(probe);     // drvReady / sensorOnline from the probe
 
     SettingsStorage::init();      // NVS settings
     NotificationStore::begin();   // persistent notification history
@@ -106,8 +127,8 @@ void setup() {
     AudioEngine::playSoundFx(SFX_BOOT);
     MotionHaptic::triggerHaptic(HAPTIC_SUCCESS);
 
-    xTaskCreatePinnedToCore(uiTask, "UiCompositor", 24576, NULL, 2, &uiTaskHandle, 1);
-    xTaskCreatePinnedToCore(backgroundTask, "BgServices", 12288, NULL, 1, &bgTaskHandle, 0);
+    xTaskCreatePinnedToCore(uiTask, "UiCompositor", UI_TASK_STACK, NULL, 2, &uiTaskHandle, 1);
+    xTaskCreatePinnedToCore(backgroundTask, "BgServices", BG_TASK_STACK, NULL, 1, &bgTaskHandle, 0);
 
     Serial.println("[OS] Boot complete\n");
 }

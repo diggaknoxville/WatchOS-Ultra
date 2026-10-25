@@ -3,7 +3,9 @@
 
 // LVGL display + touch driver for the T-Watch Ultra CO5300 AMOLED.
 //
-//  * two render buffers (horizontal strips) in internal, DMA-capable SRAM
+//  * two render buffers (horizontal strips) in internal, DMA-capable SRAM:
+//    48 rows each (2 x 39 KB), falling back to 32 rows (2 x 26 KB) when the
+//    internal heap is fragmented
 //  * asynchronous QSPI DMA flush: LVGL renders strip N+1 while strip N is
 //    being transferred; the wait happens in the flush-wait callback
 //  * touch sampled every refresh period (IRQ-gated, so idle cost is zero)
@@ -17,6 +19,7 @@ namespace KronosDisplay {
     bool begin();                  // replaces beginLvglHelper(); call on the UI task
     lv_display_t* display();
     lv_indev_t* touch();
+    int stripRows();               // rows per render buffer actually allocated (48 or 32)
 
     // Single hardware reader shared by LVGL's indev and the gesture engine:
     // pollTouch() samples the controller now, lastTouch() returns the latest

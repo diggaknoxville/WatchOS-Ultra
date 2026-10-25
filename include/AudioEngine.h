@@ -15,7 +15,8 @@ enum SoundFx {
 
 // MAX98357A class-D amplifier via instance.player (I2S). Playback runs on a
 // dedicated task fed by a queue, so callers never block. The amplifier rail
-// (BLDO2) is only powered while sound is playing.
+// (BLDO2, switched through the AXP2101 over I2C) is only powered while sound
+// is playing; the PMU register write is done under PowerManager::lockI2C().
 class AudioEngine {
 public:
     static bool init();
@@ -23,6 +24,11 @@ public:
     static void playSoundFx(SoundFx fx);
     static void stop();
     static bool isReady();
+
+    // Output volume 0..100 % (scales the synthesis amplitude). Default 70.
+    // Not persisted; callers that want persistence store it themselves.
+    static void setVolumePct(uint8_t pct);
+    static uint8_t getVolumePct();
 
 private:
     static bool ready;

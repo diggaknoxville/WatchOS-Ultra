@@ -1,4 +1,5 @@
-// Germany & Stuttgart Street-Level Offline Navigation + GNSS Skyplot + LoRa/Meshtastic Hybrid Positioning
+// Position: offline vector map with HUD (source, zoom, scale), honest position
+// states, async routing feedback, GNSS skyplot and place / mesh-node search.
 #include "ui/Pages.h"
 #include "ui/UiKit.h"
 #include "ui/Navigator.h"
@@ -6,6 +7,7 @@
 #include "NavEngine.h"
 #include "RadioLoRa.h"
 #include "DisplayEngine.h"
+#include <esp_heap_caps.h>
 #include <math.h>
 
 #ifndef M_PI
@@ -16,144 +18,143 @@ using namespace ui;
 
 namespace pages {
 
-static constexpr int MAP_W = 374;
-static constexpr int MAP_H = 236;
+static constexpr int MAP_W = CW;            // 362
+static constexpr int MAP_H = 224;
+static constexpr int MAP_Y = CONTENT_Y;     // 80
+static constexpr int INFO_Y = MAP_Y + MAP_H + 8;   // 312
+static constexpr int INFO_H = 104;
+static constexpr int BAR_Y = INFO_Y + INFO_H + 8;  // 424
+static constexpr int BAR_H = 52;
 
-static lv_obj_t *sRoot = nullptr;
-static lv_obj_t *sModePill = nullptr, *sModeTxt = nullptr;
-static lv_obj_t *sGpsPill = nullptr, *sGpsTxt = nullptr;
-
-static lv_obj_t *sMapCard = nullptr;
-static lv_obj_t *sMapImg = nullptr;
+static lv_obj_t *sRoot, *sGpsPill, *sSatBtn;
+static lv_obj_t *sMapCard, *sMapImg;
 static lv_image_dsc_t sMapDsc{};
-static uint16_t *sMapBuf = nullptr;
+static uint16_t* sMapBuf = nullptr;
 
-static lv_obj_t *sZoomLbl = nullptr;
-static lv_obj_t *sGpxBtn = nullptr, *sGpxTxt = nullptr;
-static lv_obj_t *sRecenterPill = nullptr;
+// HUD on the map
+static lv_obj_t *sSrcPill, *sRoutePill, *sZoomBadge, *sZoomLbl, *sScaleBar, *sScaleLbl, *sRecenterBtn;
+static lv_obj_t *sNoPosOverlay;
 
-// Bottom Guidance / Telemetry Card
-static lv_obj_t *sNavBox = nullptr;
-static lv_obj_t *sTurnIcon = nullptr;
-static lv_obj_t *sTurnCmd = nullptr;
-static lv_obj_t *sTurnDest = nullptr;
-static lv_obj_t *sTurnMeta = nullptr;
-static lv_obj_t *sFreeBox = nullptr;
-static lv_obj_t *sCoordLbl = nullptr;
-static lv_obj_t *sMetaLbl = nullptr;
-static lv_obj_t *sSdLbl = nullptr;
+// info card (free) / guidance card (navigating)
+static lv_obj_t *sFreeBox, *sCoordLbl, *sMetaLbl, *sMapLbl;
+static lv_obj_t *sNavBox, *sTurnIcon, *sTurnCmd, *sTurnDest, *sTurnMeta, *sMeshSendBtn;
 
-// Place / Route Search Overlay
-static lv_obj_t *sSearchModal = nullptr;
-static lv_obj_t *sSearchList = nullptr;
-static lv_obj_t *sFilterBtns[7] = {nullptr};
+// action bar
+static lv_obj_t *sDestBtn, *sModeTabs, *sRecBtn, *sWpBtn;
+
+// search modal
+static lv_obj_t *sSearchModal, *sSearchList, *sFilterTabs;
 static int sActiveFilter = 0;
 static NavPlace sSearchResults[24];
+static NavPlace* sPool = nullptr;           // 64 entries in PSRAM (filter scans)
+static constexpr int POOL_N = 64;
 static int sNumResults = 0;
 
-// GNSS Satellite Skyplot Modal
-static lv_obj_t *sSkyModal = nullptr;
-static lv_obj_t *sSkySub = nullptr;
-static lv_obj_t *sSkyRing = nullptr;
-static lv_obj_t *sSatDots[16] = {nullptr};
-static lv_obj_t *sSatSnrBars[8] = {nullptr};
-static lv_obj_t *sSatSnrLbls[8] = {nullptr};
+// skyplot modal
+static lv_obj_t *sSkyModal, *sSkySub, *sSkyRing, *sSatDots[16], *sSatSnrBars[8], *sSatSnrLbls[8];
 
-static int sZoom = 15;             // Default 15 = Street & Building level when standing
-static bool sAutoZoom = true;      // Speed-adaptive auto-zoom enabled by default
+static int sZoom = 15;
+static bool sAutoZoom = true;
 static bool sManualPan = false;
+static bool sDragging = false;
 static unsigned long sManualInteractMs = 0;
-static double sViewLat = 48.7758;  // Stuttgart Schlossplatz
-static double sViewLon = 9.1829;
-static double sLastRenderedLat = 0;
-static double sLastRenderedLon = 0;
+static double sViewLat = 0, sViewLon = 0;
+static double sLastRenderedLat = 0, sLastRenderedLon = 0;
 static int sLastRenderedZoom = -1;
 static bool sMapNeedsRedraw = true;
+static uint32_t sLastRefreshMs = 0;
 
 static const char* FILTER_LABELS[7] = {"STGT", "MESH", "A-D", "E-K", "L-M", "N-S", "T-Z"};
 
 static int computeSpeedAdaptiveZoom(float speedKmh) {
-    if (speedKmh <= 6.5f)  return 15; // Standing / walking: immediate surroundings (~200m, buildings, paths, POIs)
-    if (speedKmh <= 22.0f) return 14; // Cycling / slow city (~400m)
-    if (speedKmh <= 55.0f) return 13; // City driving / Landstraße (~800m)
-    if (speedKmh <= 90.0f) return 11; // Bundesstraße (~3 km)
-    return 10;                        // Autobahn (> 90 km/h, ~6 km)
+    if (speedKmh <= 6.5f)  return 15;
+    if (speedKmh <= 22.0f) return 14;
+    if (speedKmh <= 55.0f) return 13;
+    if (speedKmh <= 90.0f) return 11;
+    return 10;
 }
 
-static void redrawCanvas() {
-    if (!sMapBuf || !sMapImg) return;
-    const NavStatus& st = NavEngine::status();
+static bool modalVisible() {
+    return (sSearchModal && !lv_obj_has_flag(sSearchModal, LV_OBJ_FLAG_HIDDEN)) ||
+           (sSkyModal && !lv_obj_has_flag(sSkyModal, LV_OBJ_FLAG_HIDDEN));
+}
 
-    // Auto-recenter after 15s of manual pan/zoom inactivity
-    if ((sManualPan || !sAutoZoom) && (millis() - sManualInteractMs > 15000)) {
+// horizontal drags inside the map pan the map; the screen edges still swipe pages
+static bool allowHorizontal(int x, int y) {
+    if (modalVisible()) return false;
+    bool insideMap = (y >= MAP_Y && y <= MAP_Y + MAP_H && x >= M && x <= M + MAP_W);
+    if (insideMap && x >= 36 && x <= SCR_W - 36) return false;
+    return true;
+}
+
+static void updateScaleBar(double lat) {
+    static const int cand[] = {10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000};
+    double mpp = 156543.03 * cos(lat * M_PI / 180.0) / pow(2.0, (double)sZoom);
+    if (mpp <= 0) return;
+    int best = cand[0];
+    for (int c : cand) { if (c / mpp <= 110.0) best = c; else break; }
+    int px = (int)(best / mpp);
+    if (px < 10) px = 10;
+    if (lv_obj_get_width(sScaleBar) != px) lv_obj_set_width(sScaleBar, px);
+    char b[16];
+    if (best >= 1000) snprintf(b, sizeof(b), "%d km", best / 1000);
+    else snprintf(b, sizeof(b), "%d m", best);
+    setText(sScaleLbl, b);
+}
+
+// one software render per refresh frame at most (never from touch events)
+static void redrawCanvas(const NavStatus& st) {
+    if (!sMapBuf || !sMapImg) return;
+    if ((sManualPan || !sAutoZoom) && !sDragging && (millis() - sManualInteractMs > 15000)) {
         sManualPan = false;
         sAutoZoom = true;
     }
-
-    if (sAutoZoom) {
-        float spd = GpsManager::speedKmh();
-        sZoom = computeSpeedAdaptiveZoom(spd);
-    }
-
+    if (sAutoZoom) sZoom = computeSpeedAdaptiveZoom(GpsManager::speedKmh());
     double lat = sManualPan ? sViewLat : st.curLat;
     double lon = sManualPan ? sViewLon : st.curLon;
     sViewLat = lat;
     sViewLon = lon;
-
     NavEngine::renderMap(sMapBuf, MAP_W, MAP_H, lat, lon, sZoom);
     lv_obj_invalidate(sMapImg);
     sLastRenderedLat = lat;
     sLastRenderedLon = lon;
     sLastRenderedZoom = sZoom;
     sMapNeedsRedraw = false;
+    updateScaleBar(lat);
 }
 
 static void refreshSkyplot() {
     if (!sSkyModal || lv_obj_has_flag(sSkyModal, LV_OBJ_FLAG_HIDDEN)) return;
-
-    GpsSatInfo sats[16];
+    static GpsSatInfo sats[16];
     uint8_t n = GpsManager::getSatellitesInView(sats, 16);
-
     char sb[72];
-    snprintf(sb, sizeof(sb), "GNSS: %u Sats in Sicht · Fix: %u Sats · HDOP %.1f",
-             (unsigned)n, (unsigned)GpsManager::satellites(),
-             GpsManager::hdop() < 50.0f ? GpsManager::hdop() : 0.0f);
+    snprintf(sb, sizeof(sb), "%u Satelliten sichtbar · Fix mit %u · HDOP %.1f", (unsigned)n,
+             (unsigned)GpsManager::satellites(), GpsManager::hdop() < 50.0f ? GpsManager::hdop() : 0.0f);
     setText(sSkySub, sb);
-
-    // Skyplot radar center inside sSkyRing (200x200, radius 90)
     const int cx = 100, cy = 100, maxR = 84;
     for (int i = 0; i < 16; i++) {
-        if (!sSatDots[i]) continue;
         if (i < n) {
             setHidden(sSatDots[i], false);
             float el = constrain((float)sats[i].elevation, 0.0f, 90.0f);
             float azRad = (float)sats[i].azimuth * (float)M_PI / 180.0f;
             float r = (1.0f - (el / 90.0f)) * maxR;
-            int sx = cx + (int)(sinf(azRad) * r) - 11;
-            int sy = cy - (int)(cosf(azRad) * r) - 11;
-            lv_obj_set_pos(sSatDots[i], sx, sy);
-            lv_color_t col = (sats[i].snr >= 25) ? cOk() :
-                             (sats[i].snr >= 15) ? accent() : cWarn();
-            setBgColorIf(sSatDots[i], col);
-            char prnTxt[8];
-            snprintf(prnTxt, sizeof(prnTxt), "%u", sats[i].prn);
-            setText(lv_obj_get_child(sSatDots[i], 0), prnTxt);
+            lv_obj_set_pos(sSatDots[i], cx + (int)(sinf(azRad) * r) - 11, cy - (int)(cosf(azRad) * r) - 11);
+            setBgColorIf(sSatDots[i], (sats[i].snr >= 25) ? cOk() : (sats[i].snr >= 15) ? accent() : cWarn());
+            char prn[8];
+            snprintf(prn, sizeof(prn), "%u", sats[i].prn);
+            setText(lv_obj_get_child(sSatDots[i], 0), prn);
         } else {
             setHidden(sSatDots[i], true);
         }
     }
-
     for (int i = 0; i < 8; i++) {
-        if (!sSatSnrBars[i] || !sSatSnrLbls[i]) continue;
         if (i < n) {
             int hBar = constrain((int)sats[i].snr * 2, 6, 96);
             lv_obj_set_height(sSatSnrBars[i], hBar);
             lv_obj_set_y(sSatSnrBars[i], 106 - hBar);
-            lv_color_t col = (sats[i].snr >= 25) ? cOk() :
-                             (sats[i].snr >= 15) ? accent() : cWarn();
-            setBgColorIf(sSatSnrBars[i], col);
+            setBgColorIf(sSatSnrBars[i], (sats[i].snr >= 25) ? cOk() : (sats[i].snr >= 15) ? accent() : cWarn());
             char lb[12];
-            snprintf(lb, sizeof(lb), "G%02u\n%udB", sats[i].prn, sats[i].snr);
+            snprintf(lb, sizeof(lb), "%02u\n%udB", sats[i].prn, sats[i].snr);
             setText(sSatSnrLbls[i], lb);
         } else {
             lv_obj_set_height(sSatSnrBars[i], 4);
@@ -164,188 +165,258 @@ static void refreshSkyplot() {
     }
 }
 
+static void populateSearchList();
+
+static void openSearch(int filter) {
+    sActiveFilter = filter;
+    populateSearchList();
+    setHidden(sSearchModal, false);
+}
+
+// HUD pills keep a dark backdrop over the map; only text + colour change
+static void setHudPill(lv_obj_t* p, const char* text, lv_color_t col) {
+    lv_obj_t* l = pillLabel(p);
+    if (!l) return;
+    setText(l, text);
+    setTextColorIf(l, col);
+}
+
 static void populateSearchList() {
     if (!sSearchList) return;
     lv_obj_clean(sSearchList);
+    setTabActive(sFilterTabs, sActiveFilter);
 
     if (sActiveFilter == 1) {
-        // Real Meshtastic peers with coordinates + saved POIs
         sNumResults = NavEngine::searchPlaces("@mesh", sSearchResults, 20);
     } else if (sActiveFilter == 0) {
         sNumResults = NavEngine::searchPlaces("", sSearchResults, 20);
     } else {
-        static const char ranges[][2] = {{0,0}, {0,0}, {'A','D'}, {'E','K'}, {'L','M'}, {'N','S'}, {'T','Z'}};
-        char cMin = ranges[sActiveFilter][0];
-        char cMax = ranges[sActiveFilter][1];
-        NavPlace pool[64];
-        int nPool = NavEngine::searchPlaces("", pool, 64);
+        static const char ranges[][2] = {{0, 0}, {0, 0}, {'A', 'D'}, {'E', 'K'}, {'L', 'M'}, {'N', 'S'}, {'T', 'Z'}};
+        char cMin = ranges[sActiveFilter][0], cMax = ranges[sActiveFilter][1];
+        if (!sPool) sPool = (NavPlace*)heap_caps_malloc(sizeof(NavPlace) * POOL_N, MALLOC_CAP_SPIRAM);
         sNumResults = 0;
-        for (int i = 0; i < nPool && sNumResults < 24; i++) {
-            char c = pool[i].name[0];
-            if (c >= 'a' && c <= 'z') c -= 32;
-            if (c >= cMin && c <= cMax) {
-                sSearchResults[sNumResults++] = pool[i];
+        if (sPool) {
+            int nPool = NavEngine::searchPlaces("", sPool, POOL_N);
+            for (int i = 0; i < nPool && sNumResults < 24; i++) {
+                char c = sPool[i].name[0];
+                if (c >= 'a' && c <= 'z') c -= 32;
+                if (c >= cMin && c <= cMax) sSearchResults[sNumResults++] = sPool[i];
             }
         }
     }
 
-    for (int i = 0; i < 7; i++) {
-        if (!sFilterBtns[i]) continue;
-        setBgColorIf(sFilterBtns[i], (i == sActiveFilter) ? accent() : cSurf2());
-    }
-
-    if (sNumResults == 0 && sActiveFilter == 1) {
-        lv_obj_t* empty = card(sSearchList, CW - 16, 68);
-        lv_obj_t* l1 = label(empty, F.small, cText(), "Noch keine Meshtastic-Position empfangen");
-        lv_obj_set_pos(l1, 14, 12);
-        lv_obj_t* l2 = caption(empty, "Sende Discovery-Ping auf LORA MESH Seite...", cText2());
-        lv_obj_set_pos(l2, 14, 38);
-        RadioLoRa::sendNodeInfoDiscovery();
+    if (sNumResults == 0) {
+        lv_obj_t* empty = card(sSearchList, CW, 150);
+        lv_obj_t* es = emptyState(empty, sActiveFilter == 1 ? ICO_CELL_TOWER : ICO_SEARCH,
+                                  sActiveFilter == 1 ? "Keine Knoten mit Position" : "Keine Orte",
+                                  sActiveFilter == 1 ? "Discovery fragt Knoten nach ihrer Position" : "Karte auf SD-Karte prüfen");
+        lv_obj_align(es, LV_ALIGN_TOP_MID, 0, 6);
+        if (sActiveFilter == 1) {
+            lv_obj_t* disc = secondaryButton(sSearchList, CW, 48, ICO_PODCASTS, "Discovery senden");
+            lv_obj_add_event_cb(disc, [](lv_event_t*) {
+                haptic(HAPTIC_CLICK);
+                bool ok = RadioLoRa::sendNodeInfoDiscovery();
+                DisplayEngine::showToast("Mesh Discovery",
+                                         ok ? "NodeInfo-Anfrage gesendet"
+                                            : (RadioLoRa::isEnabled() ? "Bereits gesendet - bitte warten" : "LoRa ist aus"),
+                                         2200, ICO_PODCASTS);
+            }, LV_EVENT_CLICKED, NULL);
+        }
         return;
     }
 
+    NavStatus st = NavEngine::status();
+    bool havePos = st.posSource != POS_SRC_DEFAULT;
     for (int i = 0; i < sNumResults; i++) {
-        lv_obj_t* row = card(sSearchList, CW - 16, 48);
+        lv_obj_t* row = card(sSearchList, CW, 48);
         lv_obj_set_style_radius(row, 14, 0);
-        lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+        pressable(row);
         lv_obj_add_event_cb(row, [](lv_event_t* e) {
             int idx = (int)(intptr_t)lv_event_get_user_data(e);
-            if (idx >= 0 && idx < sNumResults) {
-                const NavPlace& pl = sSearchResults[idx];
-                if (pl.rank == 0) {
-                    NavEngine::setMode(NAV_MODE_MESH);
-                } else if (NavEngine::getMode() == NAV_MODE_MESH) {
-                    NavEngine::setMode(NAV_MODE_CAR);
-                }
-                NavEngine::startNavigation(pl.name, pl.lat, pl.lon);
-                sManualPan = false;
-                sAutoZoom = true;
-                sMapNeedsRedraw = true;
-                setHidden(sSearchModal, true);
-                haptic(HAPTIC_SUCCESS);
-            }
+            if (idx < 0 || idx >= sNumResults) return;
+            const NavPlace& pl = sSearchResults[idx];
+            if (pl.rank == 0) NavEngine::setMode(NAV_MODE_MESH);
+            else if (NavEngine::getMode() == NAV_MODE_MESH) NavEngine::setMode(NAV_MODE_CAR);
+            bool accepted = NavEngine::startNavigation(pl.name, pl.lat, pl.lon);
+            if (!accepted) DisplayEngine::showToast("Navigation", "Route kann gerade nicht gestartet werden", 2200, ICO_ROUTE);
+            sManualPan = false;
+            sAutoZoom = true;
+            sMapNeedsRedraw = true;
+            setHidden(sSearchModal, true);
+            haptic(HAPTIC_SUCCESS);
         }, LV_EVENT_CLICKED, (void*)(intptr_t)i);
 
         bool isMesh = (sSearchResults[i].rank == 0);
         bool isPoi  = (sSearchResults[i].rank == 5);
-        lv_color_t icCol = isMesh ? lv_color_hex(0xBF5AF2) : isPoi ? cWarn() : accent();
+        lv_color_t icCol = isMesh ? cMesh() : isPoi ? cWarn() : accent();
         lv_obj_t* ic = label(row, F.icoS, icCol, isMesh ? ICO_PODCASTS : isPoi ? ICO_FLAG : ICO_PLACE);
         lv_obj_align(ic, LV_ALIGN_LEFT_MID, 12, 0);
-
         lv_obj_t* nm = label(row, F.small, cText(), sSearchResults[i].name);
+        lv_label_set_long_mode(nm, LV_LABEL_LONG_DOT);
+        lv_obj_set_width(nm, 210);
         lv_obj_align(nm, LV_ALIGN_LEFT_MID, 42, 0);
-
         char distBuf[24];
-        const NavStatus& st = NavEngine::status();
-        double dlat = (sSearchResults[i].lat - st.curLat) * 111.32;
-        double dlon = (sSearchResults[i].lon - st.curLon) * 71.5;
-        double km = sqrt(dlat * dlat + dlon * dlon);
-        if (isMesh) snprintf(distBuf, sizeof(distBuf), "MESH  %.1f km", km);
-        else if (km < 10.0) snprintf(distBuf, sizeof(distBuf), "%.1f km", km);
-        else snprintf(distBuf, sizeof(distBuf), "%.0f km", km);
-        lv_obj_t* dl = caption(row, distBuf, isMesh ? lv_color_hex(0xBF5AF2) : cText2());
+        if (havePos) {
+            double dlat = (sSearchResults[i].lat - st.curLat) * 111.32;
+            double dlon = (sSearchResults[i].lon - st.curLon) * 111.32 * cos(st.curLat * M_PI / 180.0);
+            double km = sqrt(dlat * dlat + dlon * dlon);
+            if (km < 10.0) snprintf(distBuf, sizeof(distBuf), "%.1f km", km);
+            else snprintf(distBuf, sizeof(distBuf), "%.0f km", km);
+        } else {
+            snprintf(distBuf, sizeof(distBuf), "--");
+        }
+        lv_obj_t* dl = caption(row, distBuf, isMesh ? cMesh() : cText2());
         lv_obj_align(dl, LV_ALIGN_RIGHT_MID, -12, 0);
     }
 }
 
 static void refresh(bool force) {
-    const NavStatus& st = NavEngine::status();
+    NavStatus st = NavEngine::status();
+    uint32_t now = millis();
+    // after a sleep (PowerManager stops live GNSS) re-enable it while this page is open
+    if (now - sLastRefreshMs > 3000 && nav::current() == nav::PG_POSITION) GpsManager::setLive(true);
+    sLastRefreshMs = now;
 
-    // 1. Mode Pill (AUTO / FUSS / MESH)
-    const char* mStr = (st.mode == NAV_MODE_CAR)  ? "AUTO" :
-                       (st.mode == NAV_MODE_PED)  ? "FUSS" : "MESH";
-    lv_color_t mCol  = (st.mode == NAV_MODE_CAR)  ? accent() :
-                       (st.mode == NAV_MODE_PED)  ? cOk() : lv_color_hex(0xBF5AF2);
-    setBgColorIf(sModePill, mCol);
-    setTextColorIf(sModeTxt, mCol);
-    setText(sModeTxt, mStr);
-
-    // 2. GPS / Position Source Pill
+    // header: GPS pill + source pill on the map
     bool en = GpsManager::isEnabled();
     bool fix = GpsManager::hasFix();
-    lv_color_t pc = !en ? cCrit() : fix ? cOk() :
-                    (st.posSource == POS_SRC_LORA_MESH) ? lv_color_hex(0xBF5AF2) : cWarn();
-    setBgColorIf(sGpsPill, pc);
-    setTextColorIf(sGpsTxt, pc);
-    setText(sGpsTxt, !en ? "GPS AUS" : fix ? "3D FIX" :
-                     (st.posSource == POS_SRC_LORA_MESH) ? "LORA POS" : "SUCHE...");
+    setPill(sGpsPill, !en ? "GPS AUS" : fix ? "GPS FIX" : "GPS SUCHT", !en ? cText2() : fix ? cOk() : cWarn());
+    lv_color_t srcCol = (st.posSource == POS_SRC_GPS_LIVE) ? cOk() :
+                        (st.posSource == POS_SRC_LORA_MESH) ? cMesh() :
+                        (st.posSource == POS_SRC_SAVED_FIX) ? cWarn() : cCrit();
+    char sp[40];
+    if (st.posSource != POS_SRC_GPS_LIVE && st.posSource != POS_SRC_DEFAULT && st.posAgeSec) {
+        if (st.posAgeSec < 3600) snprintf(sp, sizeof(sp), "%s · %lu MIN", st.posSourceTag, (unsigned long)(st.posAgeSec / 60));
+        else snprintf(sp, sizeof(sp), "%s · %lu H", st.posSourceTag, (unsigned long)(st.posAgeSec / 3600));
+    } else {
+        snprintf(sp, sizeof(sp), "%s", st.posSourceTag);
+    }
+    setHudPill(sSrcPill, sp, srcCol);
+    setHidden(sNoPosOverlay, st.posSource != POS_SRC_DEFAULT);
 
-    // Check if speed or position changed enough to trigger auto-zoom / auto-center redraw
+    // routing state pill
+    if (st.routingBusy) { setHudPill(sRoutePill, "ROUTE WIRD BERECHNET...", accent()); setHidden(sRoutePill, false); }
+    else if (st.activeRoute && st.routeStraightLine) { setHudPill(sRoutePill, "LUFTLINIE", cWarn()); setHidden(sRoutePill, false); }
+    else if (st.routeFailed) { setHudPill(sRoutePill, "KEINE ROUTE", cCrit()); setHidden(sRoutePill, false); }
+    else setHidden(sRoutePill, true);
+
+    // auto-zoom / auto-centre trigger
     int targetZoom = sAutoZoom ? computeSpeedAdaptiveZoom(GpsManager::speedKmh()) : sZoom;
     if (targetZoom != sLastRenderedZoom ||
-        (!sManualPan && (fabs(st.curLat - sLastRenderedLat) > 0.00008 ||
-                         fabs(st.curLon - sLastRenderedLon) > 0.00008))) {
+        (!sManualPan && (fabs(st.curLat - sLastRenderedLat) > 0.00008 || fabs(st.curLon - sLastRenderedLon) > 0.00008))) {
         sZoom = targetZoom;
         sMapNeedsRedraw = true;
     }
 
-    // 3. Zoom & GPX status badges
-    char zb[16];
-    snprintf(zb, sizeof(zb), "%sZ%d", sAutoZoom ? "A·" : "", sZoom);
-    setText(sZoomLbl, zb);
-    setBgColorIf(sGpxBtn, st.gpxRecording ? cWarn() : cSurf2());
-    setText(sGpxTxt, st.gpxRecording ? "REC" : "+POI");
-    if (sRecenterPill) {
-        setHidden(sRecenterPill, !sManualPan && sAutoZoom);
-    }
+    char b[80];
+    snprintf(b, sizeof(b), "%sZ%d", sAutoZoom ? "A " : "", sZoom);
+    setText(sZoomLbl, b);
+    setHidden(sRecenterBtn, !sManualPan && sAutoZoom);
 
-    // 4. Bottom Guidance vs Free Telemetry
+    // action bar state
+    setTabActive(sModeTabs, (int)st.mode);
+    setBgColorIf(sRecBtn, st.gpxRecording ? cCrit() : cSurf2());
+    setButtonText(sRecBtn, st.gpxRecording ? "REC" : "GPX");
+    setButtonEnabled(sRecBtn, st.posSource == POS_SRC_GPS_LIVE || st.gpxRecording);
+    setButtonEnabled(sWpBtn, st.posSource != POS_SRC_DEFAULT);
+    setButtonText(sDestBtn, st.activeRoute ? "Stopp" : "Ziel");
+    setBgColorIf(sDestBtn, st.activeRoute ? cCrit() : accent());
+    lv_obj_t* dl = buttonLabel(sDestBtn);
+    if (dl) setTextColorIf(dl, st.activeRoute ? cText() : cBg());
+
+    // info vs guidance
     setHidden(sNavBox, !st.activeRoute);
     setHidden(sFreeBox, st.activeRoute);
-
+    const char* mStr = (st.mode == NAV_MODE_CAR) ? "AUTO" : (st.mode == NAV_MODE_PED) ? "FUSS" : "MESH";
     if (st.activeRoute) {
         setText(sTurnIcon, st.nextTurnIcon ? st.nextTurnIcon : ICO_NAVIGATION);
-        char cmdBuf[44];
-        if (st.nextTurnDistM >= 1000) {
-            snprintf(cmdBuf, sizeof(cmdBuf), "%s (%.1f km)", st.nextTurnCmd, st.nextTurnDistM / 1000.0f);
-        } else {
-            snprintf(cmdBuf, sizeof(cmdBuf), "%s (%lu m)", st.nextTurnCmd, (unsigned long)st.nextTurnDistM);
-        }
-        setText(sTurnCmd, cmdBuf);
-
-        char destBuf[52];
-        snprintf(destBuf, sizeof(destBuf), "Ziel: %s (%s)", st.destName, mStr);
-        setText(sTurnDest, destBuf);
-
-        char metaBuf[64];
-        if (st.etaMinutes >= 60) {
-            snprintf(metaBuf, sizeof(metaBuf), "Rest %.1f km  ·  ETA %uh %02um  ·  %.0f°",
-                     st.remDistKm, st.etaMinutes / 60, st.etaMinutes % 60, st.bearingDeg);
-        } else {
-            snprintf(metaBuf, sizeof(metaBuf), "Rest %.1f km  ·  ETA %u min  ·  %.0f°",
-                     st.remDistKm, st.etaMinutes, st.bearingDeg);
-        }
-        setText(sTurnMeta, metaBuf);
+        if (st.routingBusy) snprintf(b, sizeof(b), "Route wird berechnet...");
+        else if (st.nextTurnDistM >= 1000) snprintf(b, sizeof(b), "%s (%.1f km)", st.nextTurnCmd, st.nextTurnDistM / 1000.0f);
+        else snprintf(b, sizeof(b), "%s (%lu m)", st.nextTurnCmd, (unsigned long)st.nextTurnDistM);
+        setText(sTurnCmd, b);
+        snprintf(b, sizeof(b), "Ziel: %s (%s)", st.destName, mStr);
+        setText(sTurnDest, b);
+        if (st.routingBusy) snprintf(b, sizeof(b), "Bitte warten");
+        else if (st.etaMinutes >= 60) snprintf(b, sizeof(b), "Rest %.1f km · ETA %uh %02umin · %.0f°", st.remDistKm, st.etaMinutes / 60, st.etaMinutes % 60, st.bearingDeg);
+        else snprintf(b, sizeof(b), "Rest %.1f km · ETA %u min · %.0f°", st.remDistKm, st.etaMinutes, st.bearingDeg);
+        setText(sTurnMeta, b);
+        setButtonEnabled(sMeshSendBtn, RadioLoRa::isEnabled());
     } else {
-        char cb[68];
-        snprintf(cb, sizeof(cb), "%.4f° N  %.4f° E  [%s]",
-                 fabs(st.curLat), fabs(st.curLon), st.posSourceTag);
-        setText(sCoordLbl, cb);
-
-        char mb[68];
-        snprintf(mb, sizeof(mb), "SAT %u  ·  %.0f m  ·  %.1f km/h  ·  Auto-Zoom Z%d",
-                 GpsManager::satellites(), GpsManager::altitudeM(),
-                 GpsManager::speedKmh(), sZoom);
-        setText(sMetaLbl, mb);
-
-        char sb[72];
-        if (st.ultraLoaded) {
-            snprintf(sb, sizeof(sb), "STUTTGART HD (Gebäude/Wald/POI: %lu) · SD %s",
-                     (unsigned long)st.mapPois,
-                     st.sdWritable ? "R/W OK" : (st.sdReady ? "RO+FLASH" : "FLASH"));
-        } else if (st.mapLoaded) {
-            snprintf(sb, sizeof(sb), "DE-KARTE (%lu Orte / %lu Knoten)",
-                     (unsigned long)st.mapPlaces, (unsigned long)st.mapRouteNodes);
-        } else {
-            snprintf(sb, sizeof(sb), "DE-Basiskarte aktiv");
-        }
-        setText(sSdLbl, sb);
+        if (st.posSource == POS_SRC_DEFAULT) snprintf(b, sizeof(b), "Keine Position bekannt");
+        else snprintf(b, sizeof(b), "%.4f° %c  %.4f° %c", fabs(st.curLat), st.curLat < 0 ? 'S' : 'N', fabs(st.curLon), st.curLon < 0 ? 'W' : 'O');
+        setText(sCoordLbl, b);
+        if (fix) snprintf(b, sizeof(b), "%u SAT · %.0f m · %.1f km/h", (unsigned)GpsManager::satellites(), GpsManager::altitudeM(), GpsManager::speedKmh());
+        else if (en) snprintf(b, sizeof(b), "%u SAT · Suche seit %lu s", (unsigned)GpsManager::satellites(), (unsigned long)GpsManager::searchSeconds());
+        else snprintf(b, sizeof(b), "GPS ist aus");
+        setText(sMetaLbl, b);
+        if (st.ultraLoaded) snprintf(b, sizeof(b), "Stuttgart HD · %lu POI · SD %s", (unsigned long)st.mapPois, st.sdWritable ? "R/W" : (st.sdReady ? "RO" : "--"));
+        else if (st.mapLoaded && st.mapLoadPct < 100) snprintf(b, sizeof(b), "Karte lädt %u%%", (unsigned)st.mapLoadPct);
+        else if (st.mapLoaded) snprintf(b, sizeof(b), "Deutschland · %lu Orte · %lu Knoten", (unsigned long)st.mapPlaces, (unsigned long)st.mapRouteNodes);
+        else snprintf(b, sizeof(b), "Keine Karte (SD prüfen)");
+        setText(sMapLbl, b);
     }
 
-    if (force || sMapNeedsRedraw) {
-        redrawCanvas();
-    }
+    if (force || sMapNeedsRedraw) redrawCanvas(st);
     refreshSkyplot();
+}
+
+// ---- map touch: pan with the finger, redraw throttled to the refresh frame ----
+static lv_point_t sDragStart = {0, 0};
+static double sDragStartLat = 0, sDragStartLon = 0;
+static bool sMoved = false;
+
+static void mapTouch(lv_event_t* e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_point_t pt;
+    lv_indev_get_point(lv_indev_active(), &pt);
+    if (code == LV_EVENT_PRESSED) {
+        sDragStart = pt;
+        sDragStartLat = sViewLat;
+        sDragStartLon = sViewLon;
+        sMoved = false;
+        sDragging = true;
+        nav::setRefreshInterval(nav::PG_POSITION, 33);
+    } else if (code == LV_EVENT_PRESSING) {
+        int dx = pt.x - sDragStart.x, dy = pt.y - sDragStart.y;
+        if (abs(dx) > 4 || abs(dy) > 4) {
+            sMoved = true;
+            sManualPan = true;
+            sManualInteractMs = millis();
+            double degPerPixX = 360.0 / (256.0 * pow(2.0, (double)sZoom));
+            double degPerPixY = degPerPixX * cos(sDragStartLat * M_PI / 180.0);
+            sViewLon = sDragStartLon - (double)dx * degPerPixX;
+            sViewLat = sDragStartLat + (double)dy * degPerPixY;
+            sMapNeedsRedraw = true;                     // rendered by the next refresh() frame
+        }
+    } else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+        sDragging = false;
+        nav::setRefreshInterval(nav::PG_POSITION, 1000);
+        if (code == LV_EVENT_RELEASED && !sMoved) {
+            int rx = pt.x - M, ry = pt.y - MAP_Y;
+            if (abs(rx - MAP_W / 2) < 60 && abs(ry - MAP_H / 2) < 60) {   // tap on centre = recentre
+                sManualPan = false;
+                sAutoZoom = true;
+                sMapNeedsRedraw = true;
+                haptic(HAPTIC_TICK);
+            }
+        }
+        sMoved = false;
+        refresh(true);
+    }
+}
+
+static lv_obj_t* hudButton(lv_obj_t* parent, int x, int y, int w, int h, const char* txt) {
+    lv_obj_t* b = box(parent, w, h);
+    lv_obj_set_pos(b, x, y);
+    lv_obj_set_style_radius(b, 10, 0);
+    lv_obj_set_style_bg_color(b, cBg(), 0);
+    lv_obj_set_style_bg_opa(b, LV_OPA_80, 0);
+    lv_obj_set_style_border_width(b, 1, 0);
+    lv_obj_set_style_border_color(b, cStroke(), 0);
+    pressable(b);
+    lv_obj_t* l = label(b, F.small, cText(), txt);
+    lv_obj_center(l);
+    return b;
 }
 
 void buildPosition(lv_obj_t* scr) {
@@ -353,49 +424,33 @@ void buildPosition(lv_obj_t* scr) {
 
     lv_obj_t* p = pageRoot(scr);
     sRoot = p;
-    title(p, "NAVI · STGT");
+    title(p, "POSITION");
 
-    // Mode Toggle Pill (AUTO / FUSS / MESH)
-    sModePill = box(p, 76, 30);
-    lv_obj_align(sModePill, LV_ALIGN_TOP_RIGHT, -(M + 104), 26);
-    lv_obj_set_style_radius(sModePill, 15, 0);
-    lv_obj_set_style_bg_opa(sModePill, LV_OPA_30, 0);
-    lv_obj_add_flag(sModePill, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(sModePill, [](lv_event_t*) {
-        NavMode next = (NavMode)(((int)NavEngine::getMode() + 1) % 3);
-        NavEngine::setMode(next);
-        sMapNeedsRedraw = true;
-        haptic(HAPTIC_CLICK);
-        refresh(true);
-    }, LV_EVENT_CLICKED, NULL);
-    sModeTxt = caption(sModePill, "AUTO", accent());
-    lv_obj_center(sModeTxt);
+    sSatBtn = pill(p, "SAT", cInfo());
+    lv_obj_align(sSatBtn, LV_ALIGN_TOP_RIGHT, -(M + 112), 24);
+    pressable(sSatBtn);
+    lv_obj_add_event_cb(sSatBtn, [](lv_event_t*) { haptic(HAPTIC_TICK); setHidden(sSkyModal, false); refreshSkyplot(); }, LV_EVENT_CLICKED, NULL);
 
-    // GPS Toggle Pill
-    sGpsPill = box(p, 96, 30);
-    lv_obj_align(sGpsPill, LV_ALIGN_TOP_RIGHT, -M, 26);
-    lv_obj_set_style_radius(sGpsPill, 15, 0);
-    lv_obj_set_style_bg_opa(sGpsPill, LV_OPA_30, 0);
-    lv_obj_add_flag(sGpsPill, LV_OBJ_FLAG_CLICKABLE);
+    sGpsPill = pill(p, "GPS AUS", cText2());
+    lv_obj_align(sGpsPill, LV_ALIGN_TOP_RIGHT, -M, 24);
+    pressable(sGpsPill);
     lv_obj_add_event_cb(sGpsPill, [](lv_event_t*) {
-        GpsManager::setEnabled(!GpsManager::isEnabled());
-        sMapNeedsRedraw = true;
-        haptic(HAPTIC_CLICK);
+        bool en = !GpsManager::isEnabled();
+        GpsManager::setEnabled(en);
+        if (en) { GpsManager::setLive(true); GpsManager::requestFix(); }
+        nav::markDirty(nav::PG_CONTROL);
+        nav::markDirty(nav::PG_APP_SETTINGS);
+        haptic(HAPTIC_TICK);
         refresh(true);
     }, LV_EVENT_CLICKED, NULL);
-    sGpsTxt = caption(sGpsPill, "", cText2());
-    lv_obj_center(sGpsTxt);
 
-    // Map Viewport Card (374 x 236)
+    // ------------------------------------------------------------ map
     sMapCard = card(p, MAP_W, MAP_H);
-    lv_obj_set_pos(sMapCard, M, 76);
-    lv_obj_set_style_pad_all(sMapCard, 0, 0);
+    lv_obj_set_pos(sMapCard, M, MAP_Y);
     lv_obj_set_style_radius(sMapCard, 18, 0);
     lv_obj_set_style_clip_corner(sMapCard, true, 0);
-
-    if (!sMapBuf) {
-        sMapBuf = (uint16_t*)heap_caps_malloc(MAP_W * MAP_H * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
-    }
+    if (!sMapBuf) sMapBuf = (uint16_t*)heap_caps_malloc(MAP_W * MAP_H * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+    if (sMapBuf) memset(sMapBuf, 0, MAP_W * MAP_H * sizeof(uint16_t));
     sMapDsc.header.magic = LV_IMAGE_HEADER_MAGIC;
     sMapDsc.header.cf = LV_COLOR_FORMAT_RGB565;
     sMapDsc.header.flags = 0;
@@ -404,372 +459,268 @@ void buildPosition(lv_obj_t* scr) {
     sMapDsc.header.stride = MAP_W * 2;
     sMapDsc.data_size = MAP_W * MAP_H * 2;
     sMapDsc.data = (const uint8_t*)sMapBuf;
-
     sMapImg = lv_image_create(sMapCard);
-    lv_image_set_src(sMapImg, &sMapDsc);
+    if (sMapBuf) lv_image_set_src(sMapImg, &sMapDsc);
     lv_obj_set_pos(sMapImg, 0, 0);
 
-    // Smooth 2D Drag-and-Drop Map Panning + Tap to Center
-    static lv_point_t sDragStart = {0, 0};
-    static double sDragStartLat = 0, sDragStartLon = 0;
-    static bool sIsDragging = false;
-
     lv_obj_add_flag(sMapCard, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(sMapCard, [](lv_event_t* e) {
-        lv_event_code_t code = lv_event_get_code(e);
-        lv_point_t pt;
-        lv_indev_get_point(lv_indev_active(), &pt);
+    lv_obj_add_event_cb(sMapCard, mapTouch, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(sMapCard, mapTouch, LV_EVENT_PRESSING, NULL);
+    lv_obj_add_event_cb(sMapCard, mapTouch, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(sMapCard, mapTouch, LV_EVENT_PRESS_LOST, NULL);
 
-        if (code == LV_EVENT_PRESSED) {
-            sDragStart = pt;
-            sDragStartLat = sViewLat;
-            sDragStartLon = sViewLon;
-            sIsDragging = false;
-        } else if (code == LV_EVENT_PRESSING) {
-            int dx = pt.x - sDragStart.x;
-            int dy = pt.y - sDragStart.y;
-            if (abs(dx) > 4 || abs(dy) > 4) {
-                sIsDragging = true;
-                sManualPan = true;
-                sManualInteractMs = millis();
-                double degPerPixX = 360.0 / (256.0 * pow(2.0, (double)sZoom));
-                double degPerPixY = degPerPixX * cos(sViewLat * M_PI / 180.0);
-                sViewLon = sDragStartLon - (double)dx * degPerPixX;
-                sViewLat = sDragStartLat + (double)dy * degPerPixY;
-                sMapNeedsRedraw = true;
-                redrawCanvas();
-            }
-        } else if (code == LV_EVENT_RELEASED) {
-            if (!sIsDragging) {
-                // Short tap on map center toggles auto-center & auto-zoom
-                int rx = pt.x - M;
-                int ry = pt.y - 76;
-                if (abs(rx - MAP_W / 2) < 60 && abs(ry - MAP_H / 2) < 60) {
-                    sManualPan = false;
-                    sAutoZoom = true;
-                    haptic(HAPTIC_CLICK);
-                    sMapNeedsRedraw = true;
-                    refresh(true);
-                }
-            }
-            sIsDragging = false;
-        }
-    }, LV_EVENT_ALL, NULL);
+    // HUD: source pill (top-left), route pill (top-centre), zoom (top-right), scale (bottom-left)
+    sSrcPill = pill(sMapCard, "KEINE POSITION", cCrit());
+    lv_obj_set_pos(sSrcPill, 8, 8);
+    lv_obj_set_style_bg_opa(sSrcPill, LV_OPA_80, 0);
+    lv_obj_set_style_bg_color(sSrcPill, cBg(), 0);
+    sRoutePill = pill(sMapCard, "LUFTLINIE", cWarn());
+    lv_obj_set_style_bg_opa(sRoutePill, LV_OPA_80, 0);
+    lv_obj_set_style_bg_color(sRoutePill, cBg(), 0);
+    lv_obj_align(sRoutePill, LV_ALIGN_BOTTOM_MID, 0, -8);
+    lv_obj_add_flag(sRoutePill, LV_OBJ_FLAG_HIDDEN);
 
-    auto makeMapBtn = [&](int x, int y, int w, int h, const char* txt, lv_event_cb_t cb) -> lv_obj_t* {
-        lv_obj_t* b = box(sMapCard, w, h);
-        lv_obj_set_pos(b, x, y);
-        lv_obj_set_style_radius(b, 12, 0);
-        lv_obj_set_style_bg_color(b, cSurf2(), 0);
-        lv_obj_set_style_bg_opa(b, LV_OPA_80, 0);
-        lv_obj_set_style_border_width(b, 1, 0);
-        lv_obj_set_style_border_color(b, accent(), 0);
-        lv_obj_add_flag(b, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, NULL);
-        lv_obj_t* l = label(b, F.small, cText(), txt);
-        lv_obj_center(l);
-        return b;
-    };
-
-    makeMapBtn(MAP_W - 48, 10, 38, 38, "+", [](lv_event_t*) {
+    lv_obj_t* zIn = hudButton(sMapCard, MAP_W - 44, 8, 36, 36, "+");
+    lv_obj_add_event_cb(zIn, [](lv_event_t*) {
         if (sZoom < 16) sZoom++;
         sAutoZoom = false;
         sManualInteractMs = millis();
         sMapNeedsRedraw = true;
-        haptic(HAPTIC_CLICK);
+        haptic(HAPTIC_TICK);
         refresh(true);
-    });
-    makeMapBtn(MAP_W - 48, 54, 38, 38, "-", [](lv_event_t*) {
+    }, LV_EVENT_CLICKED, NULL);
+    lv_obj_t* zOut = hudButton(sMapCard, MAP_W - 44, 50, 36, 36, "-");
+    lv_obj_add_event_cb(zOut, [](lv_event_t*) {
         if (sZoom > 6) sZoom--;
         sAutoZoom = false;
         sManualInteractMs = millis();
         sMapNeedsRedraw = true;
-        haptic(HAPTIC_CLICK);
-        refresh(true);
-    });
-
-    lv_obj_t* zBadge = box(sMapCard, 48, 26);
-    lv_obj_set_pos(zBadge, MAP_W - 54, 96);
-    lv_obj_set_style_radius(zBadge, 8, 0);
-    lv_obj_set_style_bg_color(zBadge, cBg(), 0);
-    lv_obj_set_style_bg_opa(zBadge, LV_OPA_80, 0);
-    lv_obj_add_flag(zBadge, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(zBadge, [](lv_event_t*) {
-        sAutoZoom = true;
-        sManualPan = false;
-        sMapNeedsRedraw = true;
-        haptic(HAPTIC_CLICK);
+        haptic(HAPTIC_TICK);
         refresh(true);
     }, LV_EVENT_CLICKED, NULL);
-    sZoomLbl = caption(zBadge, "A·Z15", accent());
-    lv_obj_center(sZoomLbl);
-
-    // 1-Click POI Save & GPX Toggle button
-    sGpxBtn = makeMapBtn(10, 10, 62, 34, "+POI", [](lv_event_t*) {
-        NavEngine::markWaypoint("POI");
-        bool rec = !NavEngine::isTrackRecording();
-        NavEngine::setTrackRecording(rec);
+    sZoomBadge = hudButton(sMapCard, MAP_W - 56, 92, 48, 24, "A Z15");
+    sZoomLbl = lv_obj_get_child(sZoomBadge, 0);
+    lv_obj_set_style_text_font(sZoomLbl, F.cap, 0);
+    lv_obj_add_event_cb(sZoomBadge, [](lv_event_t*) {
+        sAutoZoom = true;
+        sManualPan = false;
         sMapNeedsRedraw = true;
-        haptic(HAPTIC_SUCCESS);
-        DisplayEngine::showNotification("POI & Track gespeichert",
-                                        rec ? "1-Klick POI markiert & GPX aktiv" : "1-Klick POI gespeichert",
-                                        2000, ICO_PLACE);
+        haptic(HAPTIC_TICK);
         refresh(true);
-    });
-    sGpxTxt = lv_obj_get_child(sGpxBtn, 0);
+    }, LV_EVENT_CLICKED, NULL);
 
-    // GNSS Skyplot Button
-    makeMapBtn(78, 10, 56, 34, "SAT", [](lv_event_t*) {
-        haptic(HAPTIC_CLICK);
-        setHidden(sSkyModal, false);
-        refreshSkyplot();
-    });
+    sScaleLbl = caption(sMapCard, "100 m", cText());
+    lv_obj_align(sScaleLbl, LV_ALIGN_BOTTOM_LEFT, 10, -16);
+    sScaleBar = box(sMapCard, 60, 3);
+    lv_obj_set_style_bg_opa(sScaleBar, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(sScaleBar, cText(), 0);
+    lv_obj_align(sScaleBar, LV_ALIGN_BOTTOM_LEFT, 10, -10);
 
-    // Recenter Pill (visible when user manually panned or zoomed)
-    sRecenterPill = makeMapBtn(140, 10, 96, 34, "ZENTRIEREN", [](lv_event_t*) {
+    sRecenterBtn = hudButton(sMapCard, MAP_W - 110, MAP_H - 42, 100, 32, "Zentrieren");
+    lv_obj_add_event_cb(sRecenterBtn, [](lv_event_t*) {
         sManualPan = false;
         sAutoZoom = true;
         sMapNeedsRedraw = true;
-        haptic(HAPTIC_CLICK);
+        haptic(HAPTIC_TICK);
         refresh(true);
-    });
-    setHidden(sRecenterPill, true);
+    }, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_flag(sRecenterBtn, LV_OBJ_FLAG_HIDDEN);
 
-    makeMapBtn(MAP_W - 88, MAP_H - 44, 78, 34, "ZIEL", [](lv_event_t*) {
+    // honest empty state when no position is known at all
+    sNoPosOverlay = box(sMapCard, MAP_W, MAP_H);
+    lv_obj_set_pos(sNoPosOverlay, 0, 0);
+    lv_obj_set_style_bg_opa(sNoPosOverlay, LV_OPA_80, 0);
+    lv_obj_set_style_bg_color(sNoPosOverlay, cBg(), 0);
+    lv_obj_add_flag(sNoPosOverlay, LV_OBJ_FLAG_CLICKABLE);     // swallow pans
+    lv_obj_t* npIc = label(sNoPosOverlay, F.icoL, cText3(), ICO_GPS_OFF);
+    lv_obj_align(npIc, LV_ALIGN_TOP_MID, 0, 36);
+    lv_obj_t* npT = label(sNoPosOverlay, F.body, cText2(), "Keine Position");
+    lv_obj_align(npT, LV_ALIGN_TOP_MID, 0, 88);
+    lv_obj_t* npH = caption(sNoPosOverlay, "GPS EINSCHALTEN FÜR DIE KARTE", cText3());
+    lv_obj_align(npH, LV_ALIGN_TOP_MID, 0, 122);
+    lv_obj_t* npBtn = primaryButton(sNoPosOverlay, 200, 44, ICO_SATELLITE_ALT, "GPS einschalten");
+    lv_obj_align(npBtn, LV_ALIGN_TOP_MID, 0, 156);
+    lv_obj_add_event_cb(npBtn, [](lv_event_t*) {
+        if (!GpsManager::isEnabled()) GpsManager::setEnabled(true);
+        GpsManager::setLive(true);
+        GpsManager::requestFix();
         haptic(HAPTIC_CLICK);
-        populateSearchList();
-        setHidden(sSearchModal, false);
-    });
-
-    // =========================================================================
-    // Bottom Dock: Active Turn-by-Turn Box vs Free Telemetry Box
-    // =========================================================================
-    sNavBox = card(p, CW, 166);
-    lv_obj_set_pos(sNavBox, M, 320);
-
-    sTurnIcon = label(sNavBox, F.icoL, accent(), ICO_NAVIGATION);
-    accReg(sTurnIcon, ACC_TEXT);
-    lv_obj_set_pos(sTurnIcon, 16, 14);
-
-    sTurnCmd = label(sNavBox, F.body, cText(), "GERADEAUS");
-    lv_obj_set_pos(sTurnCmd, 62, 12);
-
-    sTurnDest = label(sNavBox, F.small, accent(), "Ziel: Stuttgart");
-    accReg(sTurnDest, ACC_TEXT);
-    lv_obj_set_pos(sTurnDest, 62, 42);
-
-    sTurnMeta = caption(sNavBox, "Rest 0 km · ETA 0m", cText2());
-    lv_obj_set_pos(sTurnMeta, 18, 76);
-
-    auto makeNavAction = [&](int x, int w, const char* txt, lv_color_t col, lv_event_cb_t cb) {
-        lv_obj_t* b = box(sNavBox, w, 44);
-        lv_obj_set_pos(b, x, 108);
-        lv_obj_set_style_radius(b, 14, 0);
-        lv_obj_set_style_bg_color(b, cSurf2(), 0);
-        lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
-        lv_obj_set_style_border_width(b, 1, 0);
-        lv_obj_set_style_border_color(b, col, 0);
-        lv_obj_add_flag(b, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, NULL);
-        lv_obj_t* l = label(b, F.small, col, txt);
-        lv_obj_center(l);
-    };
-
-    makeNavAction(14, 110, "ZIELWAHL", accent(), [](lv_event_t*) {
-        haptic(HAPTIC_CLICK);
-        populateSearchList();
-        setHidden(sSearchModal, false);
-    });
-    makeNavAction(132, 126, "LORA SEND", lv_color_hex(0xBF5AF2), [](lv_event_t*) {
-        const NavStatus& st = NavEngine::status();
-        RadioLoRa::sendWaypoint(st.destName, st.destLat, st.destLon);
-        haptic(HAPTIC_SUCCESS);
-        DisplayEngine::showNotification("LoRa / Meshtastic", "Ziel-Wegpunkt ans Mesh gesendet", 2500, ICO_PODCASTS);
-    });
-    makeNavAction(266, 94, "STOP", cCrit(), [](lv_event_t*) {
-        NavEngine::stopNavigation();
-        sMapNeedsRedraw = true;
-        haptic(HAPTIC_CLICK);
+        DisplayEngine::showToast("GPS", "Satellitensuche läuft", 2000, ICO_SATELLITE_ALT);
+        nav::markDirty(nav::PG_CONTROL);
         refresh(true);
-    });
+    }, LV_EVENT_CLICKED, NULL);
 
-    // Free Telemetry Card (when not actively navigating)
-    sFreeBox = card(p, CW, 166);
-    lv_obj_set_pos(sFreeBox, M, 320);
-
+    // ------------------------------------------------------------ info card
+    sFreeBox = card(p, CW, INFO_H);
+    lv_obj_set_pos(sFreeBox, M, INFO_Y);
     sCoordLbl = label(sFreeBox, F.small, cText(), "");
     lv_obj_set_pos(sCoordLbl, 16, 12);
-
     sMetaLbl = caption(sFreeBox, "", cText2());
     lv_obj_set_pos(sMetaLbl, 16, 42);
+    sMapLbl = caption(sFreeBox, "", accent());
+    accReg(sMapLbl, ACC_TEXT);
+    lv_label_set_long_mode(sMapLbl, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(sMapLbl, CW - 32);
+    lv_obj_set_pos(sMapLbl, 16, 68);
 
-    sSdLbl = caption(sFreeBox, "", accent());
-    accReg(sSdLbl, ACC_TEXT);
-    lv_obj_set_pos(sSdLbl, 16, 68);
-
-    lv_obj_t* planBtn = box(sFreeBox, 224, 50);
-    lv_obj_set_pos(planBtn, 16, 102);
-    lv_obj_set_style_radius(planBtn, 16, 0);
-    lv_obj_set_style_bg_color(planBtn, accent(), 0);
-    lv_obj_set_style_bg_opa(planBtn, LV_OPA_COVER, 0);
-    accReg(planBtn, ACC_BG);
-    lv_obj_add_flag(planBtn, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(planBtn, [](lv_event_t*) {
-        haptic(HAPTIC_CLICK);
-        populateSearchList();
-        setHidden(sSearchModal, false);
+    // ------------------------------------------------------------ guidance card
+    sNavBox = card(p, CW, INFO_H);
+    lv_obj_set_pos(sNavBox, M, INFO_Y);
+    sTurnIcon = label(sNavBox, F.icoL, accent(), ICO_NAVIGATION);
+    accReg(sTurnIcon, ACC_TEXT);
+    lv_obj_set_pos(sTurnIcon, 14, 12);
+    sTurnCmd = label(sNavBox, F.body, cText(), "");
+    lv_label_set_long_mode(sTurnCmd, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(sTurnCmd, CW - 170);
+    lv_obj_set_pos(sTurnCmd, 64, 10);
+    sTurnDest = caption(sNavBox, "", accent());
+    accReg(sTurnDest, ACC_TEXT);
+    lv_label_set_long_mode(sTurnDest, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(sTurnDest, CW - 170);
+    lv_obj_set_pos(sTurnDest, 64, 44);
+    sTurnMeta = caption(sNavBox, "", cText2());
+    lv_obj_set_pos(sTurnMeta, 16, 74);
+    sMeshSendBtn = secondaryButton(sNavBox, 92, 40, ICO_PODCASTS, "Mesh");
+    lv_obj_align(sMeshSendBtn, LV_ALIGN_TOP_RIGHT, -12, 12);
+    lv_obj_add_event_cb(sMeshSendBtn, [](lv_event_t*) {
+        NavStatus st = NavEngine::status();
+        bool ok = RadioLoRa::sendWaypoint(st.destName, st.destLat, st.destLon);
+        haptic(ok ? HAPTIC_SUCCESS : HAPTIC_TICK);
+        DisplayEngine::showToast("Mesh", ok ? "Ziel als Wegpunkt gesendet" : "LoRa ist aus", 2200, ICO_PODCASTS);
     }, LV_EVENT_CLICKED, NULL);
-    lv_obj_t* planLbl = label(planBtn, F.small, cBg(), "ROUTENPLANUNG (DE)");
-    lv_obj_center(planLbl);
+    setHidden(sNavBox, true);
 
-    lv_obj_t* meshBtn = box(sFreeBox, 118, 50);
-    lv_obj_set_pos(meshBtn, 246, 102);
-    lv_obj_set_style_radius(meshBtn, 16, 0);
-    lv_obj_set_style_bg_color(meshBtn, cSurf2(), 0);
-    lv_obj_set_style_bg_opa(meshBtn, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(meshBtn, 2, 0);
-    lv_obj_set_style_border_color(meshBtn, lv_color_hex(0xBF5AF2), 0);
-    lv_obj_add_flag(meshBtn, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(meshBtn, [](lv_event_t*) {
-        sActiveFilter = 1; // MESH tab
-        haptic(HAPTIC_CLICK);
-        populateSearchList();
-        setHidden(sSearchModal, false);
+    // ------------------------------------------------------------ action bar
+    sDestBtn = primaryButton(p, 84, BAR_H, nullptr, "Ziel");
+    lv_obj_set_pos(sDestBtn, M, BAR_Y);
+    lv_obj_add_event_cb(sDestBtn, [](lv_event_t*) {
+        haptic(HAPTIC_TICK);
+        if (NavEngine::isNavigating() || NavEngine::isRoutingBusy()) {
+            NavEngine::stopNavigation();
+            sMapNeedsRedraw = true;
+            refresh(true);
+        } else {
+            openSearch(sActiveFilter == 1 ? 0 : sActiveFilter);
+        }
     }, LV_EVENT_CLICKED, NULL);
-    lv_obj_t* meshLbl = label(meshBtn, F.small, lv_color_hex(0xBF5AF2), "MESH NAV");
-    lv_obj_center(meshLbl);
 
-    // =========================================================================
-    // Modal 1: Germany & Stuttgart Place + LoRa/Meshtastic Node Selector
-    // =========================================================================
+    static const char* MODES[3] = {"AUTO", "FUSS", "MESH"};
+    sModeTabs = tabBar(p, M + 92, BAR_Y + 10, 138, MODES, 3, 0, [](lv_event_t* e) {
+        NavMode m = (NavMode)(int)(intptr_t)lv_event_get_user_data(e);
+        NavEngine::setMode(m);
+        sMapNeedsRedraw = true;
+        haptic(HAPTIC_TICK);
+        if (m == NAV_MODE_MESH && !NavEngine::isNavigating()) openSearch(1);
+        refresh(true);
+    });
+
+    sRecBtn = secondaryButton(p, 58, BAR_H, nullptr, "GPX");
+    lv_obj_set_pos(sRecBtn, M + 238, BAR_Y);
+    lv_obj_add_event_cb(sRecBtn, [](lv_event_t*) {
+        bool rec = !NavEngine::isTrackRecording();
+        NavEngine::setTrackRecording(rec);
+        haptic(HAPTIC_TICK);
+        DisplayEngine::showToast("GPX-Aufzeichnung", rec ? "Gestartet (nur mit GPS-Fix)" : "Gestoppt", 2000, ICO_ROUTE);
+        refresh(true);
+    }, LV_EVENT_CLICKED, NULL);
+
+    sWpBtn = secondaryButton(p, 58, BAR_H, ICO_FLAG, nullptr);
+    lv_obj_set_pos(sWpBtn, M + 304, BAR_Y);
+    lv_obj_add_event_cb(sWpBtn, [](lv_event_t*) {
+        bool ok = NavEngine::markWaypoint("WP");
+        haptic(ok ? HAPTIC_SUCCESS : HAPTIC_TICK);
+        DisplayEngine::showToast("Wegpunkt", ok ? "Position gespeichert" : "Keine Position bekannt", 2000, ICO_FLAG);
+        sMapNeedsRedraw = true;
+        refresh(true);
+    }, LV_EVENT_CLICKED, NULL);
+
+    // ------------------------------------------------------------ search modal
     sSearchModal = box(p, SCR_W, SCR_H);
     lv_obj_set_pos(sSearchModal, 0, 0);
     lv_obj_set_style_bg_color(sSearchModal, cBg(), 0);
     lv_obj_set_style_bg_opa(sSearchModal, LV_OPA_COVER, 0);
-
-    lv_obj_t* stitle = label(sSearchModal, F.title, cText(), "ZIEL & ORTSUCHE");
-    lv_obj_set_pos(stitle, M, 20);
-
-    lv_obj_t* closeBtn = box(sSearchModal, 78, 34);
-    lv_obj_align(closeBtn, LV_ALIGN_TOP_RIGHT, -M, 18);
-    lv_obj_set_style_radius(closeBtn, 14, 0);
-    lv_obj_set_style_bg_color(closeBtn, cSurf2(), 0);
-    lv_obj_set_style_bg_opa(closeBtn, LV_OPA_COVER, 0);
-    lv_obj_add_flag(closeBtn, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(closeBtn, [](lv_event_t*) {
-        setHidden(sSearchModal, true);
-        haptic(HAPTIC_CLICK);
-    }, LV_EVENT_CLICKED, NULL);
-    lv_obj_t* closeTxt = label(closeBtn, F.small, cCrit(), "ZURÜCK");
-    lv_obj_center(closeTxt);
-
-    const int fw = (CW - 12) / 7;
-    for (int i = 0; i < 7; i++) {
-        lv_obj_t* fb = box(sSearchModal, fw - 2, 34);
-        lv_obj_set_pos(fb, M + i * fw, 64);
-        lv_obj_set_style_radius(fb, 10, 0);
-        lv_obj_set_style_bg_color(fb, i == 0 ? accent() : cSurf2(), 0);
-        lv_obj_set_style_bg_opa(fb, LV_OPA_COVER, 0);
-        lv_obj_add_flag(fb, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_event_cb(fb, [](lv_event_t* e) {
-            sActiveFilter = (int)(intptr_t)lv_event_get_user_data(e);
-            haptic(HAPTIC_CLICK);
-            populateSearchList();
-        }, LV_EVENT_CLICKED, (void*)(intptr_t)i);
-        lv_obj_t* fl = caption(fb, FILTER_LABELS[i], cText());
-        lv_obj_center(fl);
-        sFilterBtns[i] = fb;
-    }
-
+    lv_obj_add_flag(sSearchModal, LV_OBJ_FLAG_CLICKABLE);
+    title(sSearchModal, "ZIEL");
+    lv_obj_t* closeBtn = secondaryButton(sSearchModal, 92, 36, ICO_CLOSE, "Zurück");
+    lv_obj_align(closeBtn, LV_ALIGN_TOP_RIGHT, -M, 20);
+    lv_obj_add_event_cb(closeBtn, [](lv_event_t*) { setHidden(sSearchModal, true); haptic(HAPTIC_TICK); }, LV_EVENT_CLICKED, NULL);
+    sFilterTabs = tabBar(sSearchModal, M, CONTENT_Y, CW, FILTER_LABELS, 7, 0, [](lv_event_t* e) {
+        sActiveFilter = (int)(intptr_t)lv_event_get_user_data(e);
+        haptic(HAPTIC_TICK);
+        populateSearchList();
+    });
     sSearchList = lv_obj_create(sSearchModal);
-    lv_obj_set_size(sSearchList, CW, 376);
-    lv_obj_set_pos(sSearchList, M, 108);
+    lv_obj_set_size(sSearchList, CW, SCR_H - CONTENT_Y - 44);
+    lv_obj_set_pos(sSearchList, M, CONTENT_Y + 40);
     lv_obj_set_style_bg_opa(sSearchList, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(sSearchList, 0, 0);
     lv_obj_set_style_pad_all(sSearchList, 0, 0);
+    lv_obj_set_style_pad_bottom(sSearchList, 24, 0);
     lv_obj_set_scrollbar_mode(sSearchList, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_scroll_dir(sSearchList, LV_DIR_VER);
     lv_obj_set_flex_flow(sSearchList, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(sSearchList, 8, 0);
-
     setHidden(sSearchModal, true);
 
-    // =========================================================================
-    // Modal 2: GNSS Satellite Skyplot (Polar Radar + SNR Signal Bars)
-    // =========================================================================
+    // ------------------------------------------------------------ skyplot modal
     sSkyModal = box(p, SCR_W, SCR_H);
     lv_obj_set_pos(sSkyModal, 0, 0);
     lv_obj_set_style_bg_color(sSkyModal, cBg(), 0);
     lv_obj_set_style_bg_opa(sSkyModal, LV_OPA_COVER, 0);
+    lv_obj_add_flag(sSkyModal, LV_OBJ_FLAG_CLICKABLE);
+    title(sSkyModal, "SATELLITEN");
+    lv_obj_t* skyClose = secondaryButton(sSkyModal, 92, 36, ICO_CLOSE, "Zurück");
+    lv_obj_align(skyClose, LV_ALIGN_TOP_RIGHT, -M, 20);
+    lv_obj_add_event_cb(skyClose, [](lv_event_t*) { setHidden(sSkyModal, true); haptic(HAPTIC_TICK); }, LV_EVENT_CLICKED, NULL);
+    sSkySub = caption(sSkyModal, "", accent());
+    accReg(sSkySub, ACC_TEXT);
+    lv_obj_set_pos(sSkySub, M, CONTENT_Y);
 
-    lv_obj_t* skyTitle = label(sSkyModal, F.title, cText(), "GNSS · SKYPLOT");
-    lv_obj_set_pos(skyTitle, M, 20);
-
-    lv_obj_t* skyClose = box(sSkyModal, 78, 34);
-    lv_obj_align(skyClose, LV_ALIGN_TOP_RIGHT, -M, 18);
-    lv_obj_set_style_radius(skyClose, 14, 0);
-    lv_obj_set_style_bg_color(skyClose, cSurf2(), 0);
-    lv_obj_set_style_bg_opa(skyClose, LV_OPA_COVER, 0);
-    lv_obj_add_flag(skyClose, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(skyClose, [](lv_event_t*) {
-        setHidden(sSkyModal, true);
-        haptic(HAPTIC_CLICK);
-    }, LV_EVENT_CLICKED, NULL);
-    lv_obj_center(label(skyClose, F.small, cCrit(), "ZURÜCK"));
-
-    sSkySub = caption(sSkyModal, "GNSS: 0 Sats in Sicht", accent());
-    lv_obj_set_pos(sSkySub, M, 60);
-
-    // Polar Skyplot Radar Card (left side 208x220)
     lv_obj_t* radarCard = card(sSkyModal, 212, 224);
-    lv_obj_set_pos(radarCard, M, 86);
+    lv_obj_set_pos(radarCard, M, CONTENT_Y + 28);
     sSkyRing = box(radarCard, 200, 200);
     lv_obj_center(sSkyRing);
     lv_obj_set_style_radius(sSkyRing, 100, 0);
     lv_obj_set_style_border_width(sSkyRing, 2, 0);
     lv_obj_set_style_border_color(sSkyRing, cSurf2(), 0);
-
     lv_obj_t* midRing = box(sSkyRing, 116, 116);
     lv_obj_center(midRing);
     lv_obj_set_style_radius(midRing, 58, 0);
     lv_obj_set_style_border_width(midRing, 1, 0);
     lv_obj_set_style_border_color(midRing, cSurf2(), 0);
-
     lv_obj_align(caption(sSkyRing, "N", cCrit()), LV_ALIGN_TOP_MID, 0, 4);
     lv_obj_align(caption(sSkyRing, "S", cText2()), LV_ALIGN_BOTTOM_MID, 0, -4);
     lv_obj_align(caption(sSkyRing, "O", cText2()), LV_ALIGN_RIGHT_MID, -6, 0);
     lv_obj_align(caption(sSkyRing, "W", cText2()), LV_ALIGN_LEFT_MID, 6, 0);
-
     for (int i = 0; i < 16; i++) {
         lv_obj_t* d = box(sSkyRing, 22, 22);
         lv_obj_set_style_radius(d, 11, 0);
         lv_obj_set_style_bg_color(d, cOk(), 0);
         lv_obj_set_style_bg_opa(d, LV_OPA_COVER, 0);
-        lv_obj_t* pl = caption(d, "1", cBg());
-        lv_obj_center(pl);
+        lv_obj_center(caption(d, "1", cBg()));
         setHidden(d, true);
         sSatDots[i] = d;
     }
+    lv_obj_t* legend = card(sSkyModal, CW - 212 - 8, 224);
+    lv_obj_set_pos(legend, M + 220, CONTENT_Y + 28);
+    lv_obj_t* lg = caption(legend, "GRÜN > 25 dB\nAKZENT > 15 dB\nORANGE schwach\n\nAUSSEN = HORIZONT\nMITTE = ZENIT", cText2());
+    lv_obj_set_pos(lg, 12, 12);
 
-    // SNR Signal Bar Card (bottom 374x168)
-    lv_obj_t* snrCard = card(sSkyModal, CW, 168);
-    lv_obj_set_pos(snrCard, M, 318);
+    lv_obj_t* snrCard = card(sSkyModal, CW, 150);
+    lv_obj_set_pos(snrCard, M, CONTENT_Y + 260);
     lv_obj_t* snrHdr = caption(snrCard, "SIGNALSTÄRKE (C/N0 dB-Hz)", cText2());
     lv_obj_set_pos(snrHdr, 14, 8);
-
     for (int i = 0; i < 8; i++) {
         int bx = 18 + i * 44;
-        lv_obj_t* b = box(snrCard, 26, 10);
-        lv_obj_set_pos(b, bx, 96);
-        lv_obj_set_style_radius(b, 5, 0);
-        lv_obj_set_style_bg_color(b, accent(), 0);
-        lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
-        sSatSnrBars[i] = b;
-
-        lv_obj_t* l = caption(snrCard, "--", cText2());
-        lv_obj_set_pos(l, bx - 2, 114);
-        sSatSnrLbls[i] = l;
+        lv_obj_t* bar = box(snrCard, 26, 10);
+        lv_obj_set_pos(bar, bx, 96);
+        lv_obj_set_style_radius(bar, 5, 0);
+        lv_obj_set_style_bg_color(bar, accent(), 0);
+        lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+        sSatSnrBars[i] = bar;
+        sSatSnrLbls[i] = caption(snrCard, "--", cText2());
+        lv_obj_set_pos(sSatSnrLbls[i], bx - 2, 112);
     }
-
     setHidden(sSkyModal, true);
 
     nav::PageDef d;
@@ -777,16 +728,20 @@ void buildPosition(lv_obj_t* scr) {
     d.refresh = refresh;
     d.refreshMs = 1000;
     d.ttlMs = 0;
+    d.allowHorizontalGesture = allowHorizontal;
     d.onShow = [] {
-        GpsManager::setLive(true);
+        GpsManager::setLive(true);                 // PowerManager stops it on sleep; we re-arm on show
         sManualPan = false;
         sAutoZoom = true;
         sMapNeedsRedraw = true;
+        sLastRefreshMs = millis();
     };
     d.onHide = [] {
         GpsManager::setLive(false);
         if (sSearchModal) setHidden(sSearchModal, true);
         if (sSkyModal) setHidden(sSkyModal, true);
+        nav::setRefreshInterval(nav::PG_POSITION, 1000);
+        sDragging = false;
     };
     nav::registerPage(nav::PG_POSITION, d);
 }

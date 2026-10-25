@@ -21,7 +21,10 @@ void buildFaces(lv_obj_t* scr);
 void buildSettings(lv_obj_t* scr);
 void buildAppMedia(lv_obj_t* scr);
 
-// watch face helpers used by the engine
+// watch face helpers used by the engine and the face picker
 void faceNext();
+void faceSelect(int idx);              // stores the choice and shows a toast
 bool faceShowing();
+const char* faceName(int idx);         // "Modular", "Bauhaus", ...
+const char* faceDescription(int idx);  // one-line German description
 }

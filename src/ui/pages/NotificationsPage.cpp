@@ -9,31 +9,40 @@ using namespace ui;
 
 namespace pages {
 
-static lv_obj_t *nList, *nEmpty, *nClear, *nCount;
+static lv_obj_t *nList, *nEmpty, *nClear, *nRead, *nCount;
 static uint32_t nRev = 0;
+static uint8_t nBuiltCount = 0;
+static time_t nBuiltAt = 0;
 
 static void rebuild() {
     lv_obj_clean(nList);
     uint8_t n = NotificationStore::count();
+    uint8_t unread = NotificationStore::unread();
     setHidden(nEmpty, n != 0);
     setHidden(nClear, n == 0);
-    char b[32];
-    snprintf(b, sizeof(b), n == 1 ? "1 NOTIFICATION" : "%u NOTIFICATIONS", n);
-    setText(nCount, n ? b : "");
+    setHidden(nRead, unread == 0);
+    char b[40];
+    if (n == 0) b[0] = 0;
+    else if (unread) snprintf(b, sizeof(b), "%u MITTEILUNGEN · %u NEU", (unsigned)n, (unsigned)unread);
+    else if (n == 1) snprintf(b, sizeof(b), "1 MITTEILUNG");
+    else snprintf(b, sizeof(b), "%u MITTEILUNGEN", (unsigned)n);
+    setText(nCount, b);
     for (uint8_t i = 0; i < n; i++) {
         NotificationItem it;
         if (!NotificationStore::get(i, it)) break;
         lv_obj_t* c = card(nList, CW, LV_SIZE_CONTENT);
+        lv_obj_set_style_radius(c, R_TILE, 0);
         lv_obj_set_style_pad_all(c, 16, 0);
         lv_obj_set_style_pad_left(c, 62, 0);
-        lv_obj_t* ic = label(c, F.icoS, accent(), it.icon[0] ? it.icon : ICO_NOTIFICATIONS);
+        if (it.unread) lv_obj_set_style_border_color(c, accent(), 0);   // transient: no accReg (deleted on rebuild)
+        lv_obj_t* ic = label(c, F.icoS, it.unread ? accent() : cText3(), it.icon[0] ? it.icon : ICO_NOTIFICATIONS);
         lv_obj_set_pos(ic, -44, 2);
         lv_obj_t* t = label(c, F.body, cText(), it.title);
         lv_label_set_long_mode(t, LV_LABEL_LONG_DOT);
-        lv_obj_set_width(t, CW - 62 - 16 - 70);
+        lv_obj_set_width(t, CW - 62 - 16 - 90);
         lv_obj_set_pos(t, 0, -4);
         char a[24];
-        ago(a, sizeof(a), it.epoch);
+        ago(a, sizeof(a), (time_t)it.epoch);
         lv_obj_t* tm = caption(c, a, cText3());
         lv_obj_align(tm, LV_ALIGN_TOP_RIGHT, 0, 2);
         if (it.body[0]) {
@@ -44,10 +53,14 @@ static void rebuild() {
         }
     }
     nRev = NotificationStore::revision();
+    nBuiltCount = n;
+    nBuiltAt = time(NULL);
 }
 
 static void refresh(bool force) {
-    if (force || NotificationStore::revision() != nRev) rebuild();
+    // relative timestamps age: rebuild once a minute while there are entries
+    bool stale = nBuiltCount && (time(NULL) - nBuiltAt >= 60);
+    if (force || stale || NotificationStore::revision() != nRev) rebuild();
 }
 
 static bool allowGesture(int, int, int) { return lv_obj_get_scroll_y(nList) <= 0; }
@@ -59,27 +72,32 @@ void buildNotifications(lv_obj_t* scr) {
     lv_obj_set_style_radius(grab, 3, 0);
     lv_obj_set_style_bg_opa(grab, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(grab, cText3(), 0);
-    lv_obj_align(grab, LV_ALIGN_TOP_MID, 0, 10);
+    lv_obj_align(grab, LV_ALIGN_TOP_MID, 0, 8);
 
-    title(p, "NOTIFICATIONS");
+    title(p, "MITTEILUNGEN");
     nCount = caption(p, "", cText3());
-    lv_obj_set_pos(nCount, M, 80);
+    lv_obj_set_pos(nCount, M, CONTENT_Y);
 
-    nClear = lv_button_create(p);
-    lv_obj_set_size(nClear, 96, 34);
-    lv_obj_align(nClear, LV_ALIGN_TOP_RIGHT, -M, 26);
-    lv_obj_set_style_radius(nClear, 17, 0);
-    lv_obj_set_style_shadow_width(nClear, 0, 0);
-    lv_obj_set_style_bg_color(nClear, cSurf2(), 0);
-    lv_obj_t* cl = caption(nClear, "CLEAR", cText2());
-    lv_obj_center(cl);
-    lv_obj_add_event_cb(nClear, [](lv_event_t*) {
-        NotificationStore::clear();
-        haptic(HAPTIC_CLICK);
+    nRead = secondaryButton(p, 118, 34, ICO_CHECK, "Alle gelesen");
+    lv_obj_align(nRead, LV_ALIGN_TOP_RIGHT, -M, 22);
+    lv_obj_add_event_cb(nRead, [](lv_event_t*) {
+        NotificationStore::markAllRead();
+        haptic(HAPTIC_TICK);
+        nav::markDirty(nav::PG_FACE);
+        rebuild();
     }, LV_EVENT_CLICKED, NULL);
 
-    nList = box(p, SCR_W, SCR_H - 108);
-    lv_obj_set_pos(nList, 0, 108);
+    nClear = secondaryButton(p, 90, 30, ICO_DELETE, "Leeren");
+    lv_obj_align(nClear, LV_ALIGN_TOP_RIGHT, -M, CONTENT_Y - 6);
+    lv_obj_add_event_cb(nClear, [](lv_event_t*) {
+        NotificationStore::clear();
+        haptic(HAPTIC_TICK);
+        nav::markDirty(nav::PG_FACE);
+        rebuild();
+    }, LV_EVENT_CLICKED, NULL);
+
+    nList = box(p, SCR_W, SCR_H - (CONTENT_Y + 32));
+    lv_obj_set_pos(nList, 0, CONTENT_Y + 32);
     lv_obj_add_flag(nList, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(nList, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(nList, LV_SCROLLBAR_MODE_OFF);
@@ -88,21 +106,15 @@ void buildNotifications(lv_obj_t* scr) {
     lv_obj_set_style_pad_row(nList, 10, 0);
     lv_obj_set_style_pad_bottom(nList, 24, 0);
 
-    nEmpty = box(p, SCR_W, 200);
+    nEmpty = emptyState(p, ICO_NOTIFICATIONS_OFF, "Alles gelesen", "KEINE MITTEILUNGEN");
     lv_obj_align(nEmpty, LV_ALIGN_CENTER, 0, 30);
-    lv_obj_t* ei = label(nEmpty, F.icoXL, cText3(), ICO_NOTIFICATIONS_OFF);
-    lv_obj_align(ei, LV_ALIGN_TOP_MID, 0, 20);
-    lv_obj_t* et = label(nEmpty, F.body, cText2(), "You're all caught up");
-    lv_obj_align(et, LV_ALIGN_TOP_MID, 0, 80);
-    lv_obj_t* es = caption(nEmpty, "NO NOTIFICATIONS", cText3());
-    lv_obj_align(es, LV_ALIGN_TOP_MID, 0, 116);
 
     nav::PageDef d;
     d.root = p;
     d.refresh = refresh;
     d.refreshMs = 1000;
     d.ttlMs = 60000;
-    d.onShow = [] { NotificationStore::markAllRead(); };
+    d.onShow = [] { NotificationStore::markAllRead(); nav::markDirty(nav::PG_FACE); };
     d.allowSheetGesture = allowGesture;
     nav::registerPage(nav::PG_NOTIFS, d);
     rebuild();

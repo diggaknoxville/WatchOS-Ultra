@@ -6,9 +6,13 @@
 #include <LilyGoLib.h>
 #include <esp_heap_caps.h>
 
-// Strip height of each render buffer. 2 x (410 x 32 x 2 B) = 51 KB internal SRAM,
-// leaving plenty of internal DMA heap for WiFi AP + NimBLE + SD SPI simultaneously.
-#define STRIP_ROWS 32
+// Strip height of each render buffer. 2 x (410 x 48 x 2 B) = 77 KB internal SRAM;
+// if two contiguous DMA-capable chunks of that size are not available (WiFi AP
+// + NimBLE + SD SPI fragment the internal heap) we fall back to 32 rows (51 KB).
+#define STRIP_ROWS          48
+#define STRIP_ROWS_FALLBACK 32
+
+static int sStripRows = STRIP_ROWS;
 
 // flush instrumentation shared with the UI perf monitor (defined in LV_Helper_v9.cpp)
 extern volatile uint32_t g_kronosFlushUs;
@@ -134,16 +138,20 @@ bool KronosDisplay::begin() {
     if (!b1 || !b2) {
         if (b1) heap_caps_free(b1);
         if (b2) heap_caps_free(b2);
-        // Fallback to 32 rows if 48 rows contiguous chunk is unavailable
-        stripRows = 32;
+        // Fallback: smaller strips when two 48-row contiguous chunks are unavailable
+        stripRows = STRIP_ROWS_FALLBACK;
         bytes = (size_t)W * stripRows * sizeof(uint16_t);
         b1 = heap_caps_aligned_alloc(4, bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
         b2 = heap_caps_aligned_alloc(4, bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
         if (!b1 || !b2) {
+            if (b1) heap_caps_free(b1);
+            if (b2) heap_caps_free(b2);
             Serial.println("[DISP] internal DMA buffers unavailable");
             return false;
         }
+        Serial.printf("[DISP] 48-row strips unavailable, using %u rows\n", (unsigned)stripRows);
     }
+    sStripRows = stripRows;
 
     sDisp = lv_display_create(W, H);
     lv_display_set_color_format(sDisp, LV_COLOR_FORMAT_RGB565);
@@ -169,3 +177,4 @@ bool KronosDisplay::begin() {
 
 lv_display_t* KronosDisplay::display() { return sDisp; }
 lv_indev_t* KronosDisplay::touch() { return sTouch; }
+int KronosDisplay::stripRows() { return sStripRows; }

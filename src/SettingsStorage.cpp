@@ -1,4 +1,5 @@
 #include "SettingsStorage.h"
+#include "RtcManager.h"      // MIN_VALID_EPOCH
 #include <nvs_flash.h>
 
 Preferences SettingsStorage::prefs;
@@ -6,14 +7,37 @@ SystemSettings SettingsStorage::settings;
 static SystemSettings sCommitted;
 static volatile bool sDirty = false;
 static volatile unsigned long sDirtyAt = 0;
+static bool sNvsOk = false;
+static SemaphoreHandle_t sFlushMutex = nullptr;
+
+static const char* DEFAULT_TZ_POSIX = "CET-1CEST,M3.5.0,M10.5.0/3";
+static const char* DEFAULT_TITLE = "WATCHOS ULTRA";
+
+static bool lockPrefs(uint32_t timeoutMs) {
+    if (!sFlushMutex) return true;
+    return xSemaphoreTake(sFlushMutex, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
+}
+static void unlockPrefs() {
+    if (sFlushMutex) xSemaphoreGive(sFlushMutex);
+}
 
 void SettingsStorage::init() {
+    if (!sFlushMutex) sFlushMutex = xSemaphoreCreateMutex();
+
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         nvs_flash_erase();
-        nvs_flash_init();
+        err = nvs_flash_init();
     }
-    prefs.begin("vortex_sys", false);
+    if (err != ESP_OK) {
+        Serial.printf("[NVS] nvs_flash_init failed: %d\n", (int)err);
+    }
+    sNvsOk = prefs.begin("vortex_sys", false);
+    if (!sNvsOk) {
+        Serial.println("[NVS] settings namespace unavailable - running on defaults, nothing persisted");
+        resetDefaults();
+        return;
+    }
     if (!prefs.isKey("init_flag")) {
         resetDefaults();
     } else {
@@ -32,15 +56,19 @@ void SettingsStorage::init() {
         settings.loraBeaconEnabled = prefs.getBool("lora_bcn", false);
         settings.timezoneOffsetSec = prefs.getInt("tz_sec", 7200); // Default UTC+2
         settings.dailyStepGoal = prefs.getUInt("step_goal", 10000);
-        String tzp = prefs.getString("tz_posix", "CET-1CEST,M3.5.0,M10.5.0/3");
+        String tzp = prefs.getString("tz_posix", DEFAULT_TZ_POSIX);
         strncpy(settings.tzPosix, tzp.c_str(), sizeof(settings.tzPosix) - 1);
         settings.tzPosix[sizeof(settings.tzPosix) - 1] = '\0';
-        String title = prefs.getString("title", "KRONOS ULTRA");
+        String title = prefs.getString("title", DEFAULT_TITLE);
         strncpy(settings.customTitle, title.c_str(), sizeof(settings.customTitle) - 1);
         settings.customTitle[sizeof(settings.customTitle) - 1] = '\0';
+        if (settings.watchfaceIndex >= FACE_COUNT) settings.watchfaceIndex = FACE_MODULAR;
+        if (settings.brightness < 10) settings.brightness = 10;
         sCommitted = settings;
     }
 }
+
+bool SettingsStorage::isNvsReady() { return sNvsOk; }
 
 SystemSettings& SettingsStorage::get() {
     return settings;
@@ -54,6 +82,8 @@ void SettingsStorage::save() {
 
 void SettingsStorage::flushNow() {
     sDirty = false;
+    if (!sNvsOk) return;
+    if (!lockPrefs(200)) { sDirty = true; return; }      // retried by loop()
     if (settings.watchfaceIndex != sCommitted.watchfaceIndex) prefs.putUChar("wf_idx", settings.watchfaceIndex);
     if (settings.accentColor != sCommitted.accentColor)       prefs.putUShort("accent", settings.accentColor);
     if (settings.brightness != sCommitted.brightness)         prefs.putUChar("bright", settings.brightness);
@@ -72,6 +102,7 @@ void SettingsStorage::flushNow() {
     if (strcmp(settings.customTitle, sCommitted.customTitle) != 0) prefs.putString("title", settings.customTitle);
     if (strcmp(settings.tzPosix, sCommitted.tzPosix) != 0)    prefs.putString("tz_posix", settings.tzPosix);
     sCommitted = settings;
+    unlockPrefs();
 }
 
 void SettingsStorage::loop(unsigned long now) {
@@ -97,29 +128,50 @@ void SettingsStorage::resetDefaults() {
     settings.loraBeaconEnabled = false;
     settings.timezoneOffsetSec = 7200;
     settings.dailyStepGoal = 10000;
-    strncpy(settings.customTitle, "KRONOS ULTRA", sizeof(settings.customTitle));
-    strncpy(settings.tzPosix, "CET-1CEST,M3.5.0,M10.5.0/3", sizeof(settings.tzPosix));
+    strncpy(settings.customTitle, DEFAULT_TITLE, sizeof(settings.customTitle) - 1);
+    settings.customTitle[sizeof(settings.customTitle) - 1] = '\0';
+    strncpy(settings.tzPosix, DEFAULT_TZ_POSIX, sizeof(settings.tzPosix) - 1);
+    settings.tzPosix[sizeof(settings.tzPosix) - 1] = '\0';
 
-    prefs.putBool("init_flag", true);
+    if (!sNvsOk) { sCommitted = settings; return; }
+    if (lockPrefs(200)) {
+        prefs.putBool("init_flag", true);
+        unlockPrefs();
+    }
     flushNow();
 }
 
 uint32_t SettingsStorage::getLifetimeSteps() {
-    return prefs.getUInt("life_steps", 0);
+    if (!sNvsOk) return 0;
+    uint32_t v = 0;
+    if (lockPrefs(100)) { v = prefs.getUInt("life_steps", 0); unlockPrefs(); }
+    return v;
 }
 
 void SettingsStorage::addSteps(uint32_t steps) {
-    uint32_t cur = getLifetimeSteps();
-    prefs.putUInt("life_steps", cur + steps);
+    if (!sNvsOk || steps == 0) return;
+    if (lockPrefs(100)) {
+        uint32_t cur = prefs.getUInt("life_steps", 0);
+        prefs.putUInt("life_steps", cur + steps);
+        unlockPrefs();
+    }
 }
 
 void SettingsStorage::saveLastKnownTime(time_t epoch) {
-    if (epoch > 1700000000) {
-        prefs.putUInt("last_epoch", (uint32_t)epoch);
+    if (!sNvsOk || epoch < RtcManager::MIN_VALID_EPOCH) return;
+    if (lockPrefs(100)) {
+        // only rewrite if it moved by at least a minute (either direction): NVS wear
+        uint32_t cur = prefs.getUInt("last_epoch", 0);
+        uint32_t e = (uint32_t)epoch;
+        uint32_t diff = (e > cur) ? (e - cur) : (cur - e);
+        if (diff >= 60) prefs.putUInt("last_epoch", e);
+        unlockPrefs();
     }
 }
 
 time_t SettingsStorage::getLastKnownTime() {
-    return (time_t)prefs.getUInt("last_epoch", 1792753000);
+    if (!sNvsOk) return 0;
+    uint32_t v = 0;
+    if (lockPrefs(100)) { v = prefs.getUInt("last_epoch", 0); unlockPrefs(); }
+    return (time_t)v;
 }
-

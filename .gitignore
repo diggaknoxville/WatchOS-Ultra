@@ -19,6 +19,9 @@ __pycache__/
 .venv/
 venv/
 
+# --- Screenshots from watchctl.py tour / shot ---
+screenshots/
+
 # --- Temporary and backup files ---
 *.bak
 *.orig
@@ -33,4 +36,3 @@ venv/
 .DS_Store
 Thumbs.db
 Desktop.ini
-

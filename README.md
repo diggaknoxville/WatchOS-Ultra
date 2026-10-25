@@ -1,202 +1,191 @@
 # WatchOS Ultra
 
-Eine eigenständige, hochmoderne Firmware und Betriebssystem für die **LilyGO T-Watch Ultra** (ESP32-S3). WatchOS Ultra nutzt die gesamte Hardware der Next-Gen Smartwatch voll aus – angetrieben von einem hochauflösenden **CO5300 QSPI AMOLED-Display (410×502)**, **LVGL 9.4**, FreeRTOS Dual-Core Architektur, **Semtech SX1262 LoRa-Funk**, **u-blox Satelliten-GNSS**, **BHI260AP Bewegungssensorik**, **DRV2605 Haptik**, I²S-Audio und einem integrierten **Web Companion Dashboard**.
+Firmware für die **LilyGO T-Watch Ultra** (ESP32-S3) auf Basis von Arduino-ESP32 3.3 (pioarduino), LVGL 9.4 und FreeRTOS. Zwei Tasks (UI auf Core 1, Hintergrunddienste auf Core 0), ein RLE-Compositor für das 410×502-AMOLED, Meshtastic-kompatibler LoRa-Funk, Offline-Karten von der microSD-Karte, GNSS, Schrittzähler und ein WLAN-Portal zur Konfiguration.
 
-Analog zum Schwesterprojekt [WatchOS (für die T-Watch 2020)](https://github.com/diggaknoxville/WatchOS) bietet WatchOS Ultra maximale Performance, ein futuristisches Interface und tiefe Hardware-Integration bei vollständiger Daten- und Zeitpersistenz.
+Version 1.1.0, Codename „Kronos“. Interne Bezeichner (`Kronos*`-Klassen, `kronos_*`-NVS-Namespaces) sind aus Kompatibilitätsgründen mit gespeicherten Daten beibehalten.
 
 ---
 
 ## Inhalt
 
-- [Hardware & Spezifikationen](#hardware--spezifikationen)
-- [Systemarchitektur & Performance](#systemarchitektur--performance)
-- [Funktionsübersicht](#funktionsübersicht)
-  - [Zifferblätter & UI-Engine](#zifferblätter--ui-engine)
-  - [Gesten- & Kachel-Navigation](#gesten--kachel-navigation)
-  - [Sensorik & Fitness (BHI260AP)](#sensorik--fitness-bhi260ap)
-  - [LoRa Mesh-Messenger (SX1262)](#lora-mesh-messenger-sx1262)
-  - [Satellitennavigation & GPS-Zeit (u-blox)](#satellitennavigation--gps-zeit-u-blox)
-  - [Power-Management & AOD (AXP2101)](#power-management--aod-axp2101)
-  - [Audio-Engine & Haptik (DRV2605 + I²S)](#audio-engine--haptik-drv2605--i2s)
-  - [Phone Sync & Web Companion Portal](#phone-sync--web-companion-portal)
+- [Hardware](#hardware)
+- [Architektur](#architektur)
+- [Funktionen](#funktionen)
+- [Sicherheit](#sicherheit)
 - [Bauen & Flashen](#bauen--flashen)
-  - [PlatformIO](#platformio)
-  - [Build-Skript (`build_firmware.sh`)](#build-skript-build_firmwaresh)
-  - [Host-Tool (`watchctl.py`)](#host-tool-watchctlpy)
+- [Werkzeuge](#werkzeuge)
 - [Projektstruktur](#projektstruktur)
-- [Pinbelegung & Hardware-Referenz](#pinbelegung--hardware-referenz)
-- [Lizenz & Credits](#lizenz--credits)
+- [Bekannte Einschränkungen](#bekannte-einschränkungen)
+- [Lizenz](#lizenz)
 
 ---
 
-## Hardware & Spezifikationen
+## Hardware
 
-Zielplattform ist die **LilyGO T-Watch Ultra** (inkl. SX1262 LoRa- und GNSS-Subsystem):
+Alle Pins stammen aus der Board-Variante `lilygo_twatch_ultra` des pioarduino Arduino-Cores (`pins_arduino.h`); die Firmware definiert keine eigenen Pins. Die Angaben unten sind daraus übernommen, wo sie dort eindeutig stehen.
 
-| Komponente | Baustein / Spezifikation | Anbindung / Bus |
+| Komponente | Baustein | Anbindung |
 | :--- | :--- | :--- |
-| **SoC** | ESP32-S3 (Dual-Core Xtensa LX7 @ 240 MHz) | 16 MB Flash, 8 MB Octal PSRAM |
-| **Display** | 1,75" CO5300 Ultra-HD AMOLED (410×502 px, 326 PPI) | High-Speed QSPI via `LilyGoLib` |
-| **Touchscreen** | FocalTech FT3168 kapazitiver Multi-Touch | I²C `Wire` (Interrupt-gesteuert) |
-| **Echtzeituhr (RTC)** | NXP PCF85063 (batteriegepuffert) | I²C `Wire` (GPIO 3 / GPIO 2) |
-| **Power Management** | X-Powers AXP2101 PMU & Coulomb Counter | I²C `Wire` (Ladeüberwachung, DCDC/LDO) |
-| **Sensor-Hub (IMU)** | Bosch BHI260AP (6-Achsen Gyro/Accel + DSP) | I²C `Wire` (Pedometer, Wrist-Wake) |
-| **Haptischer Treiber** | TI DRV2605L LRA Linear Resonant Actuator | I²C `Wire` (ROM Haptic Effects) |
-| **LoRa-Transceiver** | Semtech SX1262 (868 MHz / 915 MHz) | High-Speed SPI + IRQ |
-| **Satelliten-GNSS** | u-blox GNSS-Modul (GPS/GLONASS/Galileo) | UART (Hardware Serial) |
-| **Audio-DAC** | Maxim MAX98357A Class-D I²S Verstärker | I²S TX |
-| **NFC / RFID** | STMicroelectronics ST25R3916 Transceiver | SPI |
-| **I/O-Expander** | NXP XL9555 16-Bit GPIO Expander | I²C `Wire` |
+| SoC | ESP32-S3, 2× Xtensa LX7 @ 240 MHz | 16 MB Flash, 8 MB PSRAM (QIO/QSPI) |
+| Display | CO5300 AMOLED 1,75", 410×502 px | QSPI: D0 38, D1 39, D2 42, D3 45, SCK 40, CS 41, RST 37, TE 6 |
+| Touch | CST9217 (kapazitiv) | I²C, INT GPIO 12, Reset über XL9555 |
+| I²C-Hauptbus | – | SDA GPIO 3, SCL GPIO 2 (PMU, RTC, IMU, Haptik, Touch, Expander) |
+| PMU | X-Powers AXP2101 (Lader, Fuel Gauge, Rails) | I²C |
+| RTC | NXP PCF85063 (batteriegepuffert, läuft in UTC) | I²C |
+| Sensor-Hub | Bosch BHI260AP (Schrittzähler, Aktivitätserkennung, Wrist-Tilt, Rotationsvektor) | I²C |
+| Haptik | TI DRV2605 (LRA) | I²C |
+| LoRa | Semtech SX1262, 868 MHz | SPI: CS 36, IRQ 14, RST 47, BUSY 48 (MISO/MOSI/SCK: siehe Board-Variante) |
+| GNSS | u-blox (NMEA) | UART: TX 43, RX 44 |
+| microSD | – | SPI (gemeinsam mit LoRa), CS 21 |
+| Audio | MAX98357A Class-D | I²S (Pins: siehe Board-Variante) |
+| NFC | ST25R3916 | SPI (siehe Board-Variante); wird von der Firmware nicht initialisiert (`NO_HW_NFC`) |
+| I/O-Expander | XL9555 | I²C |
 
 ---
 
-## Systemarchitektur & Performance
+## Architektur
 
-WatchOS Ultra setzt auf eine strikte **FreeRTOS Dual-Core Trennung**, um eine flüssige 60-FPS-Benutzeroberfläche ohne Ruckler bei gleichzeitiger Verarbeitung von Hintergrunddiensten zu gewährleisten:
-
-```mermaid
-graph TD
-    subgraph Core 1: UI Compositor & Display Task
-        LVGL[LVGL 9.4 Graphics Engine]
-        Compositor[AMOLED Framebuffer Compositor]
-        Navigator[Tile Navigator & Touch InDev]
-        Faces[Watchfaces & UI Pages]
-    end
-
-    subgraph Core 0: Background Services Task
-        PMU[PowerManager & AXP2101 Telemetry]
-        IMU[MotionHaptic BHI260AP Service]
-        GPS[GpsManager u-blox Service]
-        LoRa[RadioLoRa SX1262 Mesh Engine]
-        RTC[RtcManager PCF85063 Master Clock]
-        WebServer[Companion Web Server & REST API]
-    end
-
-    SharedNVS[(Non-Volatile Storage NVS)]
-    Hardware[[LilyGoLib Hardware Layer]]
-
-    Core 0 --> SharedNVS
-    Core 1 --> SharedNVS
-    Core 0 --> Hardware
-    Core 1 --> Hardware
+```
+Core 1  UiCompositor (28 KB Stack, Prio 2)        Core 0  BgServices (16 KB Stack, Prio 1)
+  LVGL 9.4 (einziger LVGL-Task)                      CompanionServer (WiFi-AP, HTTP, OTA)
+  Compositor: RLE-Surfaces, 60 fps, TE-Sync           BleCompanion (NimBLE, Payload-Queue)
+  Navigator: Gesten, Transitions                      PowerManager (AXP2101, Power-States)
+  DisplayEngine: Seiten, Overlays, Debug-Konsole      MotionHaptic (BHI260AP, DRV2605)
+                                                      GpsManager, RadioLoRa (SX1262, Meshtastic)
+                                                      NavEngine::loop (asynchrones Routing)
+                                                      SettingsStorage / NotificationStore (NVS-Flush)
+                                                      RtcManager::periodicMaintenance (stündlich)
+                                      AudioEngine: eigener Task mit Queue (Core 0)
 ```
 
-- **Core 1 (`UiCompositor`)**: Führt die LVGL 9.4 Render-Pipeline, Touch-Erkennung, Kachel-Transitionen und Animationen mit voller Priorität aus.
-- **Core 0 (`BgServices`)**: Kümmert sich asynchron im Hintergrund um Sensorauslesung, Satelliten-Fixes, LoRa-Paketempfang, Batterietelemetrie und den WiFi-Webserver.
-- **Speicherpersistenz**: Sämtliche Benutzereinstellungen (Zifferblatt, Helligkeit, Display-Timeouts, Alarme, Zeitzone, Schrittziele) werden direkt im ESP32 NVS gespeichert und überstehen Stromausfälle und Neustarts.
+- **UI-Task**: Erzeugt, ändert und löscht alle LVGL-Objekte. Seiten werden einmal gebaut und als RLE-komprimierte Surfaces gecacht; Übergänge rendert der Compositor aus diesen Surfaces und schiebt sie per QSPI-DMA (`pushColorsAsync`) TE-synchron auf das Panel. In AOD/SLEEP drosselt sich der Task auf 100 ms bzw. 250 ms.
+- **Hintergrund-Task**: Alle Funk-, Sensor- und Speicherdienste. Das Routing der NavEngine läuft asynchron hier (`startNavigation()` kehrt sofort zurück, `NavStatus::routingBusy` zeigt den Fortschritt). Einstellungen und Benachrichtigungen werden mit Dirty-Flags verzögert in den NVS geschrieben (Benachrichtigungen slotweise, höchstens alle 3 s).
+- **I²C**: Ein rekursiver Mutex (`PowerManager::lockI2C`) schützt den Bus zwischen beiden Cores, auch für den Verstärker-Rail des Audio-Tasks.
+- **Zeit**: Die PCF85063 ist Master-Uhr in UTC; Lokalzeit über POSIX-TZ-Regeln inkl. Sommerzeit. Die Zeit gilt nur als gültig, wenn die RTC beim Start plausibel war oder seit dem Start eine echte Quelle (Telefon, GNSS, USB) synchronisiert hat.
 
 ---
 
-## Funktionsübersicht
+## Funktionen
 
-### Zifferblätter & UI-Engine
+### Zifferblätter (14)
 
-Die UI basiert auf einem hochauflösenden Cyberpunk-Design mit sattem AMOLED-Schwarz (Zero-Power-Pixel):
+Modular, Chrono, Minimal, Wayfinder, Tourbillon, Casio, Bauhaus, Cyberpunk, Wortuhr (deutsch), Neon Horizon, Flieger, Diver, Radar, Lifetime. Auswahl über die App „Zifferblätter“, das Portal oder `watchctl.py face`.
 
-1. **Modular Digital Hero Face:** Übergroße Digitaluhr, Wochentag/Datum, Live-Aktivitätsbalken (Schrittziel), Akku-Prozentanzeige mit Lade-Blitz, LoRa- und Satelliten-Statusbadges.
-2. **Chronograph Face:** Analoges High-Precision-Zifferblatt mit LVGL 9 Scale-Widgets, dynamischem Stunden-, Minuten- und Sekundenzeiger sowie Hilfszifferblättern.
-3. **Minimal Typo Face:** Typografisches Zifferblatt für ablenkungsfreie Ablesbarkeit und extremen Stromsparmodus.
+### Navigation
 
-### Gesten- & Kachel-Navigation
+Karussell (horizontal wischen), Reihenfolge wie in `include/ui/Navigator.h`:
 
-Intuitive Navigation über das gesamte AMOLED-Panel:
-- **Horizontal Wischen:**
-  - `Tile [0, 0]` : **Watchface** (Hauptansicht)
-  - `Tile [1, 0]` : **AI Limits & Quota** (Anthropic, Antigravity IDE & Google Cloud Limits via BLE)
-  - `Tile [2, 0]` : **Aktivität & Fitness** (Schritte, Distanz, Kalorien, Zielerreichung)
-  - `Tile [3, 0]` : **Position & GNSS** (Breitengrad, Längengrad, Höhe, Satellitenanzahl, GPS-Fix)
-  - `Tile [4, 0]` : **LoRa Mesh** (Paket-Counter, RSSI/SNR-Signalstärke, Ping-Sender)
-  - `Tile [5, 0]` : **System & Hardware** (Akkuspannung, Ladestrom, RAM/PSRAM-Auslastung, Uptime)
-  - `Tile [6, 0]` : **Connect & Phone Sync** (WiFi AP Status, IP-Adresse, Web-Dashboard QR)
-- **Vertikal nach unten wischen:**
-  - `Tile [0, 1]` : **Control Center** (Quick-Toggles für Helligkeitsslider, Always-On-Display, Wrist-Wake, Haptik, WiFi-Hotspot, Sounds)
+`LAUNCHER ← ZIFFERBLATT → AI-LIMITS → AKTIVITÄT → AGENDA → POSITION → LORA → SYSTEM`
 
-### Sensorik & Fitness (BHI260AP)
-- Hardware-beschleunigtes Pedometer über den integrierten DSP des BHI260AP.
-- Automatische Handgelenkserkennung (**Wrist-Wake**): Display schaltet sich bei Anheben des Arms ein.
-- 6-Achsen Lagedaten und Schrittverlauf.
+- Vom Zifferblatt nach unten wischen: **Control Center** (Helligkeit, AOD, Wrist-Wake, Haptik, WLAN, Ton, Medien-Karte). Nach oben: **Mitteilungen**.
+- Launcher-Apps: Kalender, Navi, Stoppuhr, LoRa, Connect, Einstellungen, Zifferblätter, Power, Media. Zurück per Wischen vom linken Rand, Home per Wischen vom unteren Rand oder Seitentaste.
+- Action-Taste (GPIO 0): Klick = Position/Control, Doppelklick = Taschenlampe, lang = Meshtastic-NodeInfo senden.
 
-### LoRa Mesh-Messenger (SX1262)
-- Vollständige Integration des Semtech SX1262 Transceivers auf 868 MHz (bzw. 915 MHz).
-- Interrupt-gesteuerter Paketempfang im Hintergrund.
-- On-Watch Ping-Funktion und Telemetrie (Signalstärke in dBm, SNR).
+### Aktivität
 
-### Satellitennavigation & GPS-Zeit (u-blox)
-- U-blox Multi-GNSS Empfänger mit NMEA-Parser.
-- **Automatische Zeitdisziplinierung:** Die interne RTC (PCF85063) wird bei vorhandenem Satelliten-Fix automatisch auf atomuhrgenaue UTC-Zeit synchronisiert.
-- Anzeige von Echtzeit-Koordinaten und Höhenprofil.
+BHI260AP-Schrittzähler mit Plausibilitätsprüfung der Kadenz (Handbewegungen werden herausgefiltert), Hardware-Aktivitätserkennung (Gehen, Laufen, Rad, Fahrzeug), Schlaferkennung (unterdrückt Wrist-Wake), 7-Tage-Verlauf, Tagesziel. Distanz (0,75 m Schrittlänge) und Kalorien (0,042 kcal/Schritt) sind Schätzwerte ohne Nutzerprofil.
 
-### Power-Management & AOD (AXP2101)
-- Mehrstufiges Energiekonzept:
-  - **Aktivmodus (240 MHz):** Maximale Performance bei Benutzerinteraktion.
-  - **Dim-Modus (80 MHz):** Automatische Dimmung vor dem Standby.
-  - **Always-On-Display (AOD):** Stromsparendes Minimal-Zifferblatt auf AMOLED-Basis.
-  - **Deep/Light Sleep:** Display aus, Sensoren auf Low-Power-Interrupt, Aufwecken durch Berührung oder Handgelenksbewegung.
+### Position & Karten
 
-### Audio-Engine & Haptik (DRV2605 + I²S)
-- Präzise haptische Rückmeldung über den TI DRV2605 LRA-Treiber (Klick-, Erfolgs- und Warnimpulse).
-- Kristallklare Audiosignale über den MAX98357A I²S-Verstärker (Boot-Sound, Benachrichtigungstöne, Timer-Alarm).
+- u-blox-GNSS mit Fix-Filter (≥ 4 Satelliten, HDOP < 5), Satellitenliste, Zeitdisziplinierung der RTC aus GNSS-Zeit.
+- Offline-Karte `/kronos/germany.knav` auf der microSD (Format in `include/MapFormat.h`): Autobahn bis Kreisstraße, Bahn, Gewässer deutschlandweit; Straßen-/Gebäudeebene nur im Raum Stuttgart. Erzeugt mit `tools/build_germany_map.cpp` aus einem OSM-PBF-Extrakt, Übertragung mit `tools/upload_map_sd.py` oder über das Portal.
+- Routing (Auto/Fußgänger) auf einem rasterbasierten Graphen aus der Kartendatei, Turn-by-Turn-Hinweise; ohne Route wird ehrlich eine Luftlinie angezeigt (`LUFTLINIE`), keine erfundenen Abbiegehinweise.
+- Positionsquelle mit Priorität: GNSS-Fix > eigener gespeicherter Fix > Mesh-Peer (< 30 min alt, als solcher gekennzeichnet) > „KEINE POSITION“.
+- GPX-Aufzeichnung auf die SD-Karte, nur bei echtem GNSS-Fix.
 
-### Phone Sync & Web Companion Portal
-- Die Uhr spannt auf Wunsch einen eigenen WLAN-Access-Point auf (`WATCHOS-ULTRA` / `VORTEX-WATCH`).
-- Über jedes Smartphone oder PC im Browser (`http://192.168.4.1`) erreichbar.
-- Responsives Dashboard mit Glassmorphism-Design zur Steuerung von:
-  - Zifferblatt-Auswahl & Akzentfarben
-  - Display-Helligkeit & Timeout
-  - Zeitzonen-Konfiguration (inkl. Sommerzeitregeln)
-  - Alarmen, Schrittzielen und Hardware-Telemetrie
+### LoRa / Meshtastic
+
+SX1262 auf EU868 LongFast (869,525 MHz, SF11, BW 250 kHz) mit dem Meshtastic-Standard-PSK (`AQ==`). Empfang und Senden von Textnachrichten, NodeInfo, Positions-Beacons (nur mit Fix) und SOS; AES-128-CTR wie bei Meshtastic. Peers werden mit RSSI/SNR und Alter angezeigt. Senden setzt voraus, dass LoRa in den Einstellungen aktiviert ist; kein Seitenaufruf schaltet den Funk ein.
+
+### Media Remote (BLE)
+
+Die Media-App ist eine Fernbedienung für das gekoppelte Telefon (Play/Pause, Titel, Lautstärke über BLE-Kommandos); Titel/Interpret werden vom Telefon gepusht. Es wird kein Audio auf der Uhr wiedergegeben.
+
+### Kalender & AI-Limits (Companion-App)
+
+Termine und die AI-Limits-Seite werden von einer Companion-App per BLE (JSON) geliefert; die App ist nicht Teil dieses Repos. Ohne Daten zeigen die Seiten „Noch nicht synchronisiert“.
+
+### Weitere
+
+- Benachrichtigungszentrale mit persistenter Historie (20 Einträge).
+- Always-On-Display, Dimmen, Display-aus-Sleep mit Wrist-Wake; „Display aus“ im Power-Menü bleibt bis zur nächsten Berührung aktiv.
+- Haptik-Muster (Queue, 4 Einträge) und Soundeffekte über I²S.
+- Serielle Debug-Konsole (Screenshot, Seitenwechsel, Zeit setzen, synthetische Gesten; siehe `tools/watchctl.py`).
+
+---
+
+## Sicherheit
+
+- **WLAN-AP**: SSID `WATCHOS-ULTRA-xxxx`, Passwort pro Gerät (10 Zeichen, aus der eFuse-MAC abgeleitet, im NVS gespeichert). Es wird nur auf der Uhr (Connect-Seite) angezeigt und steht nicht im Quelltext.
+- **Portal-PIN**: Sechsstellige PIN, bei jedem AP-Start neu erzeugt und auf der Uhr angezeigt; alle `/api/*`-Aufrufe benötigen sie (`X-Pin`-Header oder `?pin=`). Ein gesetzter `Origin`-Header muss zur AP-Adresse passen, sonst 403.
+- **BLE**: Characteristics verlangen verschlüsselte, authentifizierte Verbindungen; Kopplung per Passkey, der auf der Uhr angezeigt wird. BLE-Schreibzugriffe werden nicht im NimBLE-Host-Task, sondern in der Hintergrundschleife verarbeitet.
+- **OTA**: Upload über `/api/ota/upload` (PIN) in die inaktive Partition mit SHA-256-Berechnung; der Neustart erfolgt erst nach Bestätigung auf der Uhr (Hash-Präfix und Größe werden angezeigt, 120 s Timeout = Ablehnung). Keine Signaturprüfung (kein Secure Boot).
+- **Funk**: Kein automatisches Einschalten von LoRa/WLAN durch Seitenaufrufe; Positions-Beacons nur mit echtem oder kürzlich gespeichertem Fix.
 
 ---
 
 ## Bauen & Flashen
 
-### PlatformIO
-
-Das Projekt ist für **PlatformIO** mit dem modernen `platform-espressif32` (pioarduino Core 3.3+) optimiert:
+Voraussetzungen: PlatformIO Core (CI nutzt 6.2.0), Python 3.9+. Plattform (pioarduino 55.03.30 = Arduino 3.3.0 / ESP-IDF 5.5) und Bibliotheken sind in `platformio.ini` auf feste Versionen gepinnt.
 
 ```bash
-# 1. Repository klonen
 git clone https://github.com/diggaknoxville/WatchOS-Ultra.git
 cd WatchOS-Ultra
-
-# 2. Firmware kompilieren
-pio run
-
-# 3. Uhr per USB anschließen und flashen
-pio run -t upload
-
-# 4. Seriellen Monitor öffnen
-pio device monitor -b 115200
+pio run                                  # kompilieren
+pio run -t upload --upload-port COM5     # flashen (Port anpassen, z. B. /dev/ttyACM0)
+pio device monitor -b 115200             # serieller Monitor
 ```
 
-### Build-Skript (`build_firmware.sh`)
-
-Ein praktisches Bash-Skript bündelt alle häufigen Aufgaben:
+Oder mit dem Skript (bash, auch unter Git-Bash/WSL):
 
 ```bash
-chmod +x build_firmware.sh
-
-./build_firmware.sh build      # Kompilieren
-./build_firmware.sh upload     # Flashen auf die Watch
-./build_firmware.sh monitor    # Serieller Monitor
-./build_firmware.sh sync-time  # Zeit & Zeitzone vom PC synchronisieren
-./build_firmware.sh tour       # Screenshots aller Seiten erstellen
+./build_firmware.sh build
+./build_firmware.sh upload --port /dev/ttyACM0
+./build_firmware.sh monitor --port /dev/ttyACM0
+./build_firmware.sh sync-time            # Zeit & Zeitzone vom PC
+./build_firmware.sh tour                 # Screenshots nach screenshots/
 ```
 
-### Host-Tool (`watchctl.py`)
+Partitionstabelle `app3M_fat9M_16MB.csv`: 3 MB App-Partition (OTA-fähig), 9 MB FAT (nicht gemountet), NVS. `maximum_size` im Board-JSON entspricht der App-Partition, PlatformIO warnt bei Überschreitung.
 
-Über das mitgelieferte Python-Tool `tools/watchctl.py` kann die Uhr direkt über den USB-CDC-Port administriert werden:
+Die CI (`.github/workflows/build-firmware.yml`) baut bei jedem Push, lädt `firmware.bin/.elf/.map` als Artefakt hoch, gibt die Flash-/RAM-Belegung aus und erstellt bei Tags `v*` ein GitHub-Release mit der Binärdatei.
+
+---
+
+## Werkzeuge
+
+Abhängigkeiten: `pip install -r tools/requirements.txt` (pyserial, Pillow, fonttools; optional tzlocal).
+
+### `tools/watchctl.py`
+
+Spricht mit der seriellen Debug-Konsole der Uhr. Port über `--port`, Umgebungsvariable `WATCHCTL_PORT` oder Auto-Erkennung (Espressif-VID 0x303A). Läuft unter Linux, macOS und Windows.
 
 ```bash
-# PC-Systemzeit und Zeitzone sofort auf die RTC der Uhr übertragen:
-python3 tools/watchctl.py time
-
-# Screenshot des aktuellen Displays als PNG speichern:
-python3 tools/watchctl.py shot display.png
-
-# Screenshots sämtlicher UI-Kacheln automatisiert erstellen:
-python3 tools/watchctl.py tour ./screenshots/
+python tools/watchctl.py list-ports
+python tools/watchctl.py --port COM5 time              # RTC + Zeitzone setzen, wartet auf TIME_SET
+python tools/watchctl.py shot display.png --page system
+python tools/watchctl.py tour screenshots/            # alle Zifferblätter und Seiten
+python tools/watchctl.py goto position                 # Seitennamen aus include/ui/Navigator.h
+python tools/watchctl.py face bauhaus
+python tools/watchctl.py notify "Titel" "Text"
+python tools/watchctl.py bench                         # [PERF]-Zeilen: Leerlauf + synthetische Swipes
+python tools/watchctl.py dmabench                      # Dauer eines Vollbild-DMA-Pushs
+python tools/watchctl.py gestures                      # Navigationstest mit synthetischen Gesten
 ```
+
+Der Screenshot-Empfang prüft die `SNAP w h stride`-Kopfzeile, liest exakt `stride·h` Bytes und verifiziert die `END`-Marke; bei Störungen durch Hintergrund-Logs wird wiederholt.
+
+### `tools/upload_map_sd.py`
+
+Überträgt eine `.knav`-Kartendatei per USB-Seriell auf die microSD-Karte der Uhr (`/kronos/germany.knav`). Aufruf und Optionen: `python tools/upload_map_sd.py --help`.
+
+### `tools/build_germany_map.cpp`
+
+Host-Programm (C++17), das aus einem OSM-PBF-Extrakt die Kartendatei erzeugt (Zellen, POIs, Routing-Graph). Das Binärformat ist in `include/MapFormat.h` definiert und wird von Firmware und Builder gemeinsam verwendet. Aufruf, Parameter und Bounding-Box: siehe `--help` bzw. Kopfkommentar der Datei.
+
+### `tools/fonts/`
+
+`build_fonts.py` erzeugt die Subsets von Orbitron und Rajdhani (`src/fonts/`), `build_icons.py` den Material-Symbols-Subset und `include/ui/Icons.h`.
 
 ---
 
@@ -204,82 +193,46 @@ python3 tools/watchctl.py tour ./screenshots/
 
 ```
 WatchOS-Ultra/
-├── boards/
-│   └── lilygo-t-watch-ultra.json     # Board-Definition für PlatformIO
-├── include/                          # Header & Schnittstellen
-│   ├── Config.h                      # Globale Systemkonfiguration & Farbcodes
-│   ├── DisplayEngine.h               # Display- & UI-Fassade
-│   ├── KronosDisplay.h               # LVGL 9 Driver & Framebuffer
-│   ├── PowerManager.h                # AXP2101 PMU & Helligkeitssteuerung
-│   ├── RtcManager.h                  # PCF85063 RTC & Zeitzonen-Handling
-│   ├── MotionHaptic.h                # BHI260AP IMU & DRV2605 Haptik
-│   ├── GpsManager.h                  # u-blox GNSS-Dienst
-│   ├── RadioLoRa.h                   # Semtech SX1262 LoRa-Treiber
-│   ├── AudioEngine.h                 # MAX98357A I²S Soundausgabe
-│   ├── CompanionServer.h             # Phone Web Companion Portal
-│   ├── NotificationStore.h           # Persistenter Nachrichtenspeicher
-│   └── ui/
-│       ├── Navigator.h               # Kachel- & Gestennavigation
-│       ├── UiKit.h                   # Typografie, Farben & UI-Komponenten
-│       ├── Pages.h                   # Kachel-Deklarationen
-│       └── Icons.h                   # Material Symbols Icon Font
-├── src/                              # Implementierung
-│   ├── main.cpp                      # FreeRTOS Dual-Core Initialisierung
-│   ├── DisplayEngine.cpp
-│   ├── KronosDisplay.cpp
-│   ├── PowerManager.cpp
-│   ├── RtcManager.cpp
-│   ├── MotionHaptic.cpp
-│   ├── GpsManager.cpp
-│   ├── RadioLoRa.cpp
-│   ├── AudioEngine.cpp
-│   ├── CompanionServer.cpp
-│   ├── SettingsStorage.cpp
-│   ├── NotificationStore.cpp
-│   └── ui/
-│       ├── Navigator.cpp             # Touch-Gesten & Kachelübergänge
-│       ├── UiKit.cpp                 # Widgets & Themes
-│       └── pages/                    # UI-Kacheln (Watchface, Activity, GPS, LoRa, Control, ...)
-├── lib/                              # Board Support Package & Bibliotheken
-│   ├── LilyGoLib/                    # T-Watch Ultra BSP
-│   ├── TinyGPSPlus/                  # NMEA GPS Parser
-│   ├── Adafruit_BusIO/
-│   ├── Adafruit_TCA8418/
-│   ├── NFC-RFAL-fork/                # ST25R3916 NFC Treiber
-│   └── ST25R3916-fork/
-├── tools/                            # Entwickler- & Host-Werkzeuge
-│   ├── watchctl.py                   # Time-Sync & Screenshot Tool
-│   └── fonts/                        # Font- & Icon-Generator-Skripte
-├── platformio.ini                    # PlatformIO Build-Konfiguration
-├── build_firmware.sh                 # All-in-One Build-Skript
-├── version.json                      # Release- & Versionsinformationen
-└── .github/workflows/
-    └── build-firmware.yml            # CI GitHub Action Workflow
+├── boards/lilygo-t-watch-ultra.json   # Board-Definition (Variante lilygo_twatch_ultra, 3 MB App)
+├── include/
+│   ├── Config.h                       # Produktname, Version, Enums, SystemSettings
+│   ├── MapFormat.h                    # Kartenformat (Firmware + Builder)
+│   ├── Compositor.h / KronosDisplay.h # RLE-Compositor, LVGL-Display-/Touch-Treiber
+│   ├── DisplayEngine.h                # Seitenaufbau, Overlays, Debug-Konsole
+│   ├── NavEngine.h                    # Karte, Routing, Positionsquellen, GPX
+│   ├── PowerManager.h / RtcManager.h  # PMU & Power-States, UTC-Uhr & Zeitzonen
+│   ├── MotionHaptic.h / AudioEngine.h # Schritte, Haptik, I²S-Sounds
+│   ├── GpsManager.h / RadioLoRa.h     # GNSS, SX1262 Meshtastic
+│   ├── CompanionServer.h              # WLAN-AP, Portal, REST-API, OTA
+│   ├── BleCompanion.h / AiLimitsStore.h
+│   ├── SettingsStorage.h / NotificationStore.h
+│   └── ui/                            # Navigator, UiKit, Pages, Icons
+├── src/                               # Implementierungen, src/ui/pages/*, src/fonts/*
+├── lib/
+│   ├── LilyGoLib/                     # BSP, vendored Fork (siehe Fork notice in lib/LilyGoLib/README.MD)
+│   ├── TinyGPSPlus/                   # von LilyGoLib/GPS.h benötigt
+│   ├── NFC-RFAL-fork/, ST25R3916-fork/ # von der Board-Variante (USING_ST25R3916) eingebunden
+├── tools/                             # watchctl.py, upload_map_sd.py, build_germany_map.cpp, fonts/
+├── .github/workflows/build-firmware.yml
+├── platformio.ini, build_firmware.sh, version.json
+├── LICENSE, THIRD_PARTY_NOTICES.md
+└── REVIEW.md                          # Code-Review, Grundlage der Überarbeitung 1.1.0
 ```
 
 ---
 
-## Pinbelegung & Hardware-Referenz
+## Bekannte Einschränkungen
 
-| Peripherie | Pin / Signal | Anmerkung |
-| :--- | :--- | :--- |
-| **I²C Hauptbus** | SDA: GPIO 3 / SCL: GPIO 2 | AXP2101, PCF85063, DRV2605, BHI260AP, XL9555 |
-| **QSPI AMOLED** | SCK: 18, CS: 12, D0-D3: 13,11,17,10 | CO5300 QSPI Bus |
-| **Touchscreen** | SDA: GPIO 3 / SCL: GPIO 2, INT: Expander | FT3168 I²C |
-| **LoRa (SX1262)** | MOSI: 41, MISO: 40, SCLK: 39, CS: 42, IRQ: 46 | SPI Bus |
-| **GNSS (GPS)** | RX: GPIO 44, TX: GPIO 43 | Hardware Serial 2 |
-| **I²S Audio DAC** | BCLK: GPIO 15, LRCLK: GPIO 16, DOUT: GPIO 7 | MAX98357A |
-| **NFC (ST25R3916)**| MOSI: 41, MISO: 40, SCLK: 39, CS: Expander | SPI Bus |
+- Kein Light Sleep: WiFi/BLE/LoRa-Interrupts würden verloren gehen. Stromsparen beschränkt sich auf Display aus, UI-Task-Drosselung und GNSS-Abschaltung. Keine CPU-Taktabsenkung (APB-Glitches mit QSPI-DMA).
+- Der Routing-Graph ist rasterbasiert (Zellen 0,5–2,4 km), nicht topologisch; Routen sind Näherungen.
+- Straßen- und Gebäudeebene der Karte nur im Raum Stuttgart; außerhalb Autobahn bis Kreisstraße, Bahn, Gewässer.
+- Nur 24-h-Anzeige, keine 12-h-Uhr.
+- Companion-App (BLE-Kalender, AI-Limits) ist nicht im Repo enthalten.
+- Keine automatisierten Tests; Lade­strom wird nicht gemessen (AXP2101 ohne entsprechenden ADC), Distanz/Kalorien sind Schätzungen.
+- Kein Secure Boot / keine OTA-Signaturprüfung; Schutz ist PIN + Bestätigung auf der Uhr.
 
 ---
 
-## Lizenz & Credits
+## Lizenz
 
-Entwickelt für die Open-Source-Community und Maker. 
-
-- **Hardware:** [LilyGO](https://github.com/Xinyuan-LilyGO) (T-Watch Ultra)
-- **Grafikbibliothek:** [LVGL](https://lvgl.io/) (Light and Versatile Graphics Library)
-- **Funk:** [RadioLib](https://github.com/jgromes/RadioLib) von Jan Gromes
-- **Sensoren:** [SensorLib & XPowersLib](https://github.com/lewisxhe) von Lewis He
-- **Schwesterprojekt:** [WatchOS (für T-Watch 2020)](https://github.com/diggaknoxville/WatchOS)
-
+MIT, siehe [LICENSE](LICENSE). Lizenzen der eingebetteten Bibliotheken und Fonts: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Hardware: [LilyGO](https://github.com/Xinyuan-LilyGO).

@@ -3,6 +3,8 @@
 #include <time.h>
 
 // AI Limits data structure holding percentages (0..100) and reset epoch timestamps (seconds).
+// Defaults are all zero with has_data == false; the UI must render an empty
+// state ("Noch nicht synchronisiert") until the first sync arrives.
 struct AiLimitsData {
     // Sektion 1: Anthropic (Claude Pro)
     uint8_t  claude_5h_pct;
@@ -39,7 +41,7 @@ struct AiLimitsData {
     bool     has_data;
 };
 
-// Packed binary BLE packet format (< 64 bytes)
+// Packed binary BLE packet format (< 64 bytes), little-endian
 struct __attribute__((packed)) AiLimitsBlePacket {
     uint8_t  magic;             // 0xA1
     uint8_t  version;           // 0x01
@@ -69,11 +71,11 @@ struct __attribute__((packed)) AiLimitsBlePacket {
 class AiLimitsStore {
 public:
     static void init();
-    static AiLimitsData get();
-    static void set(const AiLimitsData& data);
+    static AiLimitsData get();                      // copy under lock
+    static void set(const AiLimitsData& data);      // clamps, marks has_data, persists (call from bg task)
     static bool updateFromBleBinary(const uint8_t* payload, size_t len);
     static bool updateFromJson(const char* jsonStr);
-    
+
     // Helper to format countdown relative to now (e.g. "1h 24m", "3d 12h", "READY")
     static void formatCountdown(char* out, size_t outSize, uint32_t resetEpochSec);
     // Compact format for ring center (e.g. "1:24", "3d")
@@ -95,4 +97,3 @@ private:
     static void saveToNvs();
     static void loadFromNvs();
 };
-

@@ -1,4 +1,5 @@
-// Smaller apps: stopwatch, power menu, phone connect, agenda & Google Calendar.
+// Smaller apps: stopwatch, power menu, phone connect, calendar, face picker,
+// settings and the media remote.
 #include "ui/Pages.h"
 #include "ui/UiKit.h"
 #include "ui/Navigator.h"
@@ -8,16 +9,19 @@
 #include "SettingsStorage.h"
 #include "RtcManager.h"
 #include "AudioEngine.h"
+#include "GpsManager.h"
+#include "RadioLoRa.h"
 #include "DisplayEngine.h"
 #include "Config.h"
 #include <LilyGoLib.h>
+#include <type_traits>
 
 using namespace ui;
 
 namespace pages {
 
 // ============================================================== STOPWATCH
-static lv_obj_t *swTime, *swCs, *swStart, *swStartTxt, *swLap, *swLapTxt, *swLaps[4];
+static lv_obj_t *swTime, *swCs, *swStart, *swLap, *swLaps[4];
 static bool swRun = false;
 static uint32_t swStartMs = 0, swAccum = 0, swLapTimes[4];
 static int swLapN = 0;
@@ -37,23 +41,23 @@ static void swRefresh(bool) {
     setText(swTime, b);
     snprintf(b, sizeof(b), ".%02lu", (unsigned long)((e % 1000) / 10));
     setText(swCs, b);
-    setText(swStartTxt, swRun ? "STOP" : (e ? "RESUME" : "START"));
+    setButtonText(swStart, swRun ? "STOPP" : (e ? "WEITER" : "START"));
     setBgColorIf(swStart, swRun ? cCrit() : cOk());
-    setText(swLapTxt, swRun ? "LAP" : "RESET");
+    setButtonText(swLap, swRun ? "RUNDE" : "RESET");
     for (int i = 0; i < 4; i++) {
         bool has = i < swLapN;
         setHidden(swLaps[i], !has);
         if (!has) continue;
         char t[24];
         swFmt(t, sizeof(t), swLapTimes[i], true);
-        snprintf(b, sizeof(b), "LAP %d   %s", swLapN - i, t);
+        snprintf(b, sizeof(b), "RUNDE %d   %s", swLapN - i, t);
         setText(swLaps[i], b);
     }
 }
 
 void buildStopwatch(lv_obj_t* scr) {
     lv_obj_t* p = pageRoot(scr);
-    title(p, "STOPWATCH");
+    title(p, "STOPPUHR");
     lv_obj_t* row = box(p, SCR_W, 80);
     lv_obj_set_pos(row, 0, 104);
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
@@ -68,14 +72,8 @@ void buildStopwatch(lv_obj_t* scr) {
     }
 
     const int bw = (CW - 14) / 2;
-    swLap = lv_button_create(p);
-    lv_obj_set_size(swLap, bw, 76);
+    swLap = secondaryButton(p, bw, 76, nullptr, "RESET");
     lv_obj_set_pos(swLap, M, 386);
-    lv_obj_set_style_radius(swLap, R_CARD, 0);
-    lv_obj_set_style_shadow_width(swLap, 0, 0);
-    lv_obj_set_style_bg_color(swLap, cSurf2(), 0);
-    swLapTxt = label(swLap, F.body, cText(), "RESET");
-    lv_obj_center(swLapTxt);
     lv_obj_add_event_cb(swLap, [](lv_event_t*) {
         if (swRun) {
             memmove(swLapTimes + 1, swLapTimes, sizeof(uint32_t) * 3);
@@ -88,14 +86,9 @@ void buildStopwatch(lv_obj_t* scr) {
         haptic(HAPTIC_TICK);
     }, LV_EVENT_CLICKED, NULL);
 
-    swStart = lv_button_create(p);
-    lv_obj_set_size(swStart, bw, 76);
+    swStart = primaryButton(p, bw, 76, nullptr, "START");
     lv_obj_set_pos(swStart, M + bw + 14, 386);
-    lv_obj_set_style_radius(swStart, R_CARD, 0);
-    lv_obj_set_style_shadow_width(swStart, 0, 0);
     lv_obj_set_style_bg_color(swStart, cOk(), 0);
-    swStartTxt = label(swStart, F.body, cBg(), "START");
-    lv_obj_center(swStartTxt);
     lv_obj_add_event_cb(swStart, [](lv_event_t*) {
         if (swRun) { swAccum += millis() - swStartMs; swRun = false; }
         else { swStartMs = millis(); swRun = true; }
@@ -111,47 +104,54 @@ void buildStopwatch(lv_obj_t* scr) {
 }
 
 // ============================================================== POWER MENU
-static lv_obj_t* powerButton(lv_obj_t* p, int y, const char* icon, const char* text, lv_color_t bg, lv_color_t fg) {
-    lv_obj_t* b = lv_button_create(p);
-    lv_obj_set_size(b, CW, 84);
-    lv_obj_set_pos(b, M, y);
-    lv_obj_set_style_radius(b, R_CARD, 0);
-    lv_obj_set_style_shadow_width(b, 0, 0);
-    lv_obj_set_style_bg_color(b, bg, 0);
-    lv_obj_t* ic = label(b, F.icoM, fg, icon);
-    lv_obj_align(ic, LV_ALIGN_LEFT_MID, 12, 0);
-    lv_obj_t* t = label(b, F.body, fg, text);
-    lv_obj_align(t, LV_ALIGN_LEFT_MID, 60, 0);
-    return b;
+static void doRestart() {
+    SettingsStorage::flushNow();
+    RtcManager::periodicMaintenance();
+    ESP.restart();
 }
+
+static void onRestartConfirm(bool ok, void*) { if (ok) doRestart(); }
 
 void buildPower(lv_obj_t* scr) {
     lv_obj_t* p = pageRoot(scr);
-    title(p, "POWER");
-    lv_obj_t* sleepB = powerButton(p, 100, ICO_BEDTIME, "Display off", cSurf2(), cText());
+    title(p, "ENERGIE");
+
+    lv_obj_t* sleepB = secondaryButton(p, CW, 76, ICO_BEDTIME, "Display aus");
+    lv_obj_set_pos(sleepB, M, 96);
     lv_obj_add_event_cb(sleepB, [](lv_event_t*) {
+        haptic(HAPTIC_TICK);
         nav::home();
-        PowerManager::setPowerState(POWER_SLEEP);
+        PowerManager::requestSleep();              // honoured by PowerManager for a grace window
     }, LV_EVENT_CLICKED, NULL);
 
-    lv_obj_t* rst = powerButton(p, 196, ICO_RESTART_ALT, "Restart", cSurf2(), cText());
+    lv_obj_t* rst = secondaryButton(p, CW, 76, ICO_RESTART_ALT, "Neustart");
+    lv_obj_set_pos(rst, M, 184);
     lv_obj_add_event_cb(rst, [](lv_event_t*) {
-        SettingsStorage::flushNow();
-        RtcManager::periodicMaintenance();
-        delay(150);
-        ESP.restart();
+        haptic(HAPTIC_TICK);
+        confirmDialog("Neustart?", "Die Uhr startet neu. Einstellungen werden gespeichert.",
+                      "Neustart", "Abbrechen", onRestartConfirm, nullptr, false);
     }, LV_EVENT_CLICKED, NULL);
 
-    lv_obj_t* off = powerButton(p, 292, ICO_POWER_SETTINGS_NEW, "Hold to power off", cCrit(), cText());
+    lv_obj_t* off = dangerButton(p, CW, 76, ICO_POWER_SETTINGS_NEW, "Ausschalten (halten)");
+    lv_obj_set_pos(off, M, 272);
     lv_obj_add_event_cb(off, [](lv_event_t*) {
         SettingsStorage::flushNow();
         haptic(HAPTIC_ALERT_LONG);
-        delay(300);
-        instance.pmu.shutdown();
+        if (PowerManager::lockI2C(500)) {
+            instance.pmu.shutdown();
+            PowerManager::unlockI2C();
+        }
     }, LV_EVENT_LONG_PRESSED, NULL);
 
-    lv_obj_t* hint = caption(p, "SIDE KEY OR SWIPE UP TO CANCEL", cText3());
-    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -26);
+    lv_obj_t* hint = caption(p, "SEITENTASTE = ZURÜCK", cText3());
+    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -62);
+    lv_obj_t* hint2 = caption(p, "VON UNTEN NACH OBEN WISCHEN = ZURÜCK", cText3());
+    lv_obj_align(hint2, LV_ALIGN_BOTTOM_MID, 0, -(nav::HOME_EDGE / 2 - 8));   // inside the home edge zone
+    lv_obj_t* grab = box(p, 40, 5);
+    lv_obj_set_style_radius(grab, 3, 0);
+    lv_obj_set_style_bg_opa(grab, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(grab, cText3(), 0);
+    lv_obj_align(grab, LV_ALIGN_BOTTOM_MID, 0, -8);
 
     nav::PageDef d;
     d.root = p;
@@ -161,45 +161,135 @@ void buildPower(lv_obj_t* scr) {
 }
 
 // ============================================================== CONNECT
-void buildConnect(lv_obj_t* scr) {
-    if (!CompanionServer::isApActive()) {
-        CompanionServer::requestAp(true);
-        SettingsStorage::get().wifiApEnabled = true;
-        SettingsStorage::save();
+// BLE passkey is optional in the BleCompanion contract: detect getPasskey() at compile time.
+template <typename T, typename = void> struct HasPasskey : std::false_type {};
+template <typename T> struct HasPasskey<T, std::void_t<decltype(T::getPasskey())>> : std::true_type {};
+static void fmtPasskey(char* out, size_t n, const char* v) { snprintf(out, n, "%s", v && v[0] ? v : "--"); }
+static void fmtPasskey(char* out, size_t n, const String& v) { snprintf(out, n, "%s", v.length() ? v.c_str() : "--"); }
+template <typename V> static void fmtPasskey(char* out, size_t n, V v) {
+    snprintf(out, n, "%06lu", (unsigned long)v % 1000000UL);
+}
+template <typename T> static bool blePasskeyText(char* out, size_t n) {
+    if constexpr (HasPasskey<T>::value) { fmtPasskey(out, n, T::getPasskey()); return true; }
+    else { (void)out; (void)n; return false; }
+}
+
+static lv_obj_t *cnActive, *cnInactive, *cnQr, *cnSsid, *cnPw, *cnPin, *cnBle, *cnStartBtn, *cnStatusPill;
+static char cnPayload[96] = {0};
+
+static void refreshConnect(bool) {
+    char b[80];
+    bool ap = CompanionServer::isApActive();
+    bool want = SettingsStorage::get().wifiApEnabled;
+    setHidden(cnActive, !ap);
+    setHidden(cnInactive, ap);
+    if (ap) {
+        setPill(cnStatusPill, "HOTSPOT AKTIV", cOk());
+        const char* name = CompanionServer::getApName();
+        const char* pw = CompanionServer::getApPassword();
+        const char* pin = CompanionServer::getPortalPin();
+        char payload[96];
+        snprintf(payload, sizeof(payload), "WIFI:T:WPA;S:%s;P:%s;;", name ? name : "", pw ? pw : "");
+        if (strcmp(payload, cnPayload) != 0) {
+            strncpy(cnPayload, payload, sizeof(cnPayload) - 1);
+            cnPayload[sizeof(cnPayload) - 1] = 0;
+            lv_qrcode_update(cnQr, cnPayload, strlen(cnPayload));
+        }
+        setText(cnSsid, name ? name : "--");
+        snprintf(b, sizeof(b), "PASSWORT  %s", pw ? pw : "--");
+        setText(cnPw, b);
+        snprintf(b, sizeof(b), "PORTAL-PIN  %s", pin ? pin : "--");
+        setText(cnPin, b);
+    } else {
+        setPill(cnStatusPill, want ? "HOTSPOT STARTET" : "HOTSPOT AUS", want ? cWarn() : cText2());
+        setButtonText(cnStartBtn, want ? "Hotspot startet..." : "Hotspot starten");
+        setButtonEnabled(cnStartBtn, !want);
     }
+    if (BleCompanion::isEnabled()) {
+        char pk[24];
+        if (blePasskeyText<BleCompanion>(pk, sizeof(pk))) {
+            snprintf(b, sizeof(b), "Bluetooth-Kopplung: %s%s", pk, BleCompanion::isConnected() ? "  (verbunden)" : "");
+        } else {
+            snprintf(b, sizeof(b), "Bluetooth: %s", BleCompanion::isConnected() ? "verbunden" : "bereit zur Kopplung");
+        }
+    } else {
+        snprintf(b, sizeof(b), "Bluetooth ist aus");
+    }
+    setText(cnBle, b);
+}
+
+void buildConnect(lv_obj_t* scr) {
     lv_obj_t* p = pageRoot(scr);
-    title(p, "PHONE");
-    lv_obj_t* frame = box(p, 232, 232);
-    lv_obj_align(frame, LV_ALIGN_TOP_MID, 0, 92);
-    lv_obj_set_style_radius(frame, 24, 0);
+    title(p, "VERBINDEN");
+    cnStatusPill = pill(p, "HOTSPOT AUS", cText2());
+    lv_obj_align(cnStatusPill, LV_ALIGN_TOP_RIGHT, -M, 24);
+
+    // --- hotspot running: QR + credentials ---
+    cnActive = box(p, SCR_W, SCR_H - CONTENT_Y);
+    lv_obj_set_pos(cnActive, 0, CONTENT_Y);
+    lv_obj_t* frame = box(cnActive, 196, 196);
+    lv_obj_align(frame, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_set_style_radius(frame, 20, 0);
     lv_obj_set_style_bg_opa(frame, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(frame, lv_color_white(), 0);
-    lv_obj_t* qr = lv_qrcode_create(frame);
-    lv_qrcode_set_size(qr, 200);
-    lv_qrcode_set_dark_color(qr, lv_color_black());
-    lv_qrcode_set_light_color(qr, lv_color_white());
-    char payload[96];
-    snprintf(payload, sizeof(payload), "WIFI:T:WPA;S:%s;P:%s;;", CompanionServer::getApName(), AP_PASSWORD);
-    lv_qrcode_update(qr, payload, strlen(payload));
-    lv_obj_center(qr);
+    cnQr = lv_qrcode_create(frame);
+    lv_qrcode_set_size(cnQr, 172);
+    lv_qrcode_set_dark_color(cnQr, lv_color_black());
+    lv_qrcode_set_light_color(cnQr, lv_color_white());
+    lv_qrcode_update(cnQr, "WIFI:T:WPA;S:-;P:-;;", 20);
+    lv_obj_center(cnQr);
 
-    lv_obj_t* ssid = label(p, F.body, cText(), CompanionServer::getApName());
-    lv_obj_align(ssid, LV_ALIGN_TOP_MID, 0, 340);
-    char pw[48];
-    snprintf(pw, sizeof(pw), "PASSWORD  %s", AP_PASSWORD);
-    lv_obj_t* pwl = caption(p, pw, cText2());
-    lv_obj_align(pwl, LV_ALIGN_TOP_MID, 0, 378);
-    lv_obj_t* hint = label(p, F.small, cText3(), "Scan to join, then open 192.168.4.1");
-    lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, 412);
+    cnSsid = label(cnActive, F.body, cText(), "--");
+    lv_obj_align(cnSsid, LV_ALIGN_TOP_MID, 0, 208);
+    cnPw = caption(cnActive, "PASSWORT  --", cText2());
+    lv_obj_align(cnPw, LV_ALIGN_TOP_MID, 0, 242);
+    cnPin = caption(cnActive, "PORTAL-PIN  --", accent());
+    accReg(cnPin, ACC_TEXT);
+    lv_obj_align(cnPin, LV_ALIGN_TOP_MID, 0, 266);
+    lv_obj_t* hint = label(cnActive, F.small, cText3(), "QR scannen, dann 192.168.4.1 öffnen");
+    lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, 296);
+
+    // --- hotspot off: explain + start button ---
+    cnInactive = box(p, SCR_W, SCR_H - CONTENT_Y);
+    lv_obj_set_pos(cnInactive, 0, CONTENT_Y);
+    lv_obj_t* es = emptyState(cnInactive, ICO_WIFI_OFF, "Hotspot ist aus",
+                              "Startet ein WLAN für die Companion-Web-App");
+    lv_obj_align(es, LV_ALIGN_TOP_MID, 0, 8);
+    cnStartBtn = primaryButton(cnInactive, CW, BTN_H, ICO_WIFI, "Hotspot starten");
+    lv_obj_align(cnStartBtn, LV_ALIGN_TOP_MID, 0, 200);
+    lv_obj_add_event_cb(cnStartBtn, [](lv_event_t*) {
+        SystemSettings& s = SettingsStorage::get();
+        s.wifiApEnabled = true;                     // explicit user action
+        SettingsStorage::save();
+        CompanionServer::requestAp(true);
+        haptic(HAPTIC_CLICK);
+        DisplayEngine::showToast("Hotspot", "Wird gestartet...", 2000, ICO_WIFI);
+        nav::markDirty(nav::PG_CONTROL);
+        refreshConnect(true);
+    }, LV_EVENT_CLICKED, NULL);
+
+    // --- Bluetooth line (both states) ---
+    cnBle = label(p, F.small, cText2(), "Bluetooth ist aus");
+    lv_obj_set_width(cnBle, CW);
+    lv_obj_set_style_text_align(cnBle, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(cnBle, LV_ALIGN_BOTTOM_MID, 0, -40);
+
+    setHidden(cnActive, true);
+    refreshConnect(true);
 
     nav::PageDef d;
     d.root = p;
-    d.refreshMs = 0xFFFF;
-    d.ttlMs = 0;
+    d.refresh = refreshConnect;
+    d.refreshMs = 1000;
+    d.ttlMs = 5000;
+    d.onShow = [] {
+        // never start the AP from a builder; only if the user has enabled it
+        if (SettingsStorage::get().wifiApEnabled && !CompanionServer::isApActive()) CompanionServer::requestAp(true);
+    };
     nav::registerPage(nav::PG_APP_CONNECT, d);
 }
 
-// ============================================================== AGENDA / GOOGLE CALENDAR
+// ============================================================== KALENDER
 static lv_obj_t* sCalMonthLbl = nullptr;
 static lv_obj_t* sCalSubLbl = nullptr;
 static lv_obj_t* sCalCells[42];
@@ -207,8 +297,8 @@ static lv_obj_t* sCalCellTxts[42];
 static int sCalLastMday = -1;
 static int sCalLastMon = -1;
 
-static int sCalMode = 0; // 0 = Month Grid, 1 = Upcoming Google Calendar Agenda
-static lv_obj_t* sCalTabBtns[2] = {nullptr};
+static int sCalMode = 0; // 0 = month grid, 1 = synced events
+static lv_obj_t* sCalTabs = nullptr;
 static lv_obj_t* sMonthCard = nullptr;
 static lv_obj_t* sAgendaCard = nullptr;
 static lv_obj_t* sEventRows[6] = {nullptr};
@@ -217,14 +307,24 @@ static lv_obj_t* sEventTitle[6] = {nullptr};
 static lv_obj_t* sEventLoc[6] = {nullptr};
 static lv_obj_t* sEventEmpty = nullptr;
 static lv_obj_t* sSyncBtn = nullptr;
+static lv_obj_t* sSyncLbl = nullptr;
+static uint32_t sSyncReqMs = 0;
+
+static void requestCalendarSync(bool fromButton) {
+    if (!BleCompanion::isConnected()) {
+        if (fromButton) DisplayEngine::showToast("Kalender", "Handy nicht per Bluetooth verbunden", 2200, ICO_SMARTPHONE);
+        return;
+    }
+    bool ok = BleCompanion::triggerCalendarSync();      // rate-limited (60 s)
+    if (ok) sSyncReqMs = millis();
+    else if (fromButton) DisplayEngine::showToast("Kalender", "Bereits angefragt, bitte kurz warten", 2200, ICO_SYNC);
+}
 
 static void refreshAgenda(bool force) {
     struct tm t;
     RtcManager::getLocalTimeInfo(&t);
 
-    for (int i = 0; i < 2; i++) {
-        if (sCalTabBtns[i]) setBgColorIf(sCalTabBtns[i], (i == sCalMode) ? accent() : cSurf2());
-    }
+    setTabActive(sCalTabs, sCalMode);
     setHidden(sMonthCard, sCalMode != 0);
     setHidden(sAgendaCard, sCalMode != 1);
 
@@ -233,29 +333,20 @@ static void refreshAgenda(bool force) {
         sCalLastMday = t.tm_mday;
         sCalLastMon = t.tm_mon;
 
-        static const char* MONTHS_DE[12] = {
-            "JANUAR", "FEBRUAR", "MAERZ", "APRIL", "MAI", "JUNI",
-            "JULI", "AUGUST", "SEPTEMBER", "OKTOBER", "NOVEMBER", "DEZEMBER"
-        };
-        static const char* WDAYS_DE[7] = {
-            "Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"
-        };
         int year = t.tm_year + 1900;
         int mon = t.tm_mon;
         char hdr[40];
-        snprintf(hdr, sizeof(hdr), "%s %d", MONTHS_DE[mon % 12], year);
+        snprintf(hdr, sizeof(hdr), "%s %d", MO_DE_L[mon % 12], year);
         setText(sCalMonthLbl, hdr);
 
-        int kw = (t.tm_yday + 7 - ((t.tm_wday + 6) % 7)) / 7 + 1;
+        char kw[8];
+        strftime(kw, sizeof(kw), "%V", &t);                 // ISO 8601 week
         char sub[64];
-        snprintf(sub, sizeof(sub), "%s, %d. · KW %d · Tag %d",
-                 WDAYS_DE[t.tm_wday % 7], t.tm_mday, kw, t.tm_yday + 1);
+        static const char* WDAYS_DE[7] = {"Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"};
+        snprintf(sub, sizeof(sub), "%s, %d. · KW %s · Tag %d", WDAYS_DE[t.tm_wday % 7], t.tm_mday, kw, t.tm_yday + 1);
         setText(sCalSubLbl, sub);
 
-        static const int mdays[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
-        int daysInMon = mdays[mon % 12];
-        if (mon == 1 && ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0))) daysInMon = 29;
-
+        int daysInMon = daysInMonth(year, mon);
         int todayWdayMon = (t.tm_wday + 6) % 7;
         int firstWdayMon = (todayWdayMon - ((t.tm_mday - 1) % 7) + 7) % 7;
 
@@ -267,41 +358,48 @@ static void refreshAgenda(bool force) {
                 setText(sCalCellTxts[i], db);
                 bool isToday = (dayNum == t.tm_mday);
                 bool isWeekend = ((i % 7) >= 5);
-                lv_obj_set_style_bg_opa(sCalCells[i], isToday ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+                setBgOpaIf(sCalCells[i], isToday ? LV_OPA_COVER : LV_OPA_TRANSP);
                 setBgColorIf(sCalCells[i], isToday ? accent() : cSurf());
                 setTextColorIf(sCalCellTxts[i], isToday ? cBg() : (isWeekend ? cText2() : cText()));
             } else {
                 setText(sCalCellTxts[i], "");
-                lv_obj_set_style_bg_opa(sCalCells[i], LV_OPA_TRANSP, 0);
+                setBgOpaIf(sCalCells[i], LV_OPA_TRANSP);
             }
         }
     } else {
-        CalendarEvent evs[6];
+        static CalendarEvent evs[6];
         uint8_t n = BleCompanion::getUpcomingEvents(evs, 6);
         bool conn = BleCompanion::isConnected();
 
         char sub[64];
-        snprintf(sub, sizeof(sub), "%u Termine synchronisiert · %s",
-                 (unsigned)n, conn ? "BLE verbunden" : "BLE getrennt");
+        snprintf(sub, sizeof(sub), "%u Termine · %s", (unsigned)n, conn ? "Bluetooth verbunden" : "Bluetooth getrennt");
         setText(sCalSubLbl, sub);
         setHidden(sEventEmpty, n != 0);
+
+        char st[48];
+        uint32_t last = BleCompanion::lastCalendarSyncMs();
+        if (sSyncReqMs && millis() - sSyncReqMs < 8000 && (last == 0 || last < sSyncReqMs)) {
+            snprintf(st, sizeof(st), "Synchronisiert...");
+        } else if (last) {
+            char a[24];
+            agoMs(a, sizeof(a), last);
+            snprintf(st, sizeof(st), "Zuletzt %s", a);
+        } else {
+            snprintf(st, sizeof(st), "Noch nicht synchronisiert");
+        }
+        setText(sSyncLbl, st);
+        setButtonEnabled(sSyncBtn, conn);
 
         for (int i = 0; i < 6; i++) {
             bool has = (i < n);
             setHidden(sEventRows[i], !has);
             if (!has) continue;
-
-            time_t st = (time_t)evs[i].startEpoch;
+            time_t s = (time_t)evs[i].startEpoch;
             struct tm evTm;
-            localtime_r(&st, &evTm);
-
+            localtime_r(&s, &evTm);
             char timeBuf[32];
-            if (evs[i].allDay) {
-                snprintf(timeBuf, sizeof(timeBuf), "%02d.%02d. Ganztag", evTm.tm_mday, evTm.tm_mon + 1);
-            } else {
-                snprintf(timeBuf, sizeof(timeBuf), "%02d.%02d. %02d:%02d",
-                         evTm.tm_mday, evTm.tm_mon + 1, evTm.tm_hour, evTm.tm_min);
-            }
+            if (evs[i].allDay) snprintf(timeBuf, sizeof(timeBuf), "%02d.%02d. ganztags", evTm.tm_mday, evTm.tm_mon + 1);
+            else snprintf(timeBuf, sizeof(timeBuf), "%02d.%02d. %02d:%02d", evTm.tm_mday, evTm.tm_mon + 1, evTm.tm_hour, evTm.tm_min);
             setText(sEventTime[i], timeBuf);
             setText(sEventTitle[i], evs[i].title);
             setText(sEventLoc[i], evs[i].loc[0] ? evs[i].loc : "Kein Ort");
@@ -315,39 +413,21 @@ void buildAgenda(lv_obj_t* scr) {
 
     sCalMonthLbl = label(p, F.body, accent(), "");
     accReg(sCalMonthLbl, ACC_TEXT);
-    lv_obj_align(sCalMonthLbl, LV_ALIGN_TOP_RIGHT, -M, 20);
+    lv_obj_align(sCalMonthLbl, LV_ALIGN_TOP_RIGHT, -M, 24);
 
-    // Mode Selector Pills: MONAT | TERMINE (Google Calendar)
-    const int pw = (CW - 10) / 2;
-    static const char* P_LABELS[2] = {"MONAT", "TERMINE (SYNC)"};
-    for (int i = 0; i < 2; i++) {
-        lv_obj_t* b = box(p, pw, 32);
-        lv_obj_set_pos(b, M + i * (pw + 10), 56);
-        lv_obj_set_style_radius(b, 10, 0);
-        lv_obj_set_style_bg_color(b, (i == 0) ? accent() : cSurf2(), 0);
-        lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
-        lv_obj_add_flag(b, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_event_cb(b, [](lv_event_t* e) {
-            sCalMode = (int)(intptr_t)lv_event_get_user_data(e);
-            if (sCalMode == 1 && BleCompanion::isConnected()) {
-                BleCompanion::triggerCalendarSync();
-            }
-            haptic(HAPTIC_CLICK);
-            refreshAgenda(true);
-        }, LV_EVENT_CLICKED, (void*)(intptr_t)i);
-        lv_obj_center(caption(b, P_LABELS[i], cText()));
-        sCalTabBtns[i] = b;
-    }
+    static const char* TABS[2] = {"MONAT", "TERMINE"};
+    sCalTabs = tabBar(p, M, CONTENT_Y, CW, TABS, 2, 0, [](lv_event_t* e) {
+        sCalMode = (int)(intptr_t)lv_event_get_user_data(e);
+        haptic(HAPTIC_TICK);
+        refreshAgenda(true);
+    });
 
     sCalSubLbl = caption(p, "", cText2());
-    lv_obj_set_pos(sCalSubLbl, M, 94);
+    lv_obj_set_pos(sCalSubLbl, M, CONTENT_Y + 40);
 
-    // =========================================================================
-    // View 0: Month Grid Card
-    // =========================================================================
+    // --- month grid ---
     sMonthCard = card(p, CW, 350);
-    lv_obj_set_pos(sMonthCard, M, 116);
-
+    lv_obj_set_pos(sMonthCard, M, CONTENT_Y + 64);
     static const char* dow[7] = {"MO", "DI", "MI", "DO", "FR", "SA", "SO"};
     const int cellW = (CW - 24) / 7;
     for (int d = 0; d < 7; d++) {
@@ -355,145 +435,147 @@ void buildAgenda(lv_obj_t* scr) {
         if (d >= 5) accReg(dl, ACC_TEXT);
         lv_obj_set_pos(dl, 12 + d * cellW + (cellW - 22) / 2, 12);
     }
-
     for (int i = 0; i < 42; i++) {
-        int col = i % 7;
-        int row = i / 7;
         lv_obj_t* cell = box(sMonthCard, cellW - 4, 43);
-        lv_obj_set_pos(cell, 14 + col * cellW, 42 + row * 48);
+        lv_obj_set_pos(cell, 14 + (i % 7) * cellW, 42 + (i / 7) * 48);
         lv_obj_set_style_radius(cell, 12, 0);
         sCalCells[i] = cell;
         sCalCellTxts[i] = label(cell, F.small, cText(), "");
         lv_obj_center(sCalCellTxts[i]);
     }
 
-    // =========================================================================
-    // View 1: Google Calendar Agenda List Card
-    // =========================================================================
+    // --- synced events ---
     sAgendaCard = card(p, CW, 350);
-    lv_obj_set_pos(sAgendaCard, M, 116);
-
-    sEventEmpty = label(sAgendaCard, F.small, cText2(),
-                        "Keine Termine empfangen.\nHandy über BLE mit der App verbinden.");
-    lv_obj_set_pos(sEventEmpty, 16, 40);
-
+    lv_obj_set_pos(sAgendaCard, M, CONTENT_Y + 64);
+    sEventEmpty = emptyState(sAgendaCard, ICO_EVENT, "Keine Termine", "Companion-App per Bluetooth verbinden");
+    lv_obj_align(sEventEmpty, LV_ALIGN_TOP_MID, 0, 30);
     for (int i = 0; i < 6; i++) {
-        lv_obj_t* r = box(sAgendaCard, CW - 24, 46);
-        lv_obj_set_pos(r, 12, 10 + i * 50);
+        lv_obj_t* r = box(sAgendaCard, CW - 24, 40);
+        lv_obj_set_pos(r, 12, 10 + i * 44);
         lv_obj_set_style_radius(r, 10, 0);
         lv_obj_set_style_bg_color(r, cSurf2(), 0);
         lv_obj_set_style_bg_opa(r, LV_OPA_60, 0);
-
-        sEventTime[i] = label(r, F.small, accent(), "");
+        sEventTime[i] = caption(r, "", accent());
         accReg(sEventTime[i], ACC_TEXT);
-        lv_obj_set_pos(sEventTime[i], 10, 4);
-
+        lv_obj_set_pos(sEventTime[i], 10, 2);
         sEventTitle[i] = label(r, F.small, cText(), "");
-        lv_obj_set_pos(sEventTitle[i], 120, 4);
+        lv_obj_set_pos(sEventTitle[i], 118, 8);
         lv_label_set_long_mode(sEventTitle[i], LV_LABEL_LONG_DOT);
         lv_obj_set_width(sEventTitle[i], 210);
-
         sEventLoc[i] = caption(r, "", cText3());
-        lv_obj_set_pos(sEventLoc[i], 10, 26);
+        lv_obj_set_pos(sEventLoc[i], 10, 20);
         sEventRows[i] = r;
     }
-
-    sSyncBtn = box(sAgendaCard, CW - 24, 38);
-    lv_obj_set_pos(sSyncBtn, 12, 304);
-    lv_obj_set_style_radius(sSyncBtn, 12, 0);
-    lv_obj_set_style_bg_color(sSyncBtn, accent(), 0);
-    lv_obj_set_style_bg_opa(sSyncBtn, LV_OPA_COVER, 0);
-    accReg(sSyncBtn, ACC_BG);
-    lv_obj_add_flag(sSyncBtn, LV_OBJ_FLAG_CLICKABLE);
+    sSyncLbl = caption(sAgendaCard, "Noch nicht synchronisiert", cText3());
+    lv_obj_set_pos(sSyncLbl, 16, 282);
+    sSyncBtn = primaryButton(sAgendaCard, CW - 24, 40, ICO_SYNC, "Jetzt synchronisieren");
+    lv_obj_set_pos(sSyncBtn, 12, 300);
     lv_obj_add_event_cb(sSyncBtn, [](lv_event_t*) {
-        BleCompanion::triggerCalendarSync();
         haptic(HAPTIC_CLICK);
-        DisplayEngine::showNotification("Kalender Sync", "Synchronisierungsanfrage per BLE gesendet", 2000, "sync");
+        requestCalendarSync(true);
         refreshAgenda(true);
     }, LV_EVENT_CLICKED, NULL);
-    lv_obj_center(label(sSyncBtn, F.small, cBg(), "GOOGLE KALENDER JETZT SYNCHRONISIEREN"));
 
     setHidden(sAgendaCard, true);
 
     nav::PageDef d;
     d.root = p;
     d.refresh = refreshAgenda;
-    d.refreshMs = 5000;
+    d.refreshMs = 2000;
     d.ttlMs = 60000;
-    d.onShow = [] {
-        if (BleCompanion::isConnected()) {
-            BleCompanion::triggerCalendarSync();
-        }
-    };
+    d.onShow = [] { requestCalendarSync(false); };      // once per show, rate-limited by BleCompanion
     nav::registerPage(nav::PG_AGENDA, d);
 }
 
-// ============================================================== WATCHFACES SELECTOR
-static lv_obj_t* sFaceCards[FACE_COUNT];
-static lv_obj_t* sFaceIcons[FACE_COUNT];
-static lv_obj_t* sFaceLabels[FACE_COUNT];
-static lv_obj_t* sFaceChecks[FACE_COUNT];
+// ============================================================== FACE PICKER
+static int sPick = 0;
+static lv_obj_t *fpName, *fpDesc, *fpIdx, *fpApply, *fpActiveTag;
+static lv_obj_t* fpDots[FACE_COUNT];
 
 static void refreshFaces(bool) {
     int cur = SettingsStorage::get().watchfaceIndex;
+    char b[16];
+    setText(fpName, faceName(sPick));
+    setText(fpDesc, faceDescription(sPick));
+    snprintf(b, sizeof(b), "%d / %d", sPick + 1, FACE_COUNT);
+    setText(fpIdx, b);
+    bool active = (sPick == cur);
+    setHidden(fpActiveTag, !active);
+    setButtonText(fpApply, active ? "Aktiv" : "Auswählen");
+    setButtonEnabled(fpApply, !active);
     for (int i = 0; i < FACE_COUNT; i++) {
-        if (!sFaceCards[i]) continue;
-        bool active = (i == cur);
-        setBgColorIf(sFaceCards[i], active ? accent() : cSurf());
-        setBorderWidthIf(sFaceCards[i], active ? 0 : 1);
-        if (sFaceIcons[i])  setTextColorIf(sFaceIcons[i],  active ? cBg() : accent());
-        if (sFaceLabels[i]) setTextColorIf(sFaceLabels[i], active ? cBg() : cText());
-        if (sFaceChecks[i]) {
-            setTextColorIf(sFaceChecks[i], cBg());
-            setHidden(sFaceChecks[i], !active);
-        }
+        setBgColorIf(fpDots[i], i == sPick ? accent() : (i == cur ? cText2() : cStroke()));
     }
+}
+
+static void pickStep(int d) {
+    sPick = ((sPick + d) % FACE_COUNT + FACE_COUNT) % FACE_COUNT;
+    haptic(HAPTIC_TICK);
+    refreshFaces(true);
 }
 
 void buildFaces(lv_obj_t* scr) {
     lv_obj_t* p = pageRoot(scr);
-    title(p, "WATCHFACES");
+    title(p, "ZIFFERBLATT");
 
-    static const char* faceNames[FACE_COUNT] = {
-        "Modular", "Chronometer", "Minimal", "Wayfinder Ultra",
-        "Tourbillon Skeleton", "Casio Vintage", "Bauhaus", "Cyberpunk",
-        "Word Clock", "Neon Horizon", "Pilot Flieger", "Diver Pro",
-        "Radar Tactical", "Lifetime"
-    };
+    lv_obj_t* c = card(p, CW, 250);
+    lv_obj_set_pos(c, M, CONTENT_Y);
+    lv_obj_t* ic = label(c, F.icoXL, accent(), ICO_WATCH);
+    accReg(ic, ACC_TEXT);
+    lv_obj_align(ic, LV_ALIGN_TOP_MID, 0, 22);
+    fpIdx = caption(c, "1 / 14", cText3());
+    lv_obj_align(fpIdx, LV_ALIGN_TOP_RIGHT, -16, 12);
+    fpActiveTag = pill(c, "AKTIV", cOk());
+    lv_obj_align(fpActiveTag, LV_ALIGN_TOP_LEFT, 12, 8);
+    fpName = label(c, F.title, cText(), "");
+    lv_obj_align(fpName, LV_ALIGN_TOP_MID, 0, 104);
+    fpDesc = label(c, F.small, cText2(), "");
+    lv_obj_set_width(fpDesc, CW - 32);
+    lv_obj_set_style_text_align(fpDesc, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(fpDesc, LV_LABEL_LONG_WRAP);
+    lv_obj_align(fpDesc, LV_ALIGN_TOP_MID, 0, 150);
 
-    lv_obj_t* list = lv_obj_create(p);
-    lv_obj_set_size(list, CW, 390);
-    lv_obj_set_pos(list, M, 74);
-    lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(list, 0, 0);
-    lv_obj_set_style_pad_all(list, 0, 0);
-    lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(list, 8, 0);
-
+    lv_obj_t* dots = box(c, CW - 32, 10);
+    lv_obj_align(dots, LV_ALIGN_BOTTOM_MID, 0, -14);
+    lv_obj_set_flex_flow(dots, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(dots, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(dots, 6, 0);
     for (int i = 0; i < FACE_COUNT; i++) {
-        lv_obj_t* c = card(list, CW, 52);
-        lv_obj_set_style_radius(c, 18, 0);
-        lv_obj_add_flag(c, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_event_cb(c, [](lv_event_t* e) {
-            int idx = (int)(intptr_t)lv_event_get_user_data(e);
-            SettingsStorage::get().watchfaceIndex = idx;
-            SettingsStorage::save();
-            refreshFaces(true);
-            nav::markDirty(nav::PG_FACE);
-            haptic(HAPTIC_CLICK);
-            nav::home();
-        }, LV_EVENT_CLICKED, (void*)(intptr_t)i);
-
-        sFaceCards[i] = c;
-        sFaceIcons[i] = label(c, F.icoS, accent(), ICO_WATCH);
-        lv_obj_align(sFaceIcons[i], LV_ALIGN_LEFT_MID, 16, 0);
-        sFaceLabels[i] = label(c, F.small, cText(), faceNames[i]);
-        lv_obj_align(sFaceLabels[i], LV_ALIGN_LEFT_MID, 50, 0);
-
-        sFaceChecks[i] = label(c, F.icoS, cBg(), ICO_CHECK);
-        lv_obj_align(sFaceChecks[i], LV_ALIGN_RIGHT_MID, -16, 0);
+        fpDots[i] = box(dots, 8, 8);
+        lv_obj_set_style_radius(fpDots[i], 4, 0);
+        lv_obj_set_style_bg_opa(fpDots[i], LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(fpDots[i], cStroke(), 0);
     }
+
+    // carousel controls: prev / select / next
+    lv_obj_t* prev = iconButton(p, 64, ICO_CHEVRON_LEFT, cSurf2(), cText());
+    lv_obj_set_pos(prev, M, CONTENT_Y + 266);
+    lv_obj_add_event_cb(prev, [](lv_event_t*) { pickStep(-1); }, LV_EVENT_CLICKED, NULL);
+    lv_obj_t* next = iconButton(p, 64, ICO_CHEVRON_RIGHT, cSurf2(), cText());
+    lv_obj_set_pos(next, M + CW - 64, CONTENT_Y + 266);
+    lv_obj_add_event_cb(next, [](lv_event_t*) { pickStep(1); }, LV_EVENT_CLICKED, NULL);
+    fpApply = primaryButton(p, CW - 2 * 76, 64, ICO_CHECK, "Auswählen");
+    lv_obj_set_pos(fpApply, M + 76, CONTENT_Y + 266);
+    lv_obj_add_event_cb(fpApply, [](lv_event_t*) {
+        haptic(HAPTIC_CLICK);
+        faceSelect(sPick);                          // stores + toast
+        refreshFaces(true);
+        nav::home();
+    }, LV_EVENT_CLICKED, NULL);
+
+    // swipe inside the card also browses
+    lv_obj_add_flag(c, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(c, [](lv_event_t* e) {
+        lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
+        if (dir == LV_DIR_LEFT) pickStep(1);
+        else if (dir == LV_DIR_RIGHT) pickStep(-1);
+        (void)e;
+    }, LV_EVENT_GESTURE, NULL);
+
+    lv_obj_t* hint = caption(p, "LANGES DRÜCKEN AUF DEM ZIFFERBLATT WECHSELT AUCH", cText3());
+    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -40);
+
+    sPick = SettingsStorage::get().watchfaceIndex % FACE_COUNT;
     refreshFaces(true);
 
     nav::PageDef d;
@@ -501,50 +583,119 @@ void buildFaces(lv_obj_t* scr) {
     d.refresh = refreshFaces;
     d.refreshMs = 500;
     d.ttlMs = 15000;
+    d.onShow = [] { sPick = SettingsStorage::get().watchfaceIndex % FACE_COUNT; refreshFaces(true); };
     nav::registerPage(nav::PG_APP_FACES, d);
 }
 
-// ============================================================== SETTINGS APP
+// ============================================================== EINSTELLUNGEN
 static const uint16_t ACCENT_PALETTE[6] = {
     THEME_CYBER_CYAN, THEME_ELECTRIC_LIME, THEME_NEON_AMBER,
     THEME_MAGENTA_PULSE, THEME_CRIMSON_WAR, THEME_STEALTH_BLUE
 };
-static lv_obj_t* sColorDots[6];
-static lv_obj_t* sSetSoundVal = nullptr;
-static lv_obj_t* sSetBeaconVal = nullptr;
-static lv_obj_t* sSetGoalVal = nullptr;
+static const uint16_t TIMEOUT_STEPS[] = {15, 30, 60, 0};        // 0 = Nie
+static const uint32_t GOAL_STEPS[] = {5000, 8000, 10000, 12000, 15000, 20000};
 
-static lv_color_t colorFrom565(uint16_t c) {
-    uint8_t r = ((c >> 11) & 0x1F) << 3; r |= r >> 5;
-    uint8_t g = ((c >> 5) & 0x3F) << 2;  g |= g >> 6;
-    uint8_t b = (c & 0x1F) << 3;         b |= b >> 5;
-    return lv_color_make(r, g, b);
+enum SetRow : uint8_t {
+    SR_AOD = 0, SR_WRIST, SR_WIFI, SR_BLE, SR_GPS, SR_LORA, SR_BEACON, SR_SOUND, SR_HAPTIC,   // toggles
+    SR_TIMEOUT, SR_GOAL, SR_TZ, SR_SYNC, SR_ABOUT,                                           // value rows
+    SR_COUNT
+};
+static lv_obj_t* sSetRows[SR_COUNT] = {nullptr};
+static lv_obj_t* sColorDots[6];
+
+static bool setRowState(int id) {
+    SystemSettings& s = SettingsStorage::get();
+    switch (id) {
+        case SR_AOD:    return s.aodEnabled;
+        case SR_WRIST:  return s.wristWakeEnabled;
+        case SR_WIFI:   return s.wifiApEnabled;
+        case SR_BLE:    return BleCompanion::isEnabled();
+        case SR_GPS:    return GpsManager::isEnabled();
+        case SR_LORA:   return RadioLoRa::isEnabled();
+        case SR_BEACON: return s.loraBeaconEnabled;
+        case SR_SOUND:  return s.soundEnabled;
+        case SR_HAPTIC: return s.hapticEnabled;
+        default: return false;
+    }
 }
 
 static void refreshSettings(bool) {
     SystemSettings& s = SettingsStorage::get();
     for (int i = 0; i < 6; i++) {
-        if (!sColorDots[i]) continue;
-        bool sel = (s.accentColor == ACCENT_PALETTE[i]);
-        lv_obj_set_style_border_width(sColorDots[i], sel ? 3 : 0, 0);
+        if (sColorDots[i]) setBorderWidthIf(sColorDots[i], (s.accentColor == ACCENT_PALETTE[i]) ? 3 : 0);
     }
-    if (sSetSoundVal)  setText(sSetSoundVal, s.soundEnabled ? "ON" : "OFF");
-    if (sSetBeaconVal) setText(sSetBeaconVal, s.loraBeaconEnabled ? "ON" : "OFF");
-    if (sSetGoalVal) {
-        char b[24];
-        snprintf(b, sizeof(b), "%lu", (unsigned long)s.dailyStepGoal);
-        setText(sSetGoalVal, b);
+    for (int i = SR_AOD; i <= SR_HAPTIC; i++) setToggleRow(sSetRows[i], setRowState(i));
+    char b[48];
+    if (s.autoSleepSec == 0) snprintf(b, sizeof(b), "Nie");
+    else snprintf(b, sizeof(b), "%u s", (unsigned)s.autoSleepSec);
+    setValueRow(sSetRows[SR_TIMEOUT], b);
+    snprintf(b, sizeof(b), "%lu", (unsigned long)s.dailyStepGoal);
+    setValueRow(sSetRows[SR_GOAL], b);
+    const char* tz = RtcManager::timezoneName();
+    setValueRow(sSetRows[SR_TZ], tz && tz[0] ? tz : "--");
+    char a[24];
+    ago(a, sizeof(a), RtcManager::lastSyncEpoch());
+    const char* src = RtcManager::lastSyncSource();
+    snprintf(b, sizeof(b), "%s %s", src && src[0] ? src : "--", a);
+    setValueRow(sSetRows[SR_SYNC], b);
+}
+
+static void onSetToggle(lv_event_t* e) {
+    int id = (int)(intptr_t)lv_event_get_user_data(e);
+    SystemSettings& s = SettingsStorage::get();
+    switch (id) {
+        case SR_AOD:    s.aodEnabled = !s.aodEnabled; break;
+        case SR_WRIST:  s.wristWakeEnabled = !s.wristWakeEnabled; break;
+        case SR_WIFI:
+            s.wifiApEnabled = !s.wifiApEnabled;
+            CompanionServer::requestAp(s.wifiApEnabled);
+            nav::markDirty(nav::PG_APP_CONNECT);
+            if (s.wifiApEnabled) DisplayEngine::showToast("Hotspot", "Zugangsdaten unter Verbinden", 2200, ICO_WIFI);
+            break;
+        case SR_BLE:    BleCompanion::setEnabled(!BleCompanion::isEnabled()); nav::markDirty(nav::PG_APP_CONNECT); break;
+        case SR_GPS:    GpsManager::setEnabled(!GpsManager::isEnabled()); nav::markDirty(nav::PG_POSITION); break;
+        case SR_LORA:   RadioLoRa::setEnabled(!RadioLoRa::isEnabled()); nav::markDirty(nav::PG_LORA); break;
+        case SR_BEACON: s.loraBeaconEnabled = !s.loraBeaconEnabled; break;
+        case SR_SOUND:  s.soundEnabled = !s.soundEnabled; if (s.soundEnabled) AudioEngine::playSoundFx(SFX_CHIME); break;
+        case SR_HAPTIC: s.hapticEnabled = !s.hapticEnabled; break;
+        default: break;
     }
+    SettingsStorage::save();
+    nav::markDirty(nav::PG_CONTROL);
+    haptic(HAPTIC_TICK);
+    refreshSettings(true);
+}
+
+static void onFactoryConfirm(bool ok, void*) {
+    if (!ok) return;
+    SettingsStorage::resetDefaults();
+    SettingsStorage::flushNow();
+    ESP.restart();
 }
 
 void buildSettings(lv_obj_t* scr) {
     lv_obj_t* p = pageRoot(scr);
-    title(p, "SETTINGS");
+    title(p, "EINSTELLUNGEN");
 
-    // Accent color card
-    lv_obj_t* cc = card(p, CW, 92);
-    lv_obj_set_pos(cc, M, 76);
-    lv_obj_t* cl = caption(cc, "ACCENT COLOR", cText2());
+    lv_obj_t* list = lv_obj_create(p);
+    lv_obj_set_size(list, SCR_W, SCR_H - CONTENT_Y);
+    lv_obj_set_pos(list, 0, CONTENT_Y);
+    lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(list, 0, 0);
+    lv_obj_set_style_radius(list, 0, 0);
+    lv_obj_set_style_pad_hor(list, M, 0);
+    lv_obj_set_style_pad_top(list, 0, 0);
+    lv_obj_set_style_pad_bottom(list, 40, 0);
+    lv_obj_set_scroll_dir(list, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(list, 8, 0);
+
+    // ---- ANZEIGE ----
+    sectionHeader(list, -1, "ANZEIGE");
+    lv_obj_t* cc = card(list, CW, 92);
+    lv_obj_set_style_radius(cc, R_TILE, 0);
+    lv_obj_t* cl = caption(cc, "AKZENTFARBE", cText2());
     lv_obj_set_pos(cl, 18, 12);
     const int dotSpacing = (CW - 36) / 6;
     for (int i = 0; i < 6; i++) {
@@ -554,70 +705,84 @@ void buildSettings(lv_obj_t* scr) {
         lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
         lv_obj_set_style_bg_color(dot, colorFrom565(ACCENT_PALETTE[i]), 0);
         lv_obj_set_style_border_color(dot, lv_color_white(), 0);
-        lv_obj_add_flag(dot, LV_OBJ_FLAG_CLICKABLE);
+        pressable(dot);
         lv_obj_add_event_cb(dot, [](lv_event_t* e) {
             int idx = (int)(intptr_t)lv_event_get_user_data(e);
             SettingsStorage::get().accentColor = ACCENT_PALETTE[idx];
             SettingsStorage::save();
             refreshSettings(true);
-            haptic(HAPTIC_CLICK);
+            haptic(HAPTIC_TICK);
         }, LV_EVENT_CLICKED, (void*)(intptr_t)i);
         sColorDots[i] = dot;
     }
-
-    auto makeOptionRow = [&](int y, const char* ic, const char* txt, lv_obj_t** valOut, lv_event_cb_t cb) {
-        lv_obj_t* r = card(p, CW, 56);
-        lv_obj_set_style_radius(r, 18, 0);
-        lv_obj_set_pos(r, M, y);
-        lv_obj_add_flag(r, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_event_cb(r, cb, LV_EVENT_CLICKED, NULL);
-        lv_obj_t* iObj = label(r, F.icoS, accent(), ic);
-        accReg(iObj, ACC_TEXT);
-        lv_obj_align(iObj, LV_ALIGN_LEFT_MID, 16, 0);
-        lv_obj_t* tObj = label(r, F.small, cText(), txt);
-        lv_obj_align(tObj, LV_ALIGN_LEFT_MID, 50, 0);
-        if (valOut) {
-            *valOut = label(r, F.small, accent(), "");
-            accReg(*valOut, ACC_TEXT);
-            lv_obj_align(*valOut, LV_ALIGN_RIGHT_MID, -18, 0);
-        }
-    };
-
-    makeOptionRow(178, ICO_VOLUME_UP, "Sound Effects", &sSetSoundVal, [](lv_event_t*) {
+    sSetRows[SR_AOD]   = toggleRow(list, -1, ICO_WATCH, "Always-On-Display", false, onSetToggle, (void*)(intptr_t)SR_AOD);
+    sSetRows[SR_WRIST] = toggleRow(list, -1, ICO_VISIBILITY, "Handgelenk-Wecken", false, onSetToggle, (void*)(intptr_t)SR_WRIST);
+    sSetRows[SR_TIMEOUT] = valueRow(list, -1, ICO_TIMER, "Bildschirm-Timeout", "--", [](lv_event_t*) {
         SystemSettings& s = SettingsStorage::get();
-        s.soundEnabled = !s.soundEnabled;
+        int n = sizeof(TIMEOUT_STEPS) / sizeof(TIMEOUT_STEPS[0]);
+        int next = 0;
+        for (int i = 0; i < n; i++) if (s.autoSleepSec == TIMEOUT_STEPS[i]) { next = (i + 1) % n; break; }
+        s.autoSleepSec = TIMEOUT_STEPS[next];
         SettingsStorage::save();
-        if (s.soundEnabled) AudioEngine::playSoundFx(SFX_CHIME);
+        nav::markDirty(nav::PG_CONTROL);
+        haptic(HAPTIC_TICK);
         refreshSettings(true);
-        haptic(HAPTIC_CLICK);
     });
 
-    makeOptionRow(242, ICO_PODCASTS, "LoRa Auto-Beacon", &sSetBeaconVal, [](lv_event_t*) {
-        SystemSettings& s = SettingsStorage::get();
-        s.loraBeaconEnabled = !s.loraBeaconEnabled;
-        SettingsStorage::save();
-        refreshSettings(true);
-        haptic(HAPTIC_CLICK);
+    // ---- VERBINDUNGEN ----
+    sectionHeader(list, -1, "VERBINDUNGEN");
+    sSetRows[SR_WIFI]   = toggleRow(list, -1, ICO_WIFI, "WLAN-Hotspot", false, onSetToggle, (void*)(intptr_t)SR_WIFI);
+    sSetRows[SR_BLE]    = toggleRow(list, -1, ICO_SMARTPHONE, "Bluetooth", false, onSetToggle, (void*)(intptr_t)SR_BLE);
+    sSetRows[SR_GPS]    = toggleRow(list, -1, ICO_SATELLITE_ALT, "GPS", false, onSetToggle, (void*)(intptr_t)SR_GPS);
+    sSetRows[SR_LORA]   = toggleRow(list, -1, ICO_PODCASTS, "LoRa Mesh", false, onSetToggle, (void*)(intptr_t)SR_LORA);
+    sSetRows[SR_BEACON] = toggleRow(list, -1, ICO_CELL_TOWER, "LoRa Positions-Beacon", false, onSetToggle, (void*)(intptr_t)SR_BEACON);
+    lv_obj_t* cn = valueRow(list, -1, ICO_QR_CODE_2, "Verbinden (QR, PIN)", "", [](lv_event_t*) {
+        haptic(HAPTIC_TICK);
+        nav::openApp(nav::PG_APP_CONNECT);
     });
+    (void)cn;
 
-    makeOptionRow(306, ICO_FOOTPRINT, "Daily Step Goal", &sSetGoalVal, [](lv_event_t*) {
+    // ---- ZEIT ----
+    sectionHeader(list, -1, "ZEIT");
+    sSetRows[SR_TZ]   = valueRow(list, -1, ICO_SCHEDULE, "Zeitzone", "--", nullptr);
+    sSetRows[SR_SYNC] = valueRow(list, -1, ICO_SYNC, "Letzte Zeitsync", "--", nullptr);
+
+    // ---- SYSTEM ----
+    sectionHeader(list, -1, "SYSTEM");
+    sSetRows[SR_SOUND]  = toggleRow(list, -1, ICO_VOLUME_UP, "Töne", false, onSetToggle, (void*)(intptr_t)SR_SOUND);
+    sSetRows[SR_HAPTIC] = toggleRow(list, -1, ICO_VIBRATION, "Haptik", false, onSetToggle, (void*)(intptr_t)SR_HAPTIC);
+    sSetRows[SR_GOAL] = valueRow(list, -1, ICO_FOOTPRINT, "Tägliches Schrittziel", "--", [](lv_event_t*) {
         SystemSettings& s = SettingsStorage::get();
-        static const uint32_t goals[] = {5000, 8000, 10000, 12000, 15000, 20000};
+        int n = sizeof(GOAL_STEPS) / sizeof(GOAL_STEPS[0]);
         int next = 2;
-        for (int i = 0; i < 6; i++) {
-            if (s.dailyStepGoal == goals[i]) { next = (i + 1) % 6; break; }
-        }
-        s.dailyStepGoal = goals[next];
+        for (int i = 0; i < n; i++) if (s.dailyStepGoal == GOAL_STEPS[i]) { next = (i + 1) % n; break; }
+        s.dailyStepGoal = GOAL_STEPS[next];
         SettingsStorage::save();
         nav::markDirty(nav::PG_ACTIVITY);
+        nav::markDirty(nav::PG_FACE);
+        haptic(HAPTIC_TICK);
         refreshSettings(true);
-        haptic(HAPTIC_CLICK);
     });
-
-    makeOptionRow(370, ICO_POWER_SETTINGS_NEW, "Power & Restart Menu", nullptr, [](lv_event_t*) {
-        haptic(HAPTIC_CLICK);
+    char ver[40];
+    snprintf(ver, sizeof(ver), "%s (%s)", OS_VERSION, OS_BUILD);
+    sSetRows[SR_ABOUT] = valueRow(list, -1, ICO_INFO, "Über WatchOS Ultra", ver, [](lv_event_t*) {
+        haptic(HAPTIC_TICK);
+        char msg[120];
+        snprintf(msg, sizeof(msg), "%s\nVersion %s, Build %s\nLilyGO T-Watch Ultra (ESP32-S3)", OS_NAME, OS_VERSION, OS_BUILD);
+        confirmDialog("Über", msg, "OK", "Schliessen", nullptr, nullptr, false);
+    });
+    lv_obj_t* pw = valueRow(list, -1, ICO_POWER_SETTINGS_NEW, "Energie / Neustart", "", [](lv_event_t*) {
+        haptic(HAPTIC_TICK);
         nav::openApp(nav::PG_APP_POWER);
     });
+    (void)pw;
+    lv_obj_t* fr = valueRow(list, -1, ICO_DELETE, "Werkseinstellungen", "", [](lv_event_t*) {
+        haptic(HAPTIC_TICK);
+        confirmDialog("Werkseinstellungen?", "Alle Einstellungen werden zurückgesetzt und die Uhr startet neu.",
+                      "Zurücksetzen", "Abbrechen", onFactoryConfirm, nullptr, true);
+    });
+    lv_obj_t* frIc = lv_obj_get_child(fr, 0);
+    if (frIc) lv_obj_set_style_text_color(frIc, cCrit(), 0);
 
     refreshSettings(true);
 
@@ -629,161 +794,131 @@ void buildSettings(lv_obj_t* scr) {
     nav::registerPage(nav::PG_APP_SETTINGS, d);
 }
 
-// =============================================================================
-//  Media / YouTube Music App (Standalone full-screen player)
-// =============================================================================
-static lv_obj_t *sAppMediaTitle = nullptr;
-static lv_obj_t *sAppMediaArtist = nullptr;
-static lv_obj_t *sAppMediaPlayIcon = nullptr;
-static lv_obj_t *sAppMediaStatusPill = nullptr;
-static lv_obj_t *sAppMediaStatusTxt = nullptr;
-static lv_obj_t *sAppMediaVolBar = nullptr;
-static lv_obj_t *sAppMediaVolLbl = nullptr;
+// ============================================================== MEDIA REMOTE
+static lv_obj_t *sAppMediaTitle, *sAppMediaArtist, *sAppMediaPlay, *sAppMediaPill;
+static lv_obj_t *sAppMediaVolBar, *sAppMediaVolLbl;
+static lv_obj_t *sAppMediaBtns[5];
 
 static void refreshAppMedia(bool) {
-    const MediaState& ms = BleCompanion::getMediaState();
+    MediaState ms = BleCompanion::getMediaState();
+    bool bleOn = BleCompanion::isEnabled();
     bool bleOk = BleCompanion::isConnected();
-    bool wifiOk = CompanionServer::isApActive();
+    bool hasTrack = bleOk && ms.title[0];
 
-    if (sAppMediaTitle) setText(sAppMediaTitle, ms.title);
-    if (sAppMediaArtist) setText(sAppMediaArtist, ms.artist);
-    if (sAppMediaPlayIcon) setText(sAppMediaPlayIcon, ms.isPlaying ? ICO_PAUSE : ICO_PLAY_ARROW);
+    setText(sAppMediaTitle, hasTrack ? ms.title : "Keine Wiedergabe");
+    if (!bleOk) setText(sAppMediaArtist, bleOn ? "Handy per Bluetooth verbinden" : "Bluetooth ist aus");
+    else if (ms.artist[0]) setText(sAppMediaArtist, ms.artist);
+    else setText(sAppMediaArtist, ms.isPlaying ? "Wiedergabe" : "Pausiert");
 
-    if (sAppMediaStatusPill && sAppMediaStatusTxt) {
-        if (bleOk) {
-            setBgColorIf(sAppMediaStatusPill, cOk());
-            setTextColorIf(sAppMediaStatusTxt, cOk());
-            setText(sAppMediaStatusTxt, "BLE VERBUNDEN");
-        } else if (wifiOk) {
-            setBgColorIf(sAppMediaStatusPill, accent());
-            setTextColorIf(sAppMediaStatusTxt, accent());
-            setText(sAppMediaStatusTxt, "WLAN AP BEREIT");
-        } else {
-            setBgColorIf(sAppMediaStatusPill, cCrit());
-            setTextColorIf(sAppMediaStatusTxt, cCrit());
-            setText(sAppMediaStatusTxt, "NICHT GEKOPPELT");
-        }
-    }
+    lv_obj_t* playIc = lv_obj_get_child(sAppMediaPlay, 0);
+    if (playIc) setText(playIc, (bleOk && ms.isPlaying) ? ICO_PAUSE : ICO_PLAY_ARROW);
 
-    if (sAppMediaVolBar) lv_bar_set_value(sAppMediaVolBar, ms.volumePct, LV_ANIM_OFF);
-    if (sAppMediaVolLbl) {
-        char vb[16];
-        snprintf(vb, sizeof(vb), "%u%%", ms.volumePct);
-        setText(sAppMediaVolLbl, vb);
-    }
+    if (bleOk) setPill(sAppMediaPill, "VERBUNDEN", cOk());
+    else if (bleOn) setPill(sAppMediaPill, "NICHT VERBUNDEN", cWarn());
+    else setPill(sAppMediaPill, "BLUETOOTH AUS", cCrit());
+
+    setBar(sAppMediaVolBar, bleOk ? ms.volumePct : 0);
+    char vb[16];
+    if (bleOk) snprintf(vb, sizeof(vb), "%u%%", (unsigned)ms.volumePct);
+    else snprintf(vb, sizeof(vb), "--");
+    setText(sAppMediaVolLbl, vb);
+    for (int i = 0; i < 5; i++) setButtonEnabled(sAppMediaBtns[i], bleOk);
 }
 
 void buildAppMedia(lv_obj_t* scr) {
     lv_obj_t* p = pageRoot(scr);
-    title(p, "YOUTUBE");
+    title(p, "MEDIEN");
+    sAppMediaPill = pill(p, "BLUETOOTH AUS", cCrit());
+    lv_obj_align(sAppMediaPill, LV_ALIGN_TOP_RIGHT, -M, 24);
 
-    // Status Pill
-    sAppMediaStatusPill = box(p, 138, 30);
-    lv_obj_align(sAppMediaStatusPill, LV_ALIGN_TOP_RIGHT, -M, 24);
-    lv_obj_set_style_radius(sAppMediaStatusPill, 15, 0);
-    lv_obj_set_style_bg_opa(sAppMediaStatusPill, LV_OPA_30, 0);
-    sAppMediaStatusTxt = caption(sAppMediaStatusPill, "BEREIT", cText2());
-    lv_obj_center(sAppMediaStatusTxt);
-
-    // Album Art & Metadata Card
-    lv_obj_t* cardMeta = card(p, CW, 175);
-    lv_obj_set_pos(cardMeta, M, 72);
-    lv_obj_set_style_radius(cardMeta, 24, 0);
-
+    lv_obj_t* cardMeta = card(p, CW, 160);
+    lv_obj_set_pos(cardMeta, M, CONTENT_Y);
     lv_obj_t* artBox = box(cardMeta, 64, 64);
     lv_obj_set_pos(artBox, 18, 18);
     lv_obj_set_style_radius(artBox, 18, 0);
-    lv_obj_set_style_bg_color(artBox, lv_color_hex(0xFF0000), 0);
-    lv_obj_t* ytIco = label(artBox, F.icoM, lv_color_hex(0xFFFFFF), ICO_PLAY_ARROW);
-    lv_obj_center(ytIco);
+    lv_obj_set_style_bg_opa(artBox, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(artBox, cSurf2(), 0);
+    lv_obj_t* ico = label(artBox, F.icoM, accent(), ICO_SMARTPHONE);
+    accReg(ico, ACC_TEXT);
+    lv_obj_center(ico);
 
-    sAppMediaTitle = label(cardMeta, F.body, cText(), "YouTube Music");
+    sAppMediaTitle = label(cardMeta, F.body, cText(), "Keine Wiedergabe");
     lv_obj_set_pos(sAppMediaTitle, 96, 20);
-    lv_label_set_long_mode(sAppMediaTitle, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    lv_label_set_long_mode(sAppMediaTitle, LV_LABEL_LONG_DOT);
     lv_obj_set_width(sAppMediaTitle, CW - 116);
-
-    sAppMediaArtist = caption(cardMeta, "Warte auf Smartphone...", cText2());
+    sAppMediaArtist = caption(cardMeta, "Bluetooth ist aus", cText2());
     lv_obj_set_pos(sAppMediaArtist, 96, 52);
     lv_obj_set_width(sAppMediaArtist, CW - 116);
+    lv_label_set_long_mode(sAppMediaArtist, LV_LABEL_LONG_DOT);
 
-    // Volume readout inside meta card
-    lv_obj_t* volCap = caption(cardMeta, "Lautstärke", cText3());
-    lv_obj_set_pos(volCap, 18, 102);
-
+    lv_obj_t* volCap = caption(cardMeta, "LAUTSTÄRKE", cText3());
+    lv_obj_set_pos(volCap, 18, 100);
     sAppMediaVolBar = lv_bar_create(cardMeta);
-    lv_obj_set_size(sAppMediaVolBar, CW - 100, 10);
+    lv_obj_set_size(sAppMediaVolBar, CW - 100, 8);
     lv_obj_set_pos(sAppMediaVolBar, 18, 126);
-    lv_obj_set_style_radius(sAppMediaVolBar, 5, LV_PART_MAIN);
-    lv_obj_set_style_radius(sAppMediaVolBar, 5, LV_PART_INDICATOR);
+    lv_obj_set_style_radius(sAppMediaVolBar, 4, LV_PART_MAIN);
+    lv_obj_set_style_radius(sAppMediaVolBar, 4, LV_PART_INDICATOR);
     lv_obj_set_style_bg_color(sAppMediaVolBar, cStroke(), LV_PART_MAIN);
-    lv_obj_set_style_bg_color(sAppMediaVolBar, lv_color_hex(0xFF3B30), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(sAppMediaVolBar, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(sAppMediaVolBar, accent(), LV_PART_INDICATOR);
+    accReg(sAppMediaVolBar, ACC_BG, LV_PART_INDICATOR);
     lv_bar_set_range(sAppMediaVolBar, 0, 100);
-    lv_bar_set_value(sAppMediaVolBar, 50, LV_ANIM_OFF);
+    sAppMediaVolLbl = caption(cardMeta, "--", cText2());
+    lv_obj_align(sAppMediaVolLbl, LV_ALIGN_TOP_RIGHT, -18, 120);
 
-    sAppMediaVolLbl = caption(cardMeta, "50%", cText2());
-    lv_obj_align(sAppMediaVolLbl, LV_ALIGN_TOP_RIGHT, -18, 122);
-
-    // Big Playback Controls (y = 265)
-    auto makeBtn = [&](int x, int y, int w, int h, const char* icon, bool isIco, uint32_t col, lv_event_cb_t cb) -> lv_obj_t* {
-        lv_obj_t* b = box(p, w, h);
-        lv_obj_set_pos(b, x, y);
-        lv_obj_set_style_radius(b, h / 2, 0);
-        lv_obj_set_style_bg_color(b, lv_color_hex(col), 0);
-        lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
-        lv_obj_add_flag(b, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, NULL);
-        lv_obj_t* ic = label(b, isIco ? F.icoM : F.body, cText(), icon);
-        lv_obj_center(ic);
-        return b;
-    };
-
-    // Prev Track
-    makeBtn(M + 12, 268, 80, 80, ICO_CHEVRON_LEFT, true, 0x1C1C1E, [](lv_event_t*) {
+    // transport: prev / play / next
+    const int ty = CONTENT_Y + 184;
+    sAppMediaBtns[0] = iconButton(p, 72, ICO_CHEVRON_LEFT, cSurf2(), cText());
+    lv_obj_set_pos(sAppMediaBtns[0], M + 24, ty + 12);
+    lv_obj_add_event_cb(sAppMediaBtns[0], [](lv_event_t*) {
         BleCompanion::sendMediaCommand("CMD:MEDIA:PREV");
         haptic(HAPTIC_TICK);
-    });
+    }, LV_EVENT_CLICKED, NULL);
 
-    // Big Center Play/Pause Button (92x92)
-    lv_obj_t* playBtn = box(p, 96, 96);
-    lv_obj_set_pos(playBtn, (SCR_W - 96) / 2, 260);
-    lv_obj_set_style_radius(playBtn, 48, 0);
-    lv_obj_set_style_bg_color(playBtn, lv_color_hex(0xFF3B30), 0);
-    lv_obj_set_style_bg_opa(playBtn, LV_OPA_COVER, 0);
-    lv_obj_add_flag(playBtn, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(playBtn, [](lv_event_t*) {
+    sAppMediaPlay = iconButton(p, 96, ICO_PLAY_ARROW, accent(), cBg());
+    accReg(sAppMediaPlay, ACC_BG);
+    lv_obj_set_pos(sAppMediaPlay, (SCR_W - 96) / 2, ty);
+    lv_obj_add_event_cb(sAppMediaPlay, [](lv_event_t*) {
+        MediaState ms = BleCompanion::getMediaState();
         BleCompanion::sendMediaCommand("CMD:MEDIA:PLAY_PAUSE");
-        const MediaState& ms = BleCompanion::getMediaState();
-        BleCompanion::setMediaState(!ms.isPlaying, ms.title, ms.artist, ms.volumePct);
+        BleCompanion::setMediaPlaying(!ms.isPlaying);      // optimistic local state
         haptic(HAPTIC_CLICK);
         refreshAppMedia(true);
+        nav::markDirty(nav::PG_CONTROL);
     }, LV_EVENT_CLICKED, NULL);
-    sAppMediaPlayIcon = label(playBtn, F.icoL, lv_color_hex(0xFFFFFF), ICO_PLAY_ARROW);
-    lv_obj_center(sAppMediaPlayIcon);
+    sAppMediaBtns[1] = sAppMediaPlay;
 
-    // Next Track
-    makeBtn(SCR_W - M - 92, 268, 80, 80, ICO_SKIP_NEXT, true, 0x1C1C1E, [](lv_event_t*) {
+    sAppMediaBtns[2] = iconButton(p, 72, ICO_SKIP_NEXT, cSurf2(), cText());
+    lv_obj_set_pos(sAppMediaBtns[2], SCR_W - M - 24 - 72, ty + 12);
+    lv_obj_add_event_cb(sAppMediaBtns[2], [](lv_event_t*) {
         BleCompanion::sendMediaCommand("CMD:MEDIA:NEXT");
         haptic(HAPTIC_TICK);
-    });
+    }, LV_EVENT_CLICKED, NULL);
 
-    // Volume Stepper Buttons (y = 376)
-    makeBtn(M + 20, 380, 160, 52, "VOL  -", false, 0x1C1C1E, [](lv_event_t*) {
+    // volume
+    const int vy = ty + 120;
+    const int vw = (CW - 14) / 2;
+    sAppMediaBtns[3] = secondaryButton(p, vw, 52, ICO_VOLUME_OFF, "Leiser");
+    lv_obj_set_pos(sAppMediaBtns[3], M, vy);
+    lv_obj_add_event_cb(sAppMediaBtns[3], [](lv_event_t*) {
+        MediaState ms = BleCompanion::getMediaState();
         BleCompanion::sendMediaCommand("CMD:MEDIA:VOL_DOWN");
-        const MediaState& ms = BleCompanion::getMediaState();
-        uint8_t nv = ms.volumePct > 5 ? ms.volumePct - 5 : 0;
-        BleCompanion::setMediaState(ms.isPlaying, ms.title, ms.artist, nv);
+        BleCompanion::setMediaVolume(ms.volumePct > 5 ? ms.volumePct - 5 : 0);
         haptic(HAPTIC_TICK);
         refreshAppMedia(true);
-    });
-
-    makeBtn(SCR_W - M - 180, 380, 160, 52, "VOL  +", false, 0x1C1C1E, [](lv_event_t*) {
+    }, LV_EVENT_CLICKED, NULL);
+    sAppMediaBtns[4] = secondaryButton(p, vw, 52, ICO_VOLUME_UP, "Lauter");
+    lv_obj_set_pos(sAppMediaBtns[4], M + vw + 14, vy);
+    lv_obj_add_event_cb(sAppMediaBtns[4], [](lv_event_t*) {
+        MediaState ms = BleCompanion::getMediaState();
         BleCompanion::sendMediaCommand("CMD:MEDIA:VOL_UP");
-        const MediaState& ms = BleCompanion::getMediaState();
-        uint8_t nv = ms.volumePct < 95 ? ms.volumePct + 5 : 100;
-        BleCompanion::setMediaState(ms.isPlaying, ms.title, ms.artist, nv);
+        BleCompanion::setMediaVolume(ms.volumePct < 95 ? ms.volumePct + 5 : 100);
         haptic(HAPTIC_TICK);
         refreshAppMedia(true);
-    });
+    }, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t* hint = caption(p, "FERNBEDIENUNG FÜR DAS HANDY (BLUETOOTH)", cText3());
+    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -28);
 
     refreshAppMedia(true);
 
