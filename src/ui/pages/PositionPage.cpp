@@ -235,10 +235,16 @@ static void populateSearchList() {
             int idx = (int)(intptr_t)lv_event_get_user_data(e);
             if (idx < 0 || idx >= sNumResults) return;
             const NavPlace& pl = sSearchResults[idx];
-            if (pl.rank == 0) NavEngine::setMode(NAV_MODE_MESH);
-            else if (NavEngine::getMode() == NAV_MODE_MESH) NavEngine::setMode(NAV_MODE_CAR);
-            bool accepted = NavEngine::startNavigation(pl.name, pl.lat, pl.lon);
-            if (!accepted) DisplayEngine::showToast("Navigation", "Route kann gerade nicht gestartet werden", 2200, ICO_ROUTE);
+            if (pl.rank == 6) {
+                NavEngine::startBacktrack();
+            } else if (pl.rank == 7) {
+                NavEngine::loadGpxRoute(pl.name);
+            } else {
+                if (pl.rank == 0) NavEngine::setMode(NAV_MODE_MESH);
+                else if (NavEngine::getMode() == NAV_MODE_MESH) NavEngine::setMode(NAV_MODE_CAR);
+                bool accepted = NavEngine::startNavigation(pl.name, pl.lat, pl.lon);
+                if (!accepted) DisplayEngine::showToast("Navigation", "Route kann gerade nicht gestartet werden", 2200, ICO_ROUTE);
+            }
             sManualPan = false;
             sAutoZoom = true;
             sMapNeedsRedraw = true;
@@ -248,15 +254,22 @@ static void populateSearchList() {
 
         bool isMesh = (sSearchResults[i].rank == 0);
         bool isPoi  = (sSearchResults[i].rank == 5);
-        lv_color_t icCol = isMesh ? cMesh() : isPoi ? cWarn() : accent();
-        lv_obj_t* ic = label(row, F.icoS, icCol, isMesh ? ICO_PODCASTS : isPoi ? ICO_FLAG : ICO_PLACE);
+        bool isBack = (sSearchResults[i].rank == 6);
+        bool isGpx  = (sSearchResults[i].rank == 7);
+        lv_color_t icCol = isMesh ? cMesh() : isPoi ? cWarn() : (isBack || isGpx) ? cOk() : accent();
+        const char* iconStr = isMesh ? ICO_PODCASTS : isPoi ? ICO_FLAG : isBack ? ICO_HISTORY : isGpx ? ICO_ROUTE : ICO_PLACE;
+        lv_obj_t* ic = label(row, F.icoS, icCol, iconStr);
         lv_obj_align(ic, LV_ALIGN_LEFT_MID, 12, 0);
-        lv_obj_t* nm = label(row, F.small, cText(), sSearchResults[i].name);
+        lv_obj_t* nm = label(row, F.small, (isBack || isGpx) ? cOk() : cText(), sSearchResults[i].name);
         lv_label_set_long_mode(nm, LV_LABEL_LONG_DOT);
         lv_obj_set_width(nm, 210);
         lv_obj_align(nm, LV_ALIGN_LEFT_MID, 42, 0);
         char distBuf[24];
-        if (havePos) {
+        if (isBack) {
+            snprintf(distBuf, sizeof(distBuf), "UMKEHREN");
+        } else if (isGpx) {
+            snprintf(distBuf, sizeof(distBuf), "SD ROUTE");
+        } else if (havePos) {
             double dlat = (sSearchResults[i].lat - st.curLat) * 111.32;
             double dlon = (sSearchResults[i].lon - st.curLon) * 111.32 * cos(st.curLat * M_PI / 180.0);
             double km = sqrt(dlat * dlat + dlon * dlon);
@@ -623,6 +636,13 @@ void buildPosition(lv_obj_t* scr) {
         DisplayEngine::showToast("GPX-Aufzeichnung", rec ? "Gestartet (nur mit GPS-Fix)" : "Gestoppt", 2000, ICO_ROUTE);
         refresh(true);
     }, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(sRecBtn, [](lv_event_t*) {
+        haptic(HAPTIC_SUCCESS);
+        if (!NavEngine::startBacktrack()) {
+            DisplayEngine::showToast("Backtrack", "Keine Brotkrümel-Punkte vorhanden", 2000, ICO_HISTORY);
+        }
+        refresh(true);
+    }, LV_EVENT_LONG_PRESSED, NULL);
 
     sWpBtn = secondaryButton(p, 44, BAR_H, ICO_FLAG, nullptr);
     lv_obj_set_pos(sWpBtn, M_BOT + 274, BAR_Y);

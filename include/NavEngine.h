@@ -134,6 +134,12 @@ public:
     static bool isTrackRecording();
     static bool markWaypoint(const char* label = nullptr);   // false without a known position
 
+    // Backtrack (Brotkrümel-Navigation) & GPX Route loading from MicroSD
+    static bool startBacktrack();
+    static bool loadGpxRoute(const char* filename);
+    static int listGpxFiles(char outFiles[][32], int maxFiles);
+    static void clearTrail();
+
     // Renders the vector map (landuse, buildings, roads, POIs, labels, route,
     // GPX trail, peers, own position, scale bar) into an RGB565 buffer.
     // Holds the engine mutex for the duration (see header comment).

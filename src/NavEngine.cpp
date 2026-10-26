@@ -12,6 +12,7 @@
 #include "RtcManager.h"
 #include "ui/Icons.h"
 #include "ui/Navigator.h"
+#include "DisplayEngine.h"
 #include <LilyGoLib.h>
 #include <SD.h>
 #include <Preferences.h>
@@ -1925,6 +1926,182 @@ bool NavEngine::startNavigation(const char* name, double destLat, double destLon
     return true;
 }
 
+bool NavEngine::startBacktrack() {
+    NavLock lock;
+    if (sGpxTrail.size() < 2) {
+        DisplayEngine::showToast("Backtrack", "Keine Brotkrümel vorhanden", 2500, ICO_HISTORY);
+        return false;
+    }
+    updateCurrentPositionLocked();
+
+    std::vector<NavRoutePoint> route;
+    route.reserve(sGpxTrail.size());
+    for (int i = (int)sGpxTrail.size() - 1; i >= 0; i--) {
+        route.push_back(sGpxTrail[i]);
+    }
+
+    sRoute = route;
+    sStat.activeRoute = true;
+    sStat.routeFailed = false;
+    sStat.routeStraightLine = false;
+    sStat.routingBusy = false;
+    sReq.pending = false;
+    sRouteWaitingForPos = false;
+
+    sStat.destLat = route.back().lat_e5 * 1e-5;
+    sStat.destLon = route.back().lon_e5 * 1e-5;
+    strncpy(sStat.destName, "START (BACKTRACK)", sizeof(sStat.destName) - 1);
+    sStat.destName[sizeof(sStat.destName) - 1] = 0;
+
+    float totalDist = 0.0f;
+    for (size_t i = 0; i + 1 < sRoute.size(); i++) {
+        totalDist += haversineKm(sRoute[i].lat_e5 * 1e-5, sRoute[i].lon_e5 * 1e-5,
+                                 sRoute[i+1].lat_e5 * 1e-5, sRoute[i+1].lon_e5 * 1e-5);
+    }
+    sStat.totalDistKm = totalDist;
+    sStat.remDistKm = totalDist;
+
+    setTurn("ZURÜCK ZUM START", ICO_HISTORY);
+    updateTurnByTurnLocked();
+    nav::markDirty(nav::PG_POSITION);
+    DisplayEngine::showNotification("Backtrack aktiv", "Folge der Brotkrümel-Spur", 3500, ICO_HISTORY);
+    Serial.printf("[GPX] Backtrack started: %u points, %.2f km\n", (unsigned)route.size(), totalDist);
+    return true;
+}
+
+bool NavEngine::loadGpxRoute(const char* filename) {
+    if (!filename || !filename[0]) return false;
+    NavLock lock;
+    if (!sStat.sdReady) return false;
+    if (!NavEngine::lockSd(500)) return false;
+
+    char fullPath[64];
+    if (filename[0] == '/') {
+        strncpy(fullPath, filename, sizeof(fullPath) - 1);
+    } else {
+        snprintf(fullPath, sizeof(fullPath), "/routes/%s", filename);
+        if (!SD.exists(fullPath)) {
+            snprintf(fullPath, sizeof(fullPath), "/tracks/%s", filename);
+            if (!SD.exists(fullPath)) {
+                snprintf(fullPath, sizeof(fullPath), "/%s", filename);
+            }
+        }
+    }
+    fullPath[sizeof(fullPath) - 1] = 0;
+
+    File f = SD.open(fullPath, FILE_READ);
+    if (!f) {
+        NavEngine::unlockSd();
+        Serial.printf("[GPX] Failed to open %s\n", fullPath);
+        DisplayEngine::showToast("GPX-Fehler", "Datei nicht gefunden", 2500, ICO_ROUTE);
+        return false;
+    }
+
+    std::vector<NavRoutePoint> route;
+    route.reserve(256);
+
+    char line[160];
+    while (f.available()) {
+        size_t l = f.readBytesUntil('\n', line, sizeof(line) - 1);
+        line[l] = 0;
+        const char* pLat = strstr(line, "lat=\"");
+        const char* pLon = strstr(line, "lon=\"");
+        if (pLat && pLon) {
+            double lat = atof(pLat + 5);
+            double lon = atof(pLon + 5);
+            if (lat != 0.0 && lon != 0.0) {
+                NavRoutePoint pt{(int32_t)llround(lat * 1e5), (int32_t)llround(lon * 1e5)};
+                if (route.empty() ||
+                    abs(route.back().lat_e5 - pt.lat_e5) > 4 ||
+                    abs(route.back().lon_e5 - pt.lon_e5) > 4) {
+                    route.push_back(pt);
+                }
+            }
+        }
+    }
+    f.close();
+    NavEngine::unlockSd();
+
+    if (route.size() < 2) {
+        Serial.printf("[GPX] No valid points found in %s\n", fullPath);
+        DisplayEngine::showToast("GPX-Fehler", "Keine Wegpunkte gefunden", 2500, ICO_ROUTE);
+        return false;
+    }
+
+    sRoute = route;
+    sStat.activeRoute = true;
+    sStat.routeFailed = false;
+    sStat.routeStraightLine = false;
+    sStat.routingBusy = false;
+    sReq.pending = false;
+    sRouteWaitingForPos = false;
+
+    sStat.destLat = route.back().lat_e5 * 1e-5;
+    sStat.destLon = route.back().lon_e5 * 1e-5;
+    const char* base = strrchr(fullPath, '/');
+    base = base ? (base + 1) : fullPath;
+    strncpy(sStat.destName, base, sizeof(sStat.destName) - 1);
+    sStat.destName[sizeof(sStat.destName) - 1] = 0;
+
+    float totalDist = 0.0f;
+    for (size_t i = 0; i + 1 < sRoute.size(); i++) {
+        totalDist += haversineKm(sRoute[i].lat_e5 * 1e-5, sRoute[i].lon_e5 * 1e-5,
+                                 sRoute[i+1].lat_e5 * 1e-5, sRoute[i+1].lon_e5 * 1e-5);
+    }
+    sStat.totalDistKm = totalDist;
+    sStat.remDistKm = totalDist;
+
+    setTurn("FOLGE GPX-ROUTE", ICO_ROUTE);
+    updateTurnByTurnLocked();
+    nav::markDirty(nav::PG_POSITION);
+    DisplayEngine::showNotification("GPX-Route geladen", sStat.destName, 3500, ICO_ROUTE);
+    Serial.printf("[GPX] Route loaded: %u points, %.2f km from %s\n", (unsigned)route.size(), totalDist, fullPath);
+    return true;
+}
+
+int NavEngine::listGpxFiles(char outFiles[][32], int maxFiles) {
+    if (!outFiles || maxFiles <= 0) return 0;
+    NavLock lock;
+    if (!sStat.sdReady) return 0;
+    if (!NavEngine::lockSd(300)) return 0;
+
+    int count = 0;
+    const char* dirs[] = {"/routes", "/tracks", "/"};
+    for (const char* d : dirs) {
+        if (!SD.exists(d)) continue;
+        File dir = SD.open(d);
+        if (!dir || !dir.isDirectory()) { if (dir) dir.close(); continue; }
+        File entry = dir.openNextFile();
+        while (entry && count < maxFiles) {
+            if (!entry.isDirectory()) {
+                const char* fn = entry.name();
+                size_t l = strlen(fn);
+                if (l > 4 && strcasecmp(fn + l - 4, ".gpx") == 0) {
+                    bool dup = false;
+                    for (int k = 0; k < count; k++) {
+                        if (strcmp(outFiles[k], fn) == 0) { dup = true; break; }
+                    }
+                    if (!dup) {
+                        strncpy(outFiles[count++], fn, 31);
+                        outFiles[count - 1][31] = 0;
+                    }
+                }
+            }
+            entry.close();
+            entry = dir.openNextFile();
+        }
+        dir.close();
+    }
+    NavEngine::unlockSd();
+    return count;
+}
+
+void NavEngine::clearTrail() {
+    NavLock lock;
+    sGpxTrail.clear();
+    sStat.gpxPoints = 0;
+}
+
 // =============================================================================
 // Public: search
 // =============================================================================
@@ -1991,7 +2168,35 @@ int NavEngine::searchPlaces(const char* query, NavPlace* out, int maxOut) {
     int count = 0;
     bool wantMesh = query && strcmp(query, "@mesh") == 0;
     bool wantPoi  = query && strcmp(query, "@poi") == 0;
+    bool wantGpx  = query && strcmp(query, "@gpx") == 0;
     bool emptyQ   = !query || !query[0];
+
+    // 0. Backtrack option if breadcrumb trail exists
+    if ((emptyQ || wantGpx) && sGpxTrail.size() >= 2 && count < maxOut) {
+        NavPlace& dst = out[count++];
+        strncpy(dst.name, "Zurück zum Start (Backtrack)", sizeof(dst.name) - 1);
+        dst.name[sizeof(dst.name) - 1] = 0;
+        dst.lat = sGpxTrail.front().lat_e5 * 1e-5;
+        dst.lon = sGpxTrail.front().lon_e5 * 1e-5;
+        dst.pop = 0;
+        dst.rank = 6;
+    }
+
+    // 0b. GPX routes from MicroSD
+    if ((emptyQ || wantGpx) && sStat.sdReady && count < maxOut) {
+        char gpxFiles[6][32];
+        int ng = listGpxFiles(gpxFiles, 6);
+        for (int i = 0; i < ng && count < maxOut; i++) {
+            NavPlace& dst = out[count++];
+            strncpy(dst.name, gpxFiles[i], sizeof(dst.name) - 1);
+            dst.name[sizeof(dst.name) - 1] = 0;
+            dst.lat = 0;
+            dst.lon = 0;
+            dst.pop = 0;
+            dst.rank = 7;
+        }
+    }
+    if (wantGpx) return count;
 
     // 1. mesh peers with a position (rank 0)
     uint8_t np = RadioLoRa::getPeers(sPeerScratch, 16);
