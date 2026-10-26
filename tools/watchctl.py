@@ -80,11 +80,26 @@ def detect_port():
 
 def open_port(port):
     port = port or os.environ.get("WATCHCTL_PORT") or detect_port()
-    s = serial.Serial(port, BAUD, timeout=0.5, dsrdtr=False, rtscts=False)
-    # do not toggle DTR/RTS: on the ESP32-S3 USB-CDC that would reset the chip
-    s.dtr = False
-    s.rts = False
-    time.sleep(0.3)
+    if os.name == "posix":
+        import termios
+        try:
+            fd = os.open(port, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+            attrs = termios.tcgetattr(fd)
+            attrs[2] &= ~termios.HUPCL
+            termios.tcsetattr(fd, termios.TCSANOW, attrs)
+            os.close(fd)
+        except Exception:
+            pass
+    s = serial.Serial()
+    s.port = port
+    s.baudrate = BAUD
+    s.timeout = 0.5
+    s.dsrdtr = False
+    s.rtscts = False
+    s.dtr = None
+    s.rts = None
+    s.open()
+    time.sleep(0.1)
     s.reset_input_buffer()
     return s
 
