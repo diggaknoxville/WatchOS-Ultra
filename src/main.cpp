@@ -15,6 +15,7 @@
 #include "NotificationStore.h"
 #include "AiLimitsStore.h"
 #include "BleCompanion.h"
+#include "UsbMscManager.h"
 
 TaskHandle_t uiTaskHandle = NULL;
 TaskHandle_t bgTaskHandle = NULL;
@@ -45,6 +46,7 @@ void backgroundTask(void* parameter) {
         GpsManager::loop(now);
         RadioLoRa::loop(now);
         NavEngine::loop(now);
+        UsbMscManager::loop(now);
         SettingsStorage::loop(now);
         NotificationStore::loop(now);
         RtcManager::periodicMaintenance();
@@ -98,6 +100,7 @@ static void printHardware(uint32_t p) {
 void setup() {
     Serial.setRxBufferSize(4096);
     Serial.begin(115200);
+    Serial.setTxTimeoutMs(50);
     delay(200);
     Serial.println("\n=======================================================");
     Serial.printf("   WatchOS Ultra %s (build %s)  //  LilyGo T-Watch Ultra\n", OS_VERSION, OS_BUILD);
@@ -119,9 +122,11 @@ void setup() {
     MotionHaptic::init();         // BHI260 steps/wrist + DRV2605
     GpsManager::init();           // GNSS time discipline + position
     RadioLoRa::init(868.0f);      // SX1262, interrupt-driven RX
+    NavEngine::init();            // Vector map + SD detection early
     AudioEngine::init();          // MAX98357A
     CompanionServer::init();      // phone web console (WiFi AP)
     AiLimitsStore::init();        // AI limits persistent cache
+    UsbMscManager::init();        // USB Mass Storage class for SD card
     // The LVGL UI is built on the UI task (see uiTask).
 
     AudioEngine::playSoundFx(SFX_BOOT);

@@ -287,7 +287,27 @@ static void debugConsole() {
                 if (!snap) { Serial.println("SNAP_FAIL"); break; }
                 Serial.printf("SNAP %u %u %u\n", (unsigned)snap->header.w, (unsigned)snap->header.h,
                               (unsigned)snap->header.stride);
-                Serial.write(snap->data, (size_t)snap->header.stride * snap->header.h);
+                size_t total = (size_t)snap->header.stride * snap->header.h;
+                const uint8_t* p = (const uint8_t*)snap->data;
+                size_t sent = 0;
+                unsigned long writeStart = millis();
+                while (sent < total) {
+                    int avail = Serial.availableForWrite();
+                    if (avail <= 0) {
+                        vTaskDelay(pdMS_TO_TICKS(2));
+                        if (millis() - writeStart > 5000) break;
+                        continue;
+                    }
+                    size_t chunk = (total - sent > (size_t)avail) ? (size_t)avail : (total - sent);
+                    size_t n = Serial.write(p + sent, chunk);
+                    if (n == 0) {
+                        vTaskDelay(pdMS_TO_TICKS(2));
+                        if (millis() - writeStart > 5000) break;
+                        continue;
+                    }
+                    sent += n;
+                    writeStart = millis();
+                }
                 Serial.print("\nEND\n");
                 lv_draw_buf_destroy(snap);
                 break;

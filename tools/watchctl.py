@@ -90,15 +90,7 @@ def open_port(port):
             os.close(fd)
         except Exception:
             pass
-    s = serial.Serial()
-    s.port = port
-    s.baudrate = BAUD
-    s.timeout = 0.5
-    s.dsrdtr = False
-    s.rtscts = False
-    s.dtr = None
-    s.rts = None
-    s.open()
+    s = serial.Serial(port, BAUD, timeout=1.0)
     time.sleep(0.1)
     s.reset_input_buffer()
     return s
@@ -212,6 +204,7 @@ def _read_exact(s, need, timeout):
 
 def _snapshot_once(s, path):
     from PIL import Image
+    time.sleep(0.3)
     s.reset_input_buffer()
     s.write(b"S\n")
     # exact header line; other log lines before it are skipped
