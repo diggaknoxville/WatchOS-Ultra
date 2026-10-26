@@ -918,8 +918,47 @@ void buildAppMedia(lv_obj_t* scr) {
     nav::registerPage(nav::PG_APP_MEDIA, d);
 }
 
-// ======================================================= GLAS-KALIBRIERUNG ===
+// ======================================================= GLAS-KALIBRIERUNG & TESTBILD ===
 static lv_obj_t *sCalibCoordLbl = nullptr, *sCalibDistLbl = nullptr;
+static lv_obj_t *sVerifRoot = nullptr, *sSpectrumRoot = nullptr;
+static lv_obj_t *sTestBox = nullptr;
+static lv_obj_t *sRadiusValLbl = nullptr, *sInsetValLbl = nullptr;
+
+static int sTestRadius = 120;
+static int sTestInset = 6;
+
+static lv_obj_t* sCandidateArcs[4] = {nullptr};
+static const int CANDIDATE_R[4] = {115, 120, 125, 130};
+static const uint32_t CANDIDATE_COLOR[4] = {0xFF9100, 0x00FF66, 0x00E5FF, 0xFF007F}; // Orange, Green, Cyan, Magenta
+
+static void updateTestBox() {
+    if (sTestBox) {
+        lv_obj_set_pos(sTestBox, sTestInset, sTestInset);
+        lv_obj_set_size(sTestBox, SCR_W - 2 * sTestInset, SCR_H - 2 * sTestInset);
+        lv_obj_set_style_radius(sTestBox, sTestRadius, 0);
+    }
+    for (int i = 0; i < 4; i++) {
+        if (sCandidateArcs[i]) {
+            lv_obj_set_pos(sCandidateArcs[i], sTestInset, sTestInset);
+            lv_obj_set_size(sCandidateArcs[i], SCR_W - 2 * sTestInset, SCR_H - 2 * sTestInset);
+            lv_obj_set_style_radius(sCandidateArcs[i], CANDIDATE_R[i], 0);
+            if (CANDIDATE_R[i] == sTestRadius) {
+                lv_obj_set_style_border_width(sCandidateArcs[i], 3, 0);
+            } else {
+                lv_obj_set_style_border_width(sCandidateArcs[i], 1, 0);
+            }
+        }
+    }
+    char b[32];
+    if (sRadiusValLbl) {
+        snprintf(b, sizeof(b), "R: %d", sTestRadius);
+        lv_label_set_text(sRadiusValLbl, b);
+    }
+    if (sInsetValLbl) {
+        snprintf(b, sizeof(b), "Rand: %d px", sTestInset);
+        lv_label_set_text(sInsetValLbl, b);
+    }
+}
 
 static void onCalibTouch(lv_event_t* e) {
     lv_indev_t* indev = lv_indev_active();
@@ -941,26 +980,232 @@ static void onCalibTouch(lv_event_t* e) {
     if (sCalibDistLbl) lv_label_set_text(sCalibDistLbl, dBuf);
 }
 
+static void showCalibView(bool verif) {
+    if (sVerifRoot) {
+        if (verif) lv_obj_clear_flag(sVerifRoot, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(sVerifRoot, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (sSpectrumRoot) {
+        if (!verif) lv_obj_clear_flag(sSpectrumRoot, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(sSpectrumRoot, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
 void buildCalib(lv_obj_t* scr) {
     lv_obj_t* p = pageRoot(scr);
     lv_obj_set_style_bg_color(p, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(p, LV_OPA_COVER, 0);
     lv_obj_add_flag(p, LV_OBJ_FLAG_CLICKABLE);
 
-    // 1. Concentric rectangular borders at specific pixel offsets
+    // ==============================================================
+    // 1. VERIFICATION VIEW (Active Test Pattern)
+    // ==============================================================
+    sVerifRoot = box(p, SCR_W, SCR_H);
+    lv_obj_set_pos(sVerifRoot, 0, 0);
+    lv_obj_remove_flag(sVerifRoot, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE));
+
+    // Dynamic test box (Neon green outline with current test radius & inset)
+    sTestBox = lv_obj_create(sVerifRoot);
+    lv_obj_set_pos(sTestBox, sTestInset, sTestInset);
+    lv_obj_set_size(sTestBox, SCR_W - 2 * sTestInset, SCR_H - 2 * sTestInset);
+    lv_obj_set_style_bg_opa(sTestBox, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(sTestBox, 3, 0);
+    lv_obj_set_style_border_color(sTestBox, lv_color_hex(0x00FF66), 0);
+    lv_obj_set_style_radius(sTestBox, sTestRadius, 0);
+    lv_obj_remove_flag(sTestBox, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
+
+    // Candidate corner arcs in Top-Left (R115=Orange, R120=Green, R125=Cyan, R130=Magenta)
+    for (int i = 0; i < 4; i++) {
+        sCandidateArcs[i] = lv_obj_create(sVerifRoot);
+        lv_obj_set_pos(sCandidateArcs[i], sTestInset, sTestInset);
+        lv_obj_set_size(sCandidateArcs[i], SCR_W - 2 * sTestInset, SCR_H - 2 * sTestInset);
+        lv_obj_set_style_bg_opa(sCandidateArcs[i], LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(sCandidateArcs[i], CANDIDATE_R[i] == sTestRadius ? 3 : 1, 0);
+        lv_obj_set_style_border_color(sCandidateArcs[i], lv_color_hex(CANDIDATE_COLOR[i]), 0);
+        lv_obj_set_style_radius(sCandidateArcs[i], CANDIDATE_R[i], 0);
+        lv_obj_remove_flag(sCandidateArcs[i], (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
+    }
+
+    // Radius labels along Top-Left corner curve
+    const struct { int x, y; const char* txt; uint32_t col; } ARCLBLS[] = {
+        { 14, 58, "115", 0xFF9100 },
+        { 34, 34, "120", 0x00FF66 },
+        { 58, 14, "125", 0x00E5FF },
+        { 86,  8, "130", 0xFF007F }
+    };
+    for (const auto& l : ARCLBLS) {
+        lv_obj_t* lb = label(sVerifRoot, F.cap, lv_color_hex(l.col), l.txt);
+        lv_obj_set_pos(lb, l.x, l.y);
+    }
+
+    // Corner Target Badges (Top-Right, Bottom-Left, Bottom-Right)
+    lv_obj_t* trLbl = label(sVerifRoot, F.cap, lv_color_hex(0x00FF66), "TR R120");
+    lv_obj_set_pos(trLbl, SCR_W - 74, 22);
+
+    lv_obj_t* blLbl = label(sVerifRoot, F.cap, lv_color_hex(0x00FF66), "BL R120");
+    lv_obj_set_pos(blLbl, 20, SCR_H - 42);
+
+    lv_obj_t* brLbl = label(sVerifRoot, F.cap, lv_color_hex(0x00FF66), "BR R120");
+    lv_obj_set_pos(brLbl, SCR_W - 74, SCR_H - 42);
+
+    // Kanten-Maßstab (Edge Scales at Top and Bottom: 0, 4, 6, 8, 12 px)
+    static const struct { int d; uint32_t col; int w; } TICKS[] = {
+        { 0, 0xFF0000, 110 }, // Red
+        { 4, 0xFF7F00,  90 }, // Orange
+        { 6, 0x00FF66,  80 }, // Green
+        { 8, 0xFFFF00,  70 }, // Yellow
+        { 12, 0x00FFFF, 50 }  // Cyan
+    };
+    for (const auto& t : TICKS) {
+        // Top tick
+        lv_obj_t* tkT = lv_obj_create(sVerifRoot);
+        lv_obj_set_pos(tkT, (SCR_W - t.w) / 2, t.d);
+        lv_obj_set_size(tkT, t.w, 2);
+        lv_obj_set_style_bg_color(tkT, lv_color_hex(t.col), 0);
+        lv_obj_set_style_bg_opa(tkT, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(tkT, 0, 0);
+        lv_obj_remove_flag(tkT, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
+
+        // Bottom tick
+        lv_obj_t* tkB = lv_obj_create(sVerifRoot);
+        lv_obj_set_pos(tkB, (SCR_W - t.w) / 2, SCR_H - t.d - 2);
+        lv_obj_set_size(tkB, t.w, 2);
+        lv_obj_set_style_bg_color(tkB, lv_color_hex(t.col), 0);
+        lv_obj_set_style_bg_opa(tkB, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(tkB, 0, 0);
+        lv_obj_remove_flag(tkB, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
+    }
+
+    lv_obj_t* tickLblT = label(sVerifRoot, F.cap, lv_color_hex(0x9BA4B4), "0  4  6  8  12 px");
+    lv_obj_set_pos(tickLblT, (SCR_W - 84) / 2, 16);
+
+    lv_obj_t* tickLblB = label(sVerifRoot, F.cap, lv_color_hex(0x9BA4B4), "0  4  6  8  12 px");
+    lv_obj_set_pos(tickLblB, (SCR_W - 84) / 2, SCR_H - 32);
+
+    // Left & Right edge ticks (center height)
+    for (const auto& t : TICKS) {
+        // Left
+        lv_obj_t* tkL = lv_obj_create(sVerifRoot);
+        lv_obj_set_pos(tkL, t.d, 230);
+        lv_obj_set_size(tkL, 2, 42);
+        lv_obj_set_style_bg_color(tkL, lv_color_hex(t.col), 0);
+        lv_obj_set_style_bg_opa(tkL, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(tkL, 0, 0);
+        lv_obj_remove_flag(tkL, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
+
+        // Right
+        lv_obj_t* tkR = lv_obj_create(sVerifRoot);
+        lv_obj_set_pos(tkR, SCR_W - t.d - 2, 230);
+        lv_obj_set_size(tkR, 2, 42);
+        lv_obj_set_style_bg_color(tkR, lv_color_hex(t.col), 0);
+        lv_obj_set_style_bg_opa(tkR, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(tkR, 0, 0);
+        lv_obj_remove_flag(tkR, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
+    }
+
+    // Center interactive control card
+    lv_obj_t* cd = card(sVerifRoot, 280, 220);
+    lv_obj_align(cd, LV_ALIGN_CENTER, 0, -10);
+    lv_obj_set_style_bg_color(cd, lv_color_hex(0x0E141E), 0);
+    lv_obj_set_style_bg_opa(cd, LV_OPA_90, 0);
+    lv_obj_set_style_border_width(cd, 1, 0);
+    lv_obj_set_style_border_color(cd, lv_color_hex(0x00E5FF), 0);
+    lv_obj_set_style_radius(cd, 16, 0);
+
+    lv_obj_t* titleLbl = label(cd, F.body, lv_color_hex(0x00E5FF), "GLAS-VERIFIKATION");
+    lv_obj_align(titleLbl, LV_ALIGN_TOP_MID, 0, 6);
+
+    // Row 1: Radius [-] [R: 120] [+]
+    lv_obj_t* rMinus = secondaryButton(cd, 46, 34, nullptr, "-");
+    lv_obj_set_pos(rMinus, 14, 30);
+    lv_obj_add_event_cb(rMinus, [](lv_event_t*) {
+        if (sTestRadius > 90) sTestRadius -= 5;
+        updateTestBox();
+        haptic(HAPTIC_TICK);
+    }, LV_EVENT_CLICKED, NULL);
+
+    sRadiusValLbl = label(cd, F.numS, lv_color_hex(0x00FF66), "R: 120");
+    lv_obj_set_width(sRadiusValLbl, 120);
+    lv_obj_set_style_text_align(sRadiusValLbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(sRadiusValLbl, 68, 36);
+
+    lv_obj_t* rPlus = secondaryButton(cd, 46, 34, nullptr, "+");
+    lv_obj_set_pos(rPlus, 206, 30);
+    lv_obj_add_event_cb(rPlus, [](lv_event_t*) {
+        if (sTestRadius < 160) sTestRadius += 5;
+        updateTestBox();
+        haptic(HAPTIC_TICK);
+    }, LV_EVENT_CLICKED, NULL);
+
+    // Row 2: Inset [-] [Rand: 6 px] [+]
+    lv_obj_t* iMinus = secondaryButton(cd, 46, 34, nullptr, "-");
+    lv_obj_set_pos(iMinus, 14, 72);
+    lv_obj_add_event_cb(iMinus, [](lv_event_t*) {
+        if (sTestInset > 0) sTestInset -= 2;
+        updateTestBox();
+        haptic(HAPTIC_TICK);
+    }, LV_EVENT_CLICKED, NULL);
+
+    sInsetValLbl = label(cd, F.small, lv_color_hex(0x00FF66), "Rand: 6 px");
+    lv_obj_set_width(sInsetValLbl, 120);
+    lv_obj_set_style_text_align(sInsetValLbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(sInsetValLbl, 68, 78);
+
+    lv_obj_t* iPlus = secondaryButton(cd, 46, 34, nullptr, "+");
+    lv_obj_set_pos(iPlus, 206, 72);
+    lv_obj_add_event_cb(iPlus, [](lv_event_t*) {
+        if (sTestInset < 20) sTestInset += 2;
+        updateTestBox();
+        haptic(HAPTIC_TICK);
+    }, LV_EVENT_CLICKED, NULL);
+
+    // Row 3: Caliper readout
+    sCalibCoordLbl = label(cd, F.cap, lv_color_white(), "X: ---   Y: ---");
+    lv_obj_align(sCalibCoordLbl, LV_ALIGN_TOP_MID, 0, 114);
+
+    sCalibDistLbl = label(cd, F.cap, lv_color_hex(0x30D158), "L:--  R:--  T:--  B:--");
+    lv_obj_align(sCalibDistLbl, LV_ALIGN_TOP_MID, 0, 134);
+
+    // Row 4: Mode Switch & Exit
+    lv_obj_t* btnSpek = secondaryButton(cd, 110, 32, nullptr, "Spektrum");
+    lv_obj_set_pos(btnSpek, 20, 166);
+    lv_obj_add_event_cb(btnSpek, [](lv_event_t*) {
+        showCalibView(false);
+        haptic(HAPTIC_TICK);
+    }, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t* btnClose = secondaryButton(cd, 110, 32, nullptr, "Schließen");
+    lv_obj_set_pos(btnClose, 146, 166);
+    lv_obj_add_event_cb(btnClose, [](lv_event_t*) {
+        nav::home();
+        haptic(HAPTIC_CLICK);
+    }, LV_EVENT_CLICKED, NULL);
+
+    // UI Safe Area Preview Card (bottom)
+    lv_obj_t* safePreview = card(sVerifRoot, 260, 46);
+    lv_obj_align(safePreview, LV_ALIGN_BOTTOM_MID, 0, -48);
+    lv_obj_set_style_bg_color(safePreview, lv_color_hex(0x162032), 0);
+    lv_obj_set_style_border_color(safePreview, lv_color_hex(0x30D158), 0);
+    lv_obj_set_style_border_width(safePreview, 1, 0);
+    lv_obj_set_style_radius(safePreview, 12, 0);
+    lv_obj_t* safeLbl = label(safePreview, F.small, lv_color_hex(0x30D158), "SICHTBARER BEREICH (UI SAFE)");
+    lv_obj_center(safeLbl);
+
+    // ==============================================================
+    // 2. SPECTRUM VIEW (Full Spectrum of 18 curves & 8 borders)
+    // ==============================================================
+    sSpectrumRoot = box(p, SCR_W, SCR_H);
+    lv_obj_set_pos(sSpectrumRoot, 0, 0);
+    lv_obj_add_flag(sSpectrumRoot, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(sSpectrumRoot, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE));
+
     static const struct { int d; uint32_t color; } RECTS[] = {
-        { 0, 0xFF0000},  // 0 px:  Red
-        { 4, 0xFF7F00},  // 4 px:  Orange
-        { 8, 0xFFFF00},  // 8 px:  Yellow
-        {12, 0x00FF00},  // 12 px: Green
-        {16, 0x00FFFF},  // 16 px: Cyan
-        {20, 0x007FFF},  // 20 px: Blue
-        {28, 0xBF5AF2},  // 28 px: Violet
-        {36, 0x8E8E93},  // 36 px: Gray
+        { 0, 0xFF0000}, { 4, 0xFF7F00}, { 8, 0xFFFF00}, {12, 0x00FF00},
+        {16, 0x00FFFF}, {20, 0x007FFF}, {28, 0xBF5AF2}, {36, 0x8E8E93},
     };
     for (size_t i = 0; i < sizeof(RECTS)/sizeof(RECTS[0]); i++) {
         int d = RECTS[i].d;
-        lv_obj_t* r = lv_obj_create(p);
+        lv_obj_t* r = lv_obj_create(sSpectrumRoot);
         lv_obj_set_pos(r, d, d);
         lv_obj_set_size(r, SCR_W - 2 * d, SCR_H - 2 * d);
         lv_obj_set_style_bg_opa(r, LV_OPA_TRANSP, 0);
@@ -970,31 +1215,15 @@ void buildCalib(lv_obj_t* scr) {
         lv_obj_remove_flag(r, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
     }
 
-    // 2. Comprehensive Spectrum of Corner Radii (reaching all the way to center/inner display)
     static const struct { int r; uint32_t color; } RADII[] = {
-        { 20, 0xFF1744},  // Crimson
-        { 30, 0xFF5252},  // Coral
-        { 40, 0xFF6D00},  // Deep Orange
-        { 50, 0xFF9100},  // Orange
-        { 60, 0xFFD600},  // Amber
-        { 70, 0xFFFF00},  // Yellow
-        { 80, 0xAEEA00},  // Lime Yellow
-        { 90, 0x76FF03},  // Bright Lime
-        {100, 0x00E676},  // Spring Green
-        {110, 0x1DE9B6},  // Teal Mint
-        {120, 0x00E5FF},  // Cyan
-        {130, 0x00B0FF},  // Sky Blue
-        {140, 0x2979FF},  // Electric Blue
-        {150, 0x651FFF},  // Deep Indigo
-        {160, 0x7C4DFF},  // Purple
-        {175, 0xD500F9},  // Neon Violet
-        {190, 0xF50057},  // Hot Pink
-        {205, 0xFFFFFF},  // White (Half-Width Dome)
+        { 20, 0xFF1744}, { 30, 0xFF5252}, { 40, 0xFF6D00}, { 50, 0xFF9100},
+        { 60, 0xFFD600}, { 70, 0xFFFF00}, { 80, 0xAEEA00}, { 90, 0x76FF03},
+        {100, 0x00E676}, {110, 0x1DE9B6}, {120, 0x00E5FF}, {130, 0x00B0FF},
+        {140, 0x2979FF}, {150, 0x651FFF}, {160, 0x7C4DFF}, {175, 0xD500F9},
+        {190, 0xF50057}, {205, 0xFFFFFF},
     };
-
-    // Draw full-dimension outer rounded boxes with increasing corner radius
     for (size_t i = 0; i < sizeof(RADII)/sizeof(RADII[0]); i++) {
-        lv_obj_t* c = lv_obj_create(p);
+        lv_obj_t* c = lv_obj_create(sSpectrumRoot);
         lv_obj_set_pos(c, 0, 0);
         lv_obj_set_size(c, SCR_W, SCR_H);
         lv_obj_set_style_bg_opa(c, LV_OPA_TRANSP, 0);
@@ -1002,98 +1231,26 @@ void buildCalib(lv_obj_t* scr) {
         lv_obj_set_style_border_color(c, lv_color_hex(RADII[i].color), 0);
         lv_obj_set_style_radius(c, RADII[i].r, 0);
         lv_obj_remove_flag(c, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
-    }
 
-    // 3. Inner Inset Curves: concentric rounded rectangles at 10px and 20px insets
-    static const int INSET_RADII[] = {30, 50, 70, 90, 110, 130, 150, 170};
-    for (int r : INSET_RADII) {
-        // 12px inset
-        lv_obj_t* in1 = lv_obj_create(p);
-        lv_obj_set_pos(in1, 12, 12);
-        lv_obj_set_size(in1, SCR_W - 24, SCR_H - 24);
-        lv_obj_set_style_bg_opa(in1, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(in1, 1, 0);
-        lv_obj_set_style_border_color(in1, lv_color_hex(0x224455), 0);
-        lv_obj_set_style_radius(in1, r, 0);
-        lv_obj_remove_flag(in1, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
-    }
-
-    // 4. Pure Circular Corner Arcs (Quadrant Circles centered at corners: 40px to 180px)
-    static const int CIRC_RADII[] = {40, 60, 80, 100, 120, 140, 160, 180};
-    for (int cr : CIRC_RADII) {
-        // Top-Left circular arc
-        lv_obj_t* caTL = lv_obj_create(p);
-        lv_obj_set_pos(caTL, -cr, -cr);
-        lv_obj_set_size(caTL, 2 * cr, 2 * cr);
-        lv_obj_set_style_bg_opa(caTL, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(caTL, 1, 0);
-        lv_obj_set_style_border_color(caTL, lv_color_hex(0x334466), 0);
-        lv_obj_set_style_radius(caTL, LV_RADIUS_CIRCLE, 0);
-        lv_obj_remove_flag(caTL, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
-
-        // Top-Right circular arc
-        lv_obj_t* caTR = lv_obj_create(p);
-        lv_obj_set_pos(caTR, SCR_W - cr, -cr);
-        lv_obj_set_size(caTR, 2 * cr, 2 * cr);
-        lv_obj_set_style_bg_opa(caTR, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(caTR, 1, 0);
-        lv_obj_set_style_border_color(caTR, lv_color_hex(0x334466), 0);
-        lv_obj_set_style_radius(caTR, LV_RADIUS_CIRCLE, 0);
-        lv_obj_remove_flag(caTR, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
-    }
-
-    // 5. Corner radius labels along the diagonal (Top-Left)
-    for (size_t i = 0; i < sizeof(RADII)/sizeof(RADII[0]); i++) {
         int r = RADII[i].r;
-        // On diagonal: x = y = r * (1 - cos(45°)) = r * 0.2929
         int dxy = (int)(r * 0.2929f);
         char rb[8];
         snprintf(rb, sizeof(rb), "%d", r);
-        lv_obj_t* rl = lv_label_create(p);
+        lv_obj_t* rl = lv_label_create(sSpectrumRoot);
         lv_label_set_text(rl, rb);
         lv_obj_set_style_text_font(rl, F.cap, 0);
         lv_obj_set_style_text_color(rl, lv_color_hex(RADII[i].color), 0);
         lv_obj_set_pos(rl, dxy + 2, dxy + 2);
-
-        // Also place a tick/label along the top edge where the curve begins
-        if (r <= 190 && (i % 2 == 0)) {
-            lv_obj_t* topLbl = lv_label_create(p);
-            lv_label_set_text(topLbl, rb);
-            lv_obj_set_style_text_font(topLbl, F.cap, 0);
-            lv_obj_set_style_text_color(topLbl, lv_color_hex(RADII[i].color), 0);
-            lv_obj_set_pos(topLbl, r - 8, 2);
-        }
     }
 
-    // 6. Compact Center Caliper Card (leaves entire corners and perimeter fully visible)
-    lv_obj_t* cd = card(p, 270, 150);
-    lv_obj_align(cd, LV_ALIGN_CENTER, 0, 30);
-    lv_obj_set_style_bg_color(cd, lv_color_hex(0x101622), 0);
-    lv_obj_set_style_bg_opa(cd, LV_OPA_90, 0);
-    lv_obj_set_style_border_width(cd, 1, 0);
-    lv_obj_set_style_border_color(cd, lv_color_hex(0x00FFFF), 0);
-    lv_obj_set_style_radius(cd, 16, 0);
-
-    lv_obj_t* titleLbl = label(cd, F.body, lv_color_hex(0x00FFFF), "GLAS-KALIBRIERUNG");
-    lv_obj_align(titleLbl, LV_ALIGN_TOP_MID, 0, 6);
-
-    sCalibCoordLbl = label(cd, F.numM, lv_color_white(), "X: ---   Y: ---");
-    lv_obj_align(sCalibCoordLbl, LV_ALIGN_TOP_MID, 0, 32);
-
-    sCalibDistLbl = label(cd, F.small, lv_color_hex(0x30D158), "L:--  R:--  T:--  B:--");
-    lv_obj_align(sCalibDistLbl, LV_ALIGN_TOP_MID, 0, 74);
-
-    lv_obj_t* leg = caption(cd, "Kurven R20..R205  |  Rand 0..36px", cText3());
-    lv_obj_align(leg, LV_ALIGN_TOP_MID, 0, 96);
-
-    lv_obj_t* backBtn = secondaryButton(cd, 120, 28, ICO_ARROW_BACK, "Schließen");
-    lv_obj_align(backBtn, LV_ALIGN_BOTTOM_MID, 0, -6);
-    lv_obj_add_event_cb(backBtn, [](lv_event_t*) {
-        nav::home();
-        haptic(HAPTIC_CLICK);
+    lv_obj_t* btnVerif = secondaryButton(sSpectrumRoot, 140, 36, nullptr, "<- Testbild");
+    lv_obj_align(btnVerif, LV_ALIGN_CENTER, 0, 50);
+    lv_obj_add_event_cb(btnVerif, [](lv_event_t*) {
+        showCalibView(true);
+        haptic(HAPTIC_TICK);
     }, LV_EVENT_CLICKED, NULL);
 
-    // Track touch events on page
+    // Global touch tracking on parent page
     lv_obj_add_event_cb(p, onCalibTouch, LV_EVENT_PRESSED, NULL);
     lv_obj_add_event_cb(p, onCalibTouch, LV_EVENT_PRESSING, NULL);
 
