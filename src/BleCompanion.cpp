@@ -1,10 +1,12 @@
 #include "BleCompanion.h"
 #include "AiLimitsStore.h"
 #include "SettingsStorage.h"
+#include "PowerManager.h"
 #include "ui/Navigator.h"
 #include "ui/Icons.h"
 #include "DisplayEngine.h"
 #include <NimBLEDevice.h>
+#include <NimBLEHIDDevice.h>
 #include <Preferences.h>
 #include <esp_random.h>
 #include <string.h>
@@ -19,6 +21,34 @@ static NimBLEServer* sServer = nullptr;
 static NimBLECharacteristic* sDataChar = nullptr;
 static NimBLECharacteristic* sStatusChar = nullptr;
 static NimBLECharacteristic* sCmdChar = nullptr;
+
+// Native BLE HID Consumer Control (Media Play/Pause, Next, Prev, Vol+, Vol-)
+static NimBLEHIDDevice* sHid = nullptr;
+static NimBLECharacteristic* sInputReport = nullptr;
+
+// HID Report Descriptor for Consumer Control (Report ID 1, 1 Byte)
+static const uint8_t HID_REPORT_MAP[] = {
+    0x05, 0x0C,        // Usage Page (Consumer)
+    0x09, 0x01,        // Usage (Consumer Control)
+    0xA1, 0x01,        // Collection (Application)
+    0x85, 0x01,        //   Report ID (1)
+    0x15, 0x00,        //   Logical Minimum (0)
+    0x25, 0x01,        //   Logical Maximum (1)
+    0x75, 0x01,        //   Report Size (1)
+    0x95, 0x07,        //   Report Count (7)
+    0x09, 0xCD,        //   Usage (Play/Pause)          - bit 0
+    0x09, 0xB5,        //   Usage (Scan Next Track)     - bit 1
+    0x09, 0xB6,        //   Usage (Scan Previous Track) - bit 2
+    0x09, 0xB7,        //   Usage (Stop)                - bit 3
+    0x09, 0xE9,        //   Usage (Volume Increment)    - bit 4
+    0x09, 0xEA,        //   Usage (Volume Decrement)    - bit 5
+    0x09, 0xE2,        //   Usage (Mute)                - bit 6
+    0x81, 0x02,        //   Input (Data,Var,Abs)
+    0x75, 0x01,        //   Report Size (1)
+    0x95, 0x01,        //   Report Count (1)
+    0x81, 0x01,        //   Input (Const)               - padding bit 7
+    0xC0               // End Collection
+};
 static bool sBleEnabled = true;
 static bool sStackInited = false;
 static volatile bool sConnected = false;
@@ -275,30 +305,37 @@ static bool ensureStack() {
     NimBLEDevice::init(BLE_DEVICE_NAME);
     NimBLEDevice::setPower(ESP_PWR_LVL_P9);
 
-    if (sPasskey == 0) sPasskey = esp_random() % 1000000UL;
+    // Standard BLE Security: Just Works (no passkey prompt error on smartphones)
     NimBLEDevice::setSecurityAuth(true /*bond*/, false /*mitm*/, true /*sc*/);
     NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT);
-    NimBLEDevice::setSecurityPasskey(sPasskey);
 
     sServer = NimBLEDevice::createServer();
     sServer->setCallbacks(new ServerCallbacks());
 
+    // Native BLE HID Consumer Control (Media Play/Pause, Next, Prev, Vol+, Vol-)
+    sHid = new NimBLEHIDDevice(sServer);
+    sHid->setManufacturer("WatchOS");
+    sHid->setPnp(0x02, 0xe502, 0xa111, 0x0110);
+    sHid->setHidInfo(0x00, 0x01);
+    sHid->setReportMap((uint8_t*)HID_REPORT_MAP, sizeof(HID_REPORT_MAP));
+    sInputReport = sHid->getInputReport(1);
+    sHid->setBatteryLevel(PowerManager::getBatteryPercent());
+
     NimBLEService* pService = sServer->createService(SERVICE_AI_LIMITS_UUID);
     if (!pService) {
-        Serial.println("[BLE] Failed to create service!");
+        Serial.println("[BLE] Failed to create companion service!");
         return false;
     }
 
     sDataChar = pService->createCharacteristic(
         CHAR_AI_LIMITS_DATA_UUID,
-        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR |
-        NIMBLE_PROPERTY::WRITE_ENC
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
     );
     sDataChar->setCallbacks(new DataCallbacks());
 
     sStatusChar = pService->createCharacteristic(
         CHAR_AI_LIMITS_STATUS_UUID,
-        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::READ_ENC | NIMBLE_PROPERTY::NOTIFY
+        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY
     );
     {
         uint8_t initial[2] = {0x01, 0};
@@ -311,10 +348,19 @@ static bool ensureStack() {
     );
     sCmdChar->setCallbacks(new CmdCallbacks());
 
+    sServer->start();
 
     NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
-    pAdvertising->setName(BLE_DEVICE_NAME);
-    pAdvertising->addServiceUUID(SERVICE_AI_LIMITS_UUID);
+    NimBLEAdvertisementData advData;
+    advData.setFlags(BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP);
+    advData.setName(BLE_DEVICE_NAME);
+    advData.setAppearance(GENERIC_HID);
+    advData.addServiceUUID(sHid->getHidService()->getUUID());
+    pAdvertising->setAdvertisementData(advData);
+
+    NimBLEAdvertisementData scanData;
+    scanData.addServiceUUID(SERVICE_AI_LIMITS_UUID);
+    pAdvertising->setScanResponseData(scanData);
     pAdvertising->enableScanResponse(true);
     sStackInited = true;
     return true;
@@ -400,11 +446,36 @@ static void processPayload(const uint8_t* bytes, size_t len) {
 }
 
 static bool sendCommandNow(const char* cmd) {
-    if (!sConnected || !sCmdChar || !sStackInited) return false;
-    sCmdChar->setValue((const uint8_t*)cmd, strlen(cmd));
-    bool ok = sCmdChar->notify();
-    Serial.printf("[BLE] Command %s: %s\n", ok ? "sent" : "dropped", cmd);
-    return ok;
+    if (!sConnected || !sStackInited) return false;
+
+    // 1. Native HID Consumer Control (Media commands for Android, iOS, Windows, macOS)
+    uint8_t hidMask = 0;
+    if (strstr(cmd, "PLAY") || strstr(cmd, "PAUSE")) hidMask = 0x01;
+    else if (strstr(cmd, "NEXT")) hidMask = 0x02;
+    else if (strstr(cmd, "PREV")) hidMask = 0x04;
+    else if (strstr(cmd, "STOP")) hidMask = 0x08;
+    else if (strstr(cmd, "VOL_UP")) hidMask = 0x10;
+    else if (strstr(cmd, "VOL_DOWN") || strstr(cmd, "DOWN")) hidMask = 0x20;
+
+    if (hidMask != 0 && sInputReport) {
+        uint8_t press[1] = {hidMask};
+        sInputReport->setValue(press, 1);
+        sInputReport->notify();
+        vTaskDelay(pdMS_TO_TICKS(15));
+        uint8_t release[1] = {0x00};
+        sInputReport->setValue(release, 1);
+        sInputReport->notify();
+        Serial.printf("[BLE] HID Consumer key sent: 0x%02X (%s)\n", (unsigned)hidMask, cmd);
+    }
+
+    // 2. Also forward to custom companion app if subscribed
+    if (sCmdChar && sCmdSubscribed) {
+        sCmdChar->setValue((const uint8_t*)cmd, strlen(cmd));
+        bool ok = sCmdChar->notify();
+        Serial.printf("[BLE] Command %s: %s\n", ok ? "sent" : "dropped", cmd);
+        return ok;
+    }
+    return true;
 }
 
 void BleCompanion::loop(unsigned long now) {
