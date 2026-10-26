@@ -72,14 +72,14 @@ void buildNotifications(lv_obj_t* scr) {
     lv_obj_set_style_radius(grab, 3, 0);
     lv_obj_set_style_bg_opa(grab, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(grab, cText3(), 0);
-    lv_obj_align(grab, LV_ALIGN_TOP_MID, 0, 8);
+    lv_obj_align(grab, LV_ALIGN_TOP_MID, 0, 14);
 
     title(p, "MITTEILUNGEN");
     nCount = caption(p, "", cText3());
     lv_obj_set_pos(nCount, M, CONTENT_Y);
 
-    nRead = secondaryButton(p, 118, 34, ICO_CHECK, "Alle gelesen");
-    lv_obj_align(nRead, LV_ALIGN_TOP_RIGHT, -M, 22);
+    nRead = secondaryButton(p, 110, 32, ICO_CHECK, "Gelesen");
+    lv_obj_align(nRead, LV_ALIGN_TOP_RIGHT, -M_HEAD, 26);
     lv_obj_add_event_cb(nRead, [](lv_event_t*) {
         NotificationStore::markAllRead();
         haptic(HAPTIC_TICK);

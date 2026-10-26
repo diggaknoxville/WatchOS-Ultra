@@ -70,8 +70,8 @@ static void refresh(bool) {
             if (!has) continue;
             const LoraPeerNode& pn = peers[i];
             if (pn.hasName && pn.name[0]) {
-                if (pn.shortName[0]) snprintf(b, sizeof(b), "%s [%s]", pn.name, pn.shortName);
-                else snprintf(b, sizeof(b), "%s", pn.name);
+                if (pn.shortName[0]) snprintf(b, sizeof(b), "%.14s [%s]", pn.name, pn.shortName);
+                else snprintf(b, sizeof(b), "%.18s", pn.name);
             } else {
                 snprintf(b, sizeof(b), "!%08lx", (unsigned long)pn.nodeId);
             }
@@ -165,7 +165,7 @@ void buildLora(lv_obj_t* scr) {
     title(p, "LORA");
 
     lModePill = pill(p, "LONGFAST", cMesh());
-    lv_obj_align(lModePill, LV_ALIGN_TOP_RIGHT, -(M + 86), 24);
+    lv_obj_align(lModePill, LV_ALIGN_TOP_RIGHT, -(M_HEAD + 78), 26);
     pressable(lModePill);
     lv_obj_add_event_cb(lModePill, [](lv_event_t*) {
         RadioLoRa::cyclePreset();
@@ -175,7 +175,7 @@ void buildLora(lv_obj_t* scr) {
     }, LV_EVENT_CLICKED, NULL);
 
     lStatePill = pill(p, "AUS", cText2());
-    lv_obj_align(lStatePill, LV_ALIGN_TOP_RIGHT, -M, 24);
+    lv_obj_align(lStatePill, LV_ALIGN_TOP_RIGHT, -M_HEAD, 26);
     pressable(lStatePill);
     lv_obj_add_event_cb(lStatePill, [](lv_event_t*) {
         bool en = !RadioLoRa::isEnabled();
@@ -216,7 +216,7 @@ void buildLora(lv_obj_t* scr) {
         lv_obj_align(sNodeIcon[i], LV_ALIGN_LEFT_MID, 8, 0);
         sNodeName[i] = label(r, F.small, cText(), "");
         lv_label_set_long_mode(sNodeName[i], LV_LABEL_LONG_DOT);
-        lv_obj_set_width(sNodeName[i], 200);
+        lv_obj_set_size(sNodeName[i], 190, 18);
         lv_obj_set_pos(sNodeName[i], 40, 2);
         sNodeMeta[i] = caption(r, "", cText2());
         lv_obj_set_pos(sNodeMeta[i], 40, 24);
@@ -269,8 +269,8 @@ void buildLora(lv_obj_t* scr) {
                                  2500, ICO_MY_LOCATION);
     }, LV_EVENT_CLICKED, NULL);
 
-    sSosBtn = dangerButton(sViewMesh, CW, 52, ICO_SOS, "SOS-Notruf senden");
-    lv_obj_set_pos(sSosBtn, 0, 292);
+    sSosBtn = dangerButton(sViewMesh, CW_BOT, 50, ICO_SOS, "SOS-Notruf senden");
+    lv_obj_set_pos(sSosBtn, (CW - CW_BOT) / 2, 292);
     lv_obj_add_event_cb(sSosBtn, [](lv_event_t*) {
         haptic(HAPTIC_CLICK);
         confirmDialog("SOS senden?", "Sendet eine Notruf-Bake mit deiner Position an alle Mesh-Knoten.",

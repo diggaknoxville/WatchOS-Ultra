@@ -48,19 +48,20 @@ static void bannerSlide(bool in) {
     lv_anim_init(&a);
     lv_anim_set_var(&a, sBanner);
     lv_anim_set_exec_cb(&a, bannerAnimY);
-    lv_anim_set_values(&a, lv_obj_get_y(sBanner), in ? 16 : -180);
+    lv_anim_set_values(&a, lv_obj_get_y(sBanner), in ? 28 : -180);
     lv_anim_set_duration(&a, in ? 340 : 260);
     lv_anim_set_path_cb(&a, in ? lv_anim_path_overshoot : lv_anim_path_ease_in);
     lv_anim_start(&a);
 }
 
 static void buildBanner() {
-    sBanner = card(lv_layer_top(), CW, 124);
-    lv_obj_set_pos(sBanner, M, -180);
+    sBanner = card(lv_layer_top(), CW_HEAD, 118);
+    lv_obj_set_pos(sBanner, M_HEAD, -180);
     lv_obj_set_style_bg_color(sBanner, cSurf2(), 0);
+    lv_obj_set_style_radius(sBanner, R_CARD, 0);
     lv_obj_add_flag(sBanner, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_t* disc = box(sBanner, 44, 44);
-    lv_obj_set_pos(disc, 16, 16);
+    lv_obj_t* disc = box(sBanner, 40, 40);
+    lv_obj_set_pos(disc, 14, 14);
     lv_obj_set_style_radius(disc, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_opa(disc, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(disc, accent(), 0);
@@ -69,12 +70,12 @@ static void buildBanner() {
     lv_obj_center(sBannerIcon);
     sBannerTitle = label(sBanner, F.body, cText(), "");
     lv_label_set_long_mode(sBannerTitle, LV_LABEL_LONG_DOT);
-    lv_obj_set_width(sBannerTitle, CW - 92);
-    lv_obj_set_pos(sBannerTitle, 74, 12);
+    lv_obj_set_width(sBannerTitle, CW_HEAD - 76);
+    lv_obj_set_pos(sBannerTitle, 66, 12);
     sBannerMsg = label(sBanner, F.small, cText2(), "");
     lv_label_set_long_mode(sBannerMsg, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(sBannerMsg, CW - 92);
-    lv_obj_set_pos(sBannerMsg, 74, 46);
+    lv_obj_set_width(sBannerMsg, CW_HEAD - 76);
+    lv_obj_set_pos(sBannerMsg, 66, 44);
     lv_obj_add_event_cb(sBanner, [](lv_event_t*) {
         sBannerHideAt = 0;
         bannerSlide(false);

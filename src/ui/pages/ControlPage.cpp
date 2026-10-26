@@ -162,7 +162,7 @@ void buildControl(lv_obj_t* scr) {
     lv_obj_t* p = pageRoot(scr);
     title(p, "STEUERUNG");
     sClock = label(p, F.title, cText2(), "");
-    lv_obj_align(sClock, LV_ALIGN_TOP_RIGHT, -M, 18);
+    lv_obj_align(sClock, LV_ALIGN_TOP_RIGHT, -M_HEAD, 26);
 
     static const char* TABS[2] = {"SCHALTER", "SYSTEM"};
     sTabs = tabBar(p, M, CONTENT_Y, CW, TABS, 2, 0, [](lv_event_t* e) {

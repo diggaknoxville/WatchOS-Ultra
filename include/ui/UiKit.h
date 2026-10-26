@@ -17,16 +17,24 @@
 
 namespace ui {
 
-// ---- geometry --------------------------------------------------------------
+// ---- geometry & calibrated safe-area ---------------------------------------
 constexpr int SCR_W = 410;
 constexpr int SCR_H = 502;
-constexpr int M = 24;                  // outer margin / grid unit
-constexpr int CW = SCR_W - 2 * M;      // content width (362)
-constexpr int R_CARD = 28;             // card corner radius
-constexpr int R_TILE = 20;             // smaller tiles / rows
-constexpr int CONTENT_Y = 80;          // first content row below the title
-constexpr int PILL_H = 30;
-constexpr int BTN_H = 56;
+constexpr int BEZEL_R = 120;           // Silkscreened outer glass corner radius (px)
+constexpr int BEZEL_INSET = 6;         // Physical border cut-off at straight edges (px)
+
+constexpr int M = 22;                  // outer margin for cards / content rows
+constexpr int CW = SCR_W - 2 * M;      // content width (366 px)
+constexpr int M_HEAD = 46;             // safe margin for header row at y ~ 24..32 (clears R120)
+constexpr int CW_HEAD = SCR_W - 2 * M_HEAD; // safe header width (318 px)
+constexpr int M_BOT = 46;              // safe margin for bottom action bars at y ~ 420..470
+constexpr int CW_BOT = SCR_W - 2 * M_BOT;   // safe bottom width (318 px)
+
+constexpr int R_CARD = 24;             // card corner radius
+constexpr int R_TILE = 16;             // smaller tiles / rows
+constexpr int CONTENT_Y = 82;          // first content row below the title
+constexpr int PILL_H = 28;
+constexpr int BTN_H = 52;
 
 // ---- colour tokens (true black: AMOLED pixels off) -------------------------
 inline lv_color_t cBg()     { return lv_color_hex(0x000000); }

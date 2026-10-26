@@ -34,8 +34,8 @@ enum PageId : uint8_t {
 
 // bottom edge zone (px) in which an upward swipe inside an app means "home"
 constexpr int HOME_EDGE = 56;
-// left edge zone (px) in which a rightward swipe inside an app means "back"
-constexpr int BACK_EDGE = 30;
+// left edge zone (px) in which a rightward swipe inside an app means "back" (offset for bezel)
+constexpr int BACK_EDGE = 36;
 
 struct PageDef {
     lv_obj_t* root = nullptr;                 // full-screen container (ui::pageRoot)

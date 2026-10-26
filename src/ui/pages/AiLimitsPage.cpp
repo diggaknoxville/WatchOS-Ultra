@@ -77,9 +77,9 @@ static void refresh(bool) {
     if (d.last_sync_time) {
         char a[24];
         ago(a, sizeof(a), (time_t)d.last_sync_time);
-        snprintf(buf, sizeof(buf), "SYNC %s", a);
+        snprintf(buf, sizeof(buf), "%s", a);
     } else {
-        snprintf(buf, sizeof(buf), "KEIN SYNC");
+        snprintf(buf, sizeof(buf), "OFFLINE");
     }
     setText(sSyncTxt, buf);
 
@@ -168,11 +168,11 @@ void buildAiLimits(lv_obj_t* scr) {
     lv_obj_t* p = pageRoot(scr);
 
     // Top Title & BLE Sync Status
-    title(p, "AI-LIMITS");
+    title(p, "LIMITS");
 
     // Mode Toggle Pill: REST % vs VERBRAUCHT %
-    sModeBtn = card(p, 92, 26);
-    lv_obj_set_pos(sModeBtn, 190, 24);
+    sModeBtn = card(p, 78, 26);
+    lv_obj_align(sModeBtn, LV_ALIGN_TOP_RIGHT, -(M_HEAD + 120), 26);
     lv_obj_set_style_radius(sModeBtn, 13, 0);
     lv_obj_set_style_pad_all(sModeBtn, 0, 0);
     lv_obj_add_flag(sModeBtn, LV_OBJ_FLAG_CLICKABLE);
@@ -185,8 +185,8 @@ void buildAiLimits(lv_obj_t* scr) {
         refresh(true);
     }, LV_EVENT_CLICKED, NULL);
 
-    lv_obj_t* statRow = box(p, 115, 24);
-    lv_obj_align(statRow, LV_ALIGN_TOP_RIGHT, -M, 24);
+    lv_obj_t* statRow = box(p, LV_SIZE_CONTENT, 24);
+    lv_obj_align(statRow, LV_ALIGN_TOP_RIGHT, -M_HEAD, 26);
     lv_obj_set_flex_flow(statRow, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(statRow, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(statRow, 8, 0);
@@ -196,7 +196,7 @@ void buildAiLimits(lv_obj_t* scr) {
     lv_obj_set_style_bg_opa(sBleDot, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(sBleDot, cStroke(), 0);
 
-    sSyncTxt = caption(statRow, "KEIN SYNC", cText3());
+    sSyncTxt = caption(statRow, "OFFLINE", cText3());
 
     sEmpty = emptyState(p, ICO_SYNC, "Noch nicht synchronisiert", "COMPANION-APP PER BLUETOOTH VERBINDEN");
     lv_obj_align(sEmpty, LV_ALIGN_CENTER, 0, 20);

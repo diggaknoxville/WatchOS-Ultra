@@ -231,10 +231,10 @@ static lv_obj_t* faceRoot() {
 static void buildModular(lv_obj_t* f) {
     mStatus = caption(f, "", accent());
     accReg(mStatus, ACC_TEXT);
-    lv_obj_set_pos(mStatus, M, 24);
+    lv_obj_set_pos(mStatus, M_HEAD, 26);
 
-    lv_obj_t* st = box(f, 200, 28);
-    lv_obj_align(st, LV_ALIGN_TOP_RIGHT, -M, 18);
+    lv_obj_t* st = box(f, LV_SIZE_CONTENT, 28);
+    lv_obj_align(st, LV_ALIGN_TOP_RIGHT, -M_HEAD, 24);
     lv_obj_set_flex_flow(st, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(st, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(st, 8, 0);
@@ -246,7 +246,7 @@ static void buildModular(lv_obj_t* f) {
     mBatTxt = label(st, F.small, cText2(), "--%");
 
     lv_obj_t* hero = box(f, SCR_W, 150);
-    lv_obj_set_pos(hero, 0, 60);
+    lv_obj_set_pos(hero, 0, 56);
     lv_obj_set_flex_flow(hero, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(hero, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(hero, 4, 0);
@@ -257,7 +257,7 @@ static void buildModular(lv_obj_t* f) {
 
     mSecBar = lv_bar_create(f);
     lv_obj_set_size(mSecBar, 300, 4);
-    lv_obj_align(mSecBar, LV_ALIGN_TOP_MID, 0, 218);
+    lv_obj_align(mSecBar, LV_ALIGN_TOP_MID, 0, 214);
     lv_bar_set_range(mSecBar, 0, 59999);
     lv_obj_set_style_bg_color(mSecBar, cStroke(), LV_PART_MAIN);
     lv_obj_set_style_bg_opa(mSecBar, LV_OPA_COVER, LV_PART_MAIN);
@@ -268,26 +268,30 @@ static void buildModular(lv_obj_t* f) {
 
     mDate = label(f, F.body, cText2(), "");
     lv_obj_set_style_text_letter_space(mDate, 1, 0);
-    lv_obj_align(mDate, LV_ALIGN_TOP_MID, 0, 236);
+    lv_obj_align(mDate, LV_ALIGN_TOP_MID, 0, 230);
 
     mEvent = caption(f, "", cText3());              // next calendar event (if synced)
-    lv_obj_align(mEvent, LV_ALIGN_TOP_MID, 0, 270);
+    lv_obj_align(mEvent, LV_ALIGN_TOP_MID, 0, 264);
 
     static const char* caps[3] = {"SCHRITTE", "AKKU", "TAG"};
-    const int cw = (CW - 20) / 3, ch = 176, cy = 300;
+    const int startX = 36;
+    const int spanW = SCR_W - 2 * startX; // 338 px
+    const int cw = (spanW - 16) / 3;      // 107 px
+    const int ch = 156, cy = 296;
     for (int i = 0; i < 3; i++) {
         lv_obj_t* c = card(f, cw, ch);
-        lv_obj_set_pos(c, M + i * (cw + 10), cy);
+        lv_obj_set_style_radius(c, R_TILE, 0);
+        lv_obj_set_pos(c, startX + i * (cw + 8), cy);
         lv_color_t col = (i == 1) ? cOk() : (i == 2 ? cInfo() : accent());
-        mRing[i] = ring(c, 82, 8, col);
+        mRing[i] = ring(c, 74, 7, col);
         if (i == 0) accReg(mRing[i], ACC_ARC, LV_PART_INDICATOR);
-        lv_obj_align(mRing[i], LV_ALIGN_TOP_MID, 0, 16);
+        lv_obj_align(mRing[i], LV_ALIGN_TOP_MID, 0, 12);
         mRingVal[i] = label(mRing[i], F.numS, cText(), "0");
         lv_obj_align(mRingVal[i], LV_ALIGN_CENTER, 0, 0);
         mDetail[i] = label(c, F.small, cText(), "");
-        lv_obj_align(mDetail[i], LV_ALIGN_TOP_MID, 0, 106);
+        lv_obj_align(mDetail[i], LV_ALIGN_TOP_MID, 0, 94);
         lv_obj_t* cp = caption(c, caps[i], cText3());
-        lv_obj_align(cp, LV_ALIGN_BOTTOM_MID, 0, -14);
+        lv_obj_align(cp, LV_ALIGN_BOTTOM_MID, 0, -10);
     }
 }
 
@@ -408,9 +412,12 @@ static void buildUltraWayfinder(lv_obj_t* f) {
     wHeading = caption(f, "KURS --", cText2());
     lv_obj_align(wHeading, LV_ALIGN_TOP_MID, 0, 265);
 
-    const int cw = (CW - 16) / 2, ch = 140, cy = 310;
+    const int startX = 32;
+    const int spanW = SCR_W - 2 * startX;
+    const int cw = (spanW - 14) / 2, ch = 136, cy = 310;
     lv_obj_t* cAct = card(f, cw, ch);
-    lv_obj_set_pos(cAct, M, cy);
+    lv_obj_set_style_radius(cAct, R_TILE, 0);
+    lv_obj_set_pos(cAct, startX, cy);
     wRingSteps = ring(cAct, 72, 7, COL_ULTRA);
     lv_obj_align(wRingSteps, LV_ALIGN_TOP_MID, 0, 12);
     wStepsTxt = label(wRingSteps, F.numS, cText(), "0");
@@ -419,7 +426,8 @@ static void buildUltraWayfinder(lv_obj_t* f) {
     lv_obj_align(capAct, LV_ALIGN_BOTTOM_MID, 0, -10);
 
     lv_obj_t* cBat = card(f, cw, ch);
-    lv_obj_set_pos(cBat, M + cw + 16, cy);
+    lv_obj_set_style_radius(cBat, R_TILE, 0);
+    lv_obj_set_pos(cBat, startX + cw + 14, cy);
     wRingBat = ring(cBat, 72, 7, cOk());
     lv_obj_align(wRingBat, LV_ALIGN_TOP_MID, 0, 12);
     wBatTxt = label(wRingBat, F.numS, cText(), "0%");
@@ -610,13 +618,13 @@ static void buildCyberpunk(lv_obj_t* f) {
     lv_obj_t* pan = card(f, CW, 450);
     lv_obj_align(pan, LV_ALIGN_TOP_MID, 0, 24);
 
-    lv_obj_t* bTL = label(pan, F.title, CYBER_CYAN, "+"); lv_obj_set_pos(bTL, 8, 4);
-    lv_obj_t* bTR = label(pan, F.title, CYBER_CYAN, "+"); lv_obj_align(bTR, LV_ALIGN_TOP_RIGHT, -8, 4);
-    lv_obj_t* bBL = label(pan, F.title, CYBER_CYAN, "+"); lv_obj_align(bBL, LV_ALIGN_BOTTOM_LEFT, 8, -4);
-    lv_obj_t* bBR = label(pan, F.title, CYBER_CYAN, "+"); lv_obj_align(bBR, LV_ALIGN_BOTTOM_RIGHT, -8, -4);
+    lv_obj_t* bTL = label(pan, F.title, CYBER_CYAN, "+"); lv_obj_set_pos(bTL, 24, 14);
+    lv_obj_t* bTR = label(pan, F.title, CYBER_CYAN, "+"); lv_obj_align(bTR, LV_ALIGN_TOP_RIGHT, -24, 14);
+    lv_obj_t* bBL = label(pan, F.title, CYBER_CYAN, "+"); lv_obj_align(bBL, LV_ALIGN_BOTTOM_LEFT, 24, -14);
+    lv_obj_t* bBR = label(pan, F.title, CYBER_CYAN, "+"); lv_obj_align(bBR, LV_ALIGN_BOTTOM_RIGHT, -24, -14);
 
     yHeader = label(pan, F.small, CYBER_GREEN, "// WATCHOS ULTRA _");
-    lv_obj_set_pos(yHeader, 24, 18);
+    lv_obj_set_pos(yHeader, 24, 22);
 
     lv_obj_t* timeRow = box(pan, CW - 32, 90);
     lv_obj_align(timeRow, LV_ALIGN_TOP_MID, 0, 75);
@@ -672,10 +680,10 @@ static void buildWordClock(lv_obj_t* f) {
     addW(19, "ELF", 200, Y_BASE + Y_STEP * 6);
     addW(20, "UHR", 268, Y_BASE + Y_STEP * 6);
 
-    wcDots[0] = box(pan, 8, 8); lv_obj_set_pos(wcDots[0], 10, 10);
-    wcDots[1] = box(pan, 8, 8); lv_obj_align(wcDots[1], LV_ALIGN_TOP_RIGHT, -10, 10);
-    wcDots[2] = box(pan, 8, 8); lv_obj_align(wcDots[2], LV_ALIGN_BOTTOM_RIGHT, -10, -10);
-    wcDots[3] = box(pan, 8, 8); lv_obj_align(wcDots[3], LV_ALIGN_BOTTOM_LEFT, 10, -10);
+    wcDots[0] = box(pan, 8, 8); lv_obj_set_pos(wcDots[0], 28, 18);
+    wcDots[1] = box(pan, 8, 8); lv_obj_align(wcDots[1], LV_ALIGN_TOP_RIGHT, -28, 18);
+    wcDots[2] = box(pan, 8, 8); lv_obj_align(wcDots[2], LV_ALIGN_BOTTOM_RIGHT, -28, -18);
+    wcDots[3] = box(pan, 8, 8); lv_obj_align(wcDots[3], LV_ALIGN_BOTTOM_LEFT, 28, -18);
     for (int i = 0; i < 4; i++) {
         lv_obj_set_style_radius(wcDots[i], 4, 0);
         lv_obj_set_style_bg_opa(wcDots[i], LV_OPA_COVER, 0);
@@ -1304,7 +1312,7 @@ void buildFace(lv_obj_t* scr) {
     sBadgeTxt = label(sBadge, F.cap, cBg(), "1 NEU");
     lv_obj_set_style_text_letter_space(sBadgeTxt, 1, 0);
     lv_obj_center(sBadgeTxt);
-    lv_obj_align(sBadge, LV_ALIGN_TOP_MID, 0, 2);
+    lv_obj_align(sBadge, LV_ALIGN_TOP_MID, 0, 14);
     lv_obj_add_flag(sBadge, LV_OBJ_FLAG_HIDDEN);
 
     for (int i = 0; i < FACE_COUNT; i++) lv_obj_add_flag(sFaces[i], LV_OBJ_FLAG_HIDDEN);

@@ -74,7 +74,7 @@ static void refresh(bool) {
                        (st == ACT_SLEEPING) ? lv_color_hex(0x5E5CE6) : cText2();
     setPill(aStatePill, online ? MotionHaptic::getActivityLabel() : "KEIN SENSOR", online ? stCol : cCrit());
 
-    snprintf(b, sizeof(b), "Kadenz %u/min · gefiltert %lu", (unsigned)MotionHaptic::getLearnedCadenceSpm(),
+    snprintf(b, sizeof(b), "%u SPM · %lu filter", (unsigned)MotionHaptic::getLearnedCadenceSpm(),
              (unsigned long)MotionHaptic::getFilteredFalseSteps());
     setText(aLearnLbl, b);
 
@@ -101,10 +101,10 @@ static void refresh(bool) {
 
 void buildActivity(lv_obj_t* scr) {
     lv_obj_t* p = pageRoot(scr);
-    title(p, "AKTIVITÄT");
+    title(p, "FITNESS");
 
     static const char* TABS[2] = {"SCHRITTE", "WAAGE"};
-    aTabs = tabBar(p, M + 170, 24, CW - 170, TABS, 2, 0, [](lv_event_t* e) {
+    aTabs = tabBar(p, M_HEAD + 140, 26, 160, TABS, 2, 0, [](lv_event_t* e) {
         sTab = (int)(intptr_t)lv_event_get_user_data(e);
         haptic(HAPTIC_TICK);
         refresh(true);

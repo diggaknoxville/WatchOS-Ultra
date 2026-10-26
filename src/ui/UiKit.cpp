@@ -146,12 +146,12 @@ lv_obj_t* pageRoot(lv_obj_t* parent) {
 void title(lv_obj_t* page, const char* text) {
     lv_obj_t* t = label(page, F.title, cText(), text);
     lv_obj_set_style_text_letter_space(t, 2, 0);
-    lv_obj_set_pos(t, M, 22);
+    lv_obj_set_pos(t, M_HEAD, 26);
     lv_obj_t* u = box(page, 28, 4);
     lv_obj_set_style_radius(u, 2, 0);
     lv_obj_set_style_bg_opa(u, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(u, accent(), 0);
-    lv_obj_set_pos(u, M, 66);
+    lv_obj_set_pos(u, M_HEAD, 68);
     accReg(u, ACC_BG);
 }
 

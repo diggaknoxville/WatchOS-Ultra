@@ -59,8 +59,8 @@ void buildLauncher(lv_obj_t* scr) {
     lv_obj_set_flex_align(grid, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_set_style_pad_row(grid, 16, 0);
     lv_obj_set_style_pad_hor(grid, 10, 0);
-    lv_obj_set_style_pad_top(grid, 4, 0);
-    lv_obj_set_style_pad_bottom(grid, 32, 0);
+    lv_obj_set_style_pad_top(grid, 6, 0);
+    lv_obj_set_style_pad_bottom(grid, 54, 0);
 
     for (int i = 0; i < N_APPS; i++) {
         const AppEntry& a = APPS[i];

@@ -18,13 +18,13 @@ using namespace ui;
 
 namespace pages {
 
-static constexpr int MAP_W = CW;            // 362
+static constexpr int MAP_W = CW;            // 366
 static constexpr int MAP_H = 224;
-static constexpr int MAP_Y = CONTENT_Y;     // 80
-static constexpr int INFO_Y = MAP_Y + MAP_H + 8;   // 312
-static constexpr int INFO_H = 104;
-static constexpr int BAR_Y = INFO_Y + INFO_H + 8;  // 424
-static constexpr int BAR_H = 52;
+static constexpr int MAP_Y = CONTENT_Y;     // 82
+static constexpr int INFO_Y = MAP_Y + MAP_H + 6;   // 312
+static constexpr int INFO_H = 98;
+static constexpr int BAR_Y = INFO_Y + INFO_H + 8;  // 418
+static constexpr int BAR_H = 50;
 
 static lv_obj_t *sRoot, *sGpsPill, *sSatBtn;
 static lv_obj_t *sMapCard, *sMapImg;
@@ -427,12 +427,12 @@ void buildPosition(lv_obj_t* scr) {
     title(p, "POSITION");
 
     sSatBtn = pill(p, "SAT", cInfo());
-    lv_obj_align(sSatBtn, LV_ALIGN_TOP_RIGHT, -(M + 112), 24);
+    lv_obj_align(sSatBtn, LV_ALIGN_TOP_RIGHT, -(M_HEAD + 120), 26);
     pressable(sSatBtn);
     lv_obj_add_event_cb(sSatBtn, [](lv_event_t*) { haptic(HAPTIC_TICK); setHidden(sSkyModal, false); refreshSkyplot(); }, LV_EVENT_CLICKED, NULL);
 
     sGpsPill = pill(p, "GPS AUS", cText2());
-    lv_obj_align(sGpsPill, LV_ALIGN_TOP_RIGHT, -M, 24);
+    lv_obj_align(sGpsPill, LV_ALIGN_TOP_RIGHT, -M_HEAD, 26);
     pressable(sGpsPill);
     lv_obj_add_event_cb(sGpsPill, [](lv_event_t*) {
         bool en = !GpsManager::isEnabled();
@@ -591,8 +591,8 @@ void buildPosition(lv_obj_t* scr) {
     setHidden(sNavBox, true);
 
     // ------------------------------------------------------------ action bar
-    sDestBtn = primaryButton(p, 84, BAR_H, nullptr, "Ziel");
-    lv_obj_set_pos(sDestBtn, M, BAR_Y);
+    sDestBtn = primaryButton(p, 80, BAR_H, nullptr, "Ziel");
+    lv_obj_set_pos(sDestBtn, M_BOT, BAR_Y);
     lv_obj_add_event_cb(sDestBtn, [](lv_event_t*) {
         haptic(HAPTIC_TICK);
         if (NavEngine::isNavigating() || NavEngine::isRoutingBusy()) {
@@ -605,7 +605,7 @@ void buildPosition(lv_obj_t* scr) {
     }, LV_EVENT_CLICKED, NULL);
 
     static const char* MODES[3] = {"AUTO", "FUSS", "MESH"};
-    sModeTabs = tabBar(p, M + 92, BAR_Y + 10, 138, MODES, 3, 0, [](lv_event_t* e) {
+    sModeTabs = tabBar(p, M_BOT + 86, BAR_Y + 8, 132, MODES, 3, 0, [](lv_event_t* e) {
         NavMode m = (NavMode)(int)(intptr_t)lv_event_get_user_data(e);
         NavEngine::setMode(m);
         sMapNeedsRedraw = true;
@@ -614,8 +614,8 @@ void buildPosition(lv_obj_t* scr) {
         refresh(true);
     });
 
-    sRecBtn = secondaryButton(p, 58, BAR_H, nullptr, "GPX");
-    lv_obj_set_pos(sRecBtn, M + 238, BAR_Y);
+    sRecBtn = secondaryButton(p, 46, BAR_H, nullptr, "GPX");
+    lv_obj_set_pos(sRecBtn, M_BOT + 224, BAR_Y);
     lv_obj_add_event_cb(sRecBtn, [](lv_event_t*) {
         bool rec = !NavEngine::isTrackRecording();
         NavEngine::setTrackRecording(rec);
@@ -624,8 +624,8 @@ void buildPosition(lv_obj_t* scr) {
         refresh(true);
     }, LV_EVENT_CLICKED, NULL);
 
-    sWpBtn = secondaryButton(p, 58, BAR_H, ICO_FLAG, nullptr);
-    lv_obj_set_pos(sWpBtn, M + 304, BAR_Y);
+    sWpBtn = secondaryButton(p, 44, BAR_H, ICO_FLAG, nullptr);
+    lv_obj_set_pos(sWpBtn, M_BOT + 274, BAR_Y);
     lv_obj_add_event_cb(sWpBtn, [](lv_event_t*) {
         bool ok = NavEngine::markWaypoint("WP");
         haptic(ok ? HAPTIC_SUCCESS : HAPTIC_TICK);
@@ -641,8 +641,8 @@ void buildPosition(lv_obj_t* scr) {
     lv_obj_set_style_bg_opa(sSearchModal, LV_OPA_COVER, 0);
     lv_obj_add_flag(sSearchModal, LV_OBJ_FLAG_CLICKABLE);
     title(sSearchModal, "ZIEL");
-    lv_obj_t* closeBtn = secondaryButton(sSearchModal, 92, 36, ICO_CLOSE, "Zurück");
-    lv_obj_align(closeBtn, LV_ALIGN_TOP_RIGHT, -M, 20);
+    lv_obj_t* closeBtn = secondaryButton(sSearchModal, 84, 32, ICO_CLOSE, "Zurück");
+    lv_obj_align(closeBtn, LV_ALIGN_TOP_RIGHT, -M_HEAD, 26);
     lv_obj_add_event_cb(closeBtn, [](lv_event_t*) { setHidden(sSearchModal, true); haptic(HAPTIC_TICK); }, LV_EVENT_CLICKED, NULL);
     sFilterTabs = tabBar(sSearchModal, M, CONTENT_Y, CW, FILTER_LABELS, 7, 0, [](lv_event_t* e) {
         sActiveFilter = (int)(intptr_t)lv_event_get_user_data(e);
@@ -669,8 +669,8 @@ void buildPosition(lv_obj_t* scr) {
     lv_obj_set_style_bg_opa(sSkyModal, LV_OPA_COVER, 0);
     lv_obj_add_flag(sSkyModal, LV_OBJ_FLAG_CLICKABLE);
     title(sSkyModal, "SATELLITEN");
-    lv_obj_t* skyClose = secondaryButton(sSkyModal, 92, 36, ICO_CLOSE, "Zurück");
-    lv_obj_align(skyClose, LV_ALIGN_TOP_RIGHT, -M, 20);
+    lv_obj_t* skyClose = secondaryButton(sSkyModal, 84, 32, ICO_CLOSE, "Zurück");
+    lv_obj_align(skyClose, LV_ALIGN_TOP_RIGHT, -M_HEAD, 26);
     lv_obj_add_event_cb(skyClose, [](lv_event_t*) { setHidden(sSkyModal, true); haptic(HAPTIC_TICK); }, LV_EVENT_CLICKED, NULL);
     sSkySub = caption(sSkyModal, "", accent());
     accReg(sSkySub, ACC_TEXT);

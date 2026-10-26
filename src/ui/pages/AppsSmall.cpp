@@ -151,7 +151,7 @@ void buildPower(lv_obj_t* scr) {
     lv_obj_set_style_radius(grab, 3, 0);
     lv_obj_set_style_bg_opa(grab, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(grab, cText3(), 0);
-    lv_obj_align(grab, LV_ALIGN_BOTTOM_MID, 0, -8);
+    lv_obj_align(grab, LV_ALIGN_BOTTOM_MID, 0, -14);
 
     nav::PageDef d;
     d.root = p;
@@ -210,7 +210,7 @@ void buildConnect(lv_obj_t* scr) {
     lv_obj_t* p = pageRoot(scr);
     title(p, "VERBINDEN");
     cnStatusPill = pill(p, "HOTSPOT AUS", cText2());
-    lv_obj_align(cnStatusPill, LV_ALIGN_TOP_RIGHT, -M, 24);
+    lv_obj_align(cnStatusPill, LV_ALIGN_TOP_RIGHT, -M_HEAD, 26);
 
     // --- hotspot running: QR + credentials ---
     cnActive = box(p, SCR_W, SCR_H - CONTENT_Y);
@@ -401,7 +401,7 @@ void buildAgenda(lv_obj_t* scr) {
 
     sCalMonthLbl = label(p, F.body, accent(), "");
     accReg(sCalMonthLbl, ACC_TEXT);
-    lv_obj_align(sCalMonthLbl, LV_ALIGN_TOP_RIGHT, -M, 24);
+    lv_obj_align(sCalMonthLbl, LV_ALIGN_TOP_RIGHT, -M_HEAD, 26);
 
     static const char* TABS[2] = {"MONAT", "TERMINE"};
     sCalTabs = tabBar(p, M, CONTENT_Y, CW, TABS, 2, 0, [](lv_event_t* e) {
@@ -817,7 +817,7 @@ void buildAppMedia(lv_obj_t* scr) {
     lv_obj_t* p = pageRoot(scr);
     title(p, "MEDIEN");
     sAppMediaPill = pill(p, "BLUETOOTH AUS", cCrit());
-    lv_obj_align(sAppMediaPill, LV_ALIGN_TOP_RIGHT, -M, 24);
+    lv_obj_align(sAppMediaPill, LV_ALIGN_TOP_RIGHT, -M_HEAD, 26);
 
     lv_obj_t* cardMeta = card(p, CW, 160);
     lv_obj_set_pos(cardMeta, M, CONTENT_Y);
