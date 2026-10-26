@@ -150,4 +150,8 @@ public:
     static bool beginSdUpload(const char* path, uint32_t totalSize);
     static bool writeSdUploadChunk(const uint8_t* data, size_t len);
     static bool endSdUpload();
+
+    // Mutex guard for safe MicroSD access shared across background tasks
+    static bool lockSd(uint32_t waitMs = 500);
+    static void unlockSd();
 };

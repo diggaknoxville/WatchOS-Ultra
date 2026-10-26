@@ -82,8 +82,15 @@ static void refresh(bool) {
             char a[24];
             ago(a, sizeof(a), (time_t)pn.epoch);
             setText(sNodeAge[i], a);
-            if (pn.hasPos) snprintf(b, sizeof(b), "%.0f dBm · SNR %.1f · %.3f, %.3f", pn.rssi, pn.snr, pn.lat, pn.lon);
-            else snprintf(b, sizeof(b), "%.0f dBm · SNR %.1f · keine Position", pn.rssi, pn.snr);
+            if (pn.batPct > 0 && pn.hasPos) {
+                snprintf(b, sizeof(b), "%u%% · %.0f dBm · %.3f, %.3f", pn.batPct, pn.rssi, pn.lat, pn.lon);
+            } else if (pn.batPct > 0) {
+                snprintf(b, sizeof(b), "%u%% · %.0f dBm · SNR %.1f", pn.batPct, pn.rssi, pn.snr);
+            } else if (pn.hasPos) {
+                snprintf(b, sizeof(b), "%.0f dBm · SNR %.1f · %.3f, %.3f", pn.rssi, pn.snr, pn.lat, pn.lon);
+            } else {
+                snprintf(b, sizeof(b), "%.0f dBm · SNR %.1f · keine Position", pn.rssi, pn.snr);
+            }
             setText(sNodeMeta[i], b);
             int w = (int)((pn.rssi + 130.0f) * 100.0f / 90.0f);        // -130 .. -40 dBm -> 0..100 px
             if (w < 4) w = 4;

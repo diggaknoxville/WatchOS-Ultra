@@ -85,6 +85,8 @@ public:
     // Best (strongest) peer position younger than 30 min. ageSec = seconds since received.
     static bool getMeshFallbackPosition(double& outLat, double& outLon, char* outSourceName = nullptr,
                                         size_t nameLen = 0, uint32_t* ageSec = nullptr);
+    static bool reloadChannelsFromSd();
+    static uint8_t getCustomChannelCount();
 
     // 868 MHz Sub-GHz RF Spectrum Scanner (863.0 .. 870.0 MHz, LORA_SPECTRUM_BINS bins).
     // Only sweeps while active; the UI must deactivate it when the page is hidden.

@@ -2867,3 +2867,12 @@ bool NavEngine::endSdUpload() {
     nav::markDirty(nav::PG_POSITION);
     return ok;
 }
+
+bool NavEngine::lockSd(uint32_t waitMs) {
+    return xSemaphoreTakeRecursive(ioMutex(), pdMS_TO_TICKS(waitMs)) == pdTRUE;
+}
+
+void NavEngine::unlockSd() {
+    xSemaphoreGiveRecursive(ioMutex());
+}
+

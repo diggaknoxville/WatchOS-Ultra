@@ -7,6 +7,7 @@
 #include "CompanionServer.h"
 #include "BleCompanion.h"
 #include "RtcManager.h"
+#include "NavEngine.h"
 #include "ui/Navigator.h"
 #include "ui/Icons.h"
 #include <RadioLib.h>
@@ -16,6 +17,7 @@
 #include <mbedtls/aes.h>
 #include <esp_random.h>
 #include <math.h>
+#include <SD.h>
 
 #define INBOX_LEN 8
 #define MAX_PEERS 16
@@ -116,6 +118,182 @@ static const uint8_t MESH_DEFAULT_PSK[16] = {
     0xd4, 0xf1, 0xbb, 0x3a, 0x20, 0x29, 0x07, 0x59,
     0xf0, 0xbc, 0xff, 0xab, 0xcf, 0x4e, 0x69, 0x01
 };
+
+// Custom Meshtastic Channels loaded from SD (/Meshtastic/channels.txt)
+struct MeshCustomChannel {
+    char name[16];
+    uint8_t key[32];
+    uint8_t keyBytes;   // 16 (AES-128) or 32 (AES-256)
+    uint8_t chanHash;
+};
+static const int MAX_CUSTOM_CHANNELS = 8;
+static MeshCustomChannel sCustomChannels[MAX_CUSTOM_CHANNELS];
+static uint8_t sCustomChannelCount = 0;
+static bool sChannelsLoadedFromSd = false;
+
+static uint8_t computeChanHash(const char* name, const uint8_t* key, uint8_t keyBytes) {
+    uint8_t hName = 0;
+    while (*name) hName ^= (uint8_t)(*name++);
+    uint8_t hKey = 0;
+    for (uint8_t i = 0; i < keyBytes; i++) hKey ^= key[i];
+    return hName ^ hKey;
+}
+
+static int b64decode(const char* in, uint8_t* out, size_t outMax) {
+    static const int8_t tbl[256] = {
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,62,-1,-1,-1,63,
+        52,53,54,55,56,57,58,59,60,61,-1,-1,-1, 0,-1,-1,
+        -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,
+        15,16,17,18,19,20,21,22,23,24,25,-1,-1,-1,-1,-1,
+        -1,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,
+        41,42,43,44,45,46,47,48,49,50,51,-1,-1,-1,-1,-1
+    };
+    size_t outLen = 0;
+    uint32_t buf = 0;
+    int bits = 0;
+    while (*in && *in != '=') {
+        int v = tbl[(uint8_t)*in++];
+        if (v < 0) continue;
+        buf = (buf << 6) | v;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            if (outLen < outMax) out[outLen++] = (uint8_t)(buf >> bits);
+        }
+    }
+    return (int)outLen;
+}
+
+static int hexDecode(const char* in, uint8_t* out, size_t outMax) {
+    auto nibble = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+    size_t outLen = 0;
+    while (*in && *(in + 1) && outLen < outMax) {
+        int n1 = nibble(*in++);
+        int n2 = nibble(*in++);
+        if (n1 < 0 || n2 < 0) break;
+        out[outLen++] = (uint8_t)((n1 << 4) | n2);
+    }
+    return (int)outLen;
+}
+
+static bool loadChannelsFromSd() {
+    if (!NavEngine::status().sdReady) return false;
+    if (!NavEngine::lockSd(300)) return false;
+
+    const char* paths[] = {"/Meshtastic/channels.txt", "/channels.txt", "/meshtastic.cfg"};
+    const char* foundPath = nullptr;
+    for (const char* p : paths) {
+        if (SD.exists(p)) { foundPath = p; break; }
+    }
+    if (!foundPath) {
+        NavEngine::unlockSd();
+        return false;
+    }
+
+    File f = SD.open(foundPath, FILE_READ);
+    if (!f) {
+        NavEngine::unlockSd();
+        return false;
+    }
+
+    sCustomChannelCount = 0;
+    while (f.available() && sCustomChannelCount < MAX_CUSTOM_CHANNELS) {
+        String line = f.readStringUntil('\n');
+        line.trim();
+        if (line.length() == 0 || line.startsWith("#") || line.startsWith("//")) continue;
+
+        char name[16] = {0};
+        char pskStr[64] = {0};
+
+        int idx = 0;
+        while (idx < line.length()) {
+            int sep = line.indexOf(',', idx);
+            if (sep < 0) sep = line.indexOf(';', idx);
+            if (sep < 0) sep = line.length();
+
+            String token = line.substring(idx, sep);
+            token.trim();
+            int eq = token.indexOf('=');
+            if (eq > 0) {
+                String k = token.substring(0, eq); k.trim(); k.toLowerCase();
+                String v = token.substring(eq + 1); v.trim();
+                if (k == "name" || k == "channel" || k == "chan") {
+                    strncpy(name, v.c_str(), sizeof(name) - 1);
+                } else if (k == "psk" || k == "key" || k == "pass") {
+                    strncpy(pskStr, v.c_str(), sizeof(pskStr) - 1);
+                }
+            }
+            idx = sep + 1;
+        }
+
+        if (name[0] && pskStr[0]) {
+            MeshCustomChannel& ch = sCustomChannels[sCustomChannelCount];
+            strncpy(ch.name, name, sizeof(ch.name) - 1);
+            ch.name[sizeof(ch.name) - 1] = 0;
+            ch.keyBytes = 0;
+
+            if (strcmp(pskStr, "AQ==") == 0 || strcmp(pskStr, "1") == 0) {
+                memcpy(ch.key, MESH_DEFAULT_PSK, 16);
+                ch.keyBytes = 16;
+            } else if (strlen(pskStr) == 32 || strlen(pskStr) == 64) {
+                int dl = hexDecode(pskStr, ch.key, 32);
+                if (dl == 16 || dl == 32) ch.keyBytes = (uint8_t)dl;
+            }
+            if (ch.keyBytes == 0) {
+                int dl = b64decode(pskStr, ch.key, 32);
+                if (dl == 16 || dl == 32) ch.keyBytes = (uint8_t)dl;
+            }
+
+            if (ch.keyBytes > 0) {
+                ch.chanHash = computeChanHash(ch.name, ch.key, ch.keyBytes);
+                Serial.printf("[LORA] Meshtastic: loaded channel '%s' (%u-bit key, hash 0x%02X) from SD\n",
+                              ch.name, (unsigned)ch.keyBytes * 8, (unsigned)ch.chanHash);
+                sCustomChannelCount++;
+            }
+        }
+    }
+    f.close();
+    NavEngine::unlockSd();
+    sChannelsLoadedFromSd = true;
+    return sCustomChannelCount > 0;
+}
+
+static void logPeerToSd(const LoraPeerNode& pn) {
+    if (!NavEngine::status().sdWritable) return;
+    if (!NavEngine::lockSd(200)) return;
+    if (!SD.exists("/Meshtastic")) SD.mkdir("/Meshtastic");
+    File f = SD.open("/Meshtastic/nodes.csv", FILE_APPEND);
+    if (f) {
+        if (f.size() == 0) {
+            f.println("timestamp,nodeId,name,shortName,lat,lon,batPct,rssi,snr");
+        }
+        f.printf("%lu,!%08lx,\"%s\",\"%s\",%.6f,%.6f,%u,%.1f,%.1f\n",
+                 (unsigned long)pn.epoch, (unsigned long)pn.nodeId,
+                 pn.name, pn.shortName, pn.lat, pn.lon, pn.batPct, pn.rssi, pn.snr);
+        f.close();
+    }
+    NavEngine::unlockSd();
+}
+
+static void logMessageToSd(uint32_t fromNode, const char* text, float rssi, float snr) {
+    if (!NavEngine::status().sdWritable) return;
+    if (!NavEngine::lockSd(200)) return;
+    if (!SD.exists("/Meshtastic")) SD.mkdir("/Meshtastic");
+    File f = SD.open("/Meshtastic/inbox.log", FILE_APPEND);
+    if (f) {
+        f.printf("[%lu] !%08lx (%.0fdBm/%.1fdB): %s\n",
+                 (unsigned long)time(NULL), (unsigned long)fromNode, rssi, snr, text);
+        f.close();
+    }
+    NavEngine::unlockSd();
+}
 
 static void IRAM_ATTR onDio1() { rxFlag = true; }
 
@@ -235,6 +413,15 @@ static void updatePeer(uint32_t nodeId, const char* name, const char* shortName,
     sPeersDirty = true;
     nav::markDirty(nav::PG_POSITION);
     nav::markDirty(nav::PG_LORA);
+
+    LoraPeerNode pCopy;
+    portENTER_CRITICAL(&inboxMux);
+    pCopy = sPeers[idx];
+    portEXIT_CRITICAL(&inboxMux);
+    if (pCopy.hasName || pCopy.hasPos || pCopy.batPct > 0) {
+        logPeerToSd(pCopy);
+    }
+
     if (posRejected) {
         Serial.printf("[LORA] Peer !%08lx position jump > %.0f km ignored\n", (unsigned long)nodeId, PEER_JUMP_KM);
     }
@@ -396,6 +583,7 @@ static void storeMessage(const char* s, float rssi, float snr) {
     if (inboxCount < INBOX_LEN) inboxCount++;
     portEXIT_CRITICAL(&inboxMux);
     sInboxDirty = true;
+    logMessageToSd(0, s, rssi, snr);
 }
 
 static void parseAsciiPacket(const String& s, float rssi, float snr) {
@@ -492,10 +680,10 @@ static bool tryParseMeshtasticDataProtobuf(const uint8_t* plain, size_t payLen,
     return (outPortnum > 0 && outPortnum <= 512 && outDataPtr != nullptr);
 }
 
-static void aesCtr(const uint8_t* key, const uint8_t* nonce16, const uint8_t* in, uint8_t* out, size_t len) {
+static void aesCtr(const uint8_t* key, size_t keyBits, const uint8_t* nonce16, const uint8_t* in, uint8_t* out, size_t len) {
     mbedtls_aes_context aes;
     mbedtls_aes_init(&aes);
-    mbedtls_aes_setkey_enc(&aes, key, 128);
+    mbedtls_aes_setkey_enc(&aes, key, (unsigned int)keyBits);
     size_t nc_off = 0;
     uint8_t stream_block[16] = {0};
     uint8_t nc[16];
@@ -504,7 +692,7 @@ static void aesCtr(const uint8_t* key, const uint8_t* nonce16, const uint8_t* in
     mbedtls_aes_free(&aes);
 }
 
-// Decode Meshtastic OTA frame (16-byte header + AES-128 CTR encrypted Data protobuf)
+// Decode Meshtastic OTA frame (16-byte header + AES-CTR encrypted Data protobuf)
 static bool tryDecodeMeshtastic(const uint8_t* pkt, size_t len, float rssi, float snr) {
     if (len < 18 || len > 255) return false;
     uint32_t destNode = rd_u32le(pkt + 0);
@@ -528,30 +716,75 @@ static bool tryDecodeMeshtastic(const uint8_t* pkt, size_t len, float rssi, floa
     size_t dataLen = 0;
     bool decrypted = false;
 
-    // The channel hash tells us which default-key index could match
-    // (hash = xor(name) ^ xor(key), xor(default key k) = 0x03 ^ k): a single
-    // AES attempt instead of brute-forcing all simple keys.
-    int keyIdx = (int)(uint8_t)(chanHash ^ presetNameXor() ^ 0x03);
-    if (keyIdx >= 1 && keyIdx <= 10) {
-        uint8_t key[16];
-        memcpy(key, MESH_DEFAULT_PSK, 16);
-        key[15] = (uint8_t)keyIdx;
-        aesCtr(key, nonce, pkt + 16, plain, payLen);
-        if (tryParseMeshtasticDataProtobuf(plain, payLen, portnum, dataPtr, dataLen)) decrypted = true;
+    auto tryKey = [&](const uint8_t* k, uint8_t kBytes) -> bool {
+        if (!k || (kBytes != 16 && kBytes != 32)) return false;
+        aesCtr(k, (size_t)kBytes * 8, nonce, pkt + 16, plain, payLen);
+        return tryParseMeshtasticDataProtobuf(plain, payLen, portnum, dataPtr, dataLen);
+    };
+
+    // 1. Check custom channels matching chanHash
+    for (uint8_t i = 0; i < sCustomChannelCount; i++) {
+        if (sCustomChannels[i].chanHash == chanHash) {
+            if (tryKey(sCustomChannels[i].key, sCustomChannels[i].keyBytes)) {
+                decrypted = true;
+                break;
+            }
+        }
     }
 
-    // Also test unencrypted payload
+    // 2. Always try standard Meshtastic default PSK (Key 1 / AQ==)
+    if (!decrypted && tryKey(MESH_DEFAULT_PSK, 16)) {
+        decrypted = true;
+    }
+
+    // 3. Try calculated default key index if chanHash matches standard formula
+    if (!decrypted) {
+        int keyIdx = (int)(uint8_t)(chanHash ^ presetNameXor() ^ 0x03);
+        if (keyIdx >= 1 && keyIdx <= 10) {
+            uint8_t key[16];
+            memcpy(key, MESH_DEFAULT_PSK, 16);
+            key[15] = (uint8_t)keyIdx;
+            if (tryKey(key, 16)) decrypted = true;
+        }
+    }
+
+    // 4. Try any other loaded custom channels
+    if (!decrypted) {
+        for (uint8_t i = 0; i < sCustomChannelCount; i++) {
+            if (sCustomChannels[i].chanHash != chanHash) {
+                if (tryKey(sCustomChannels[i].key, sCustomChannels[i].keyBytes)) {
+                    decrypted = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    // 5. Try simple keys 2..10 (key 1 was already tested)
+    if (!decrypted) {
+        uint8_t key[16];
+        memcpy(key, MESH_DEFAULT_PSK, 16);
+        for (uint8_t k = 2; k <= 10; k++) {
+            key[15] = k;
+            if (tryKey(key, 16)) {
+                decrypted = true;
+                break;
+            }
+        }
+    }
+
+    // 6. Try unencrypted payload
     if (!decrypted && tryParseMeshtasticDataProtobuf(pkt + 16, payLen, portnum, dataPtr, dataLen)) {
         decrypted = true;
     }
 
     if (!decrypted) {
         // Meshtastic mode and a structurally valid header: register the node id
-        // and channel hash even if the channel uses a private key.
+        // and channel hash even if the channel uses an unknown key.
         if (sPreset != MESH_PRESET_KRONOS_DIR) {
             updatePeer(fromNode, nullptr, nullptr, false, 0, 0, rssi, snr, chanHash, 0, false, true);
             char msg[72];
-            snprintf(msg, sizeof(msg), "Knoten !%08lx (CH 0x%02X, verschlüsselt)",
+            snprintf(msg, sizeof(msg), "Knoten !%08lx (CH 0x%02X, unbek. Key)",
                      (unsigned long)fromNode, (unsigned)chanHash);
             storeMessage(msg, rssi, snr);
             Serial.printf("[LORA] Meshtastic encrypted frame from !%08lx ch=0x%02X RSSI=%.0f SNR=%.1f\n",
@@ -566,40 +799,66 @@ static bool tryDecodeMeshtastic(const uint8_t* pkt, size_t len, float rssi, floa
 
     if (portnum == 1) { // TEXT_MESSAGE_APP
         char txt[96];
-        size_t clen = min(dataLen, sizeof(txt) - 18);
-        snprintf(txt, sizeof(txt), "[!%04x] ", (unsigned)(fromNode & 0xFFFF));
+        size_t clen = min(dataLen, sizeof(txt) - 24);
+
+        char senderName[20] = {0};
+        portENTER_CRITICAL(&inboxMux);
+        for (int i = 0; i < sPeerCount; i++) {
+            if (sPeers[i].nodeId == fromNode && sPeers[i].hasName) {
+                if (sPeers[i].shortName[0]) strncpy(senderName, sPeers[i].shortName, sizeof(senderName) - 1);
+                else strncpy(senderName, sPeers[i].name, sizeof(senderName) - 1);
+                break;
+            }
+        }
+        portEXIT_CRITICAL(&inboxMux);
+
+        if (senderName[0]) snprintf(txt, sizeof(txt), "[%s] ", senderName);
+        else snprintf(txt, sizeof(txt), "[!%04x] ", (unsigned)(fromNode & 0xFFFF));
+
         size_t prefixLen = strlen(txt);
         memcpy(txt + prefixLen, dataPtr, clen);
         txt[prefixLen + clen] = 0;
+
         updatePeer(fromNode, nullptr, nullptr, false, 0, 0, rssi, snr, chanHash, 0, false, true);
         storeMessage(txt, rssi, snr);
         DisplayEngine::showNotification("Meshtastic", txt, 5000, ICO_CHAT);
+        AudioEngine::playSoundFx(SFX_NOTIFY);
         return true;
     } else if (portnum == 3) { // POSITION_APP: latitude_i=1, longitude_i=2 (sfixed32), altitude=3, time=4
         const uint8_t *pp = dataPtr, *pend = dataPtr + dataLen;
-        int32_t latI = 0, lonI = 0;
+        int32_t latI = 0, lonI = 0, altI = 0;
         while (pp < pend) {
             uint64_t tag = pbVarint(pp, pend);
             uint32_t field = (uint32_t)(tag >> 3), wt = (uint32_t)(tag & 7);
             if (field == 1 && wt == 5 && pp + 4 <= pend) { latI = rd_s32le(pp); pp += 4; }
             else if (field == 2 && wt == 5 && pp + 4 <= pend) { lonI = rd_s32le(pp); pp += 4; }
+            else if (field == 3 && wt == 0) { altI = (int32_t)pbVarint(pp, pend); }
             else if (!pbSkip(pp, pend, wt)) break;
         }
         bool hasPos = (latI != 0 && lonI != 0);
+        (void)altI;
         double lat = hasPos ? (latI * 1e-7) : 0.0;
         double lon = hasPos ? (lonI * 1e-7) : 0.0;
         updatePeer(fromNode, nullptr, nullptr, hasPos, lat, lon, rssi, snr, chanHash, 0, false, true);
         if (hasPos) {
+            char senderName[20] = {0};
+            portENTER_CRITICAL(&inboxMux);
+            for (int i = 0; i < sPeerCount; i++) {
+                if (sPeers[i].nodeId == fromNode && sPeers[i].hasName) {
+                    strncpy(senderName, sPeers[i].shortName[0] ? sPeers[i].shortName : sPeers[i].name, sizeof(senderName) - 1);
+                    break;
+                }
+            }
+            portEXIT_CRITICAL(&inboxMux);
             char msg[72];
-            snprintf(msg, sizeof(msg), "POS !%04x: %.4f, %.4f", (unsigned)(fromNode & 0xFFFF), lat, lon);
+            if (senderName[0]) snprintf(msg, sizeof(msg), "POS %s: %.4f, %.4f", senderName, lat, lon);
+            else snprintf(msg, sizeof(msg), "POS !%04x: %.4f, %.4f", (unsigned)(fromNode & 0xFFFF), lat, lon);
             storeMessage(msg, rssi, snr);
         }
         return true;
     } else if (portnum == 4 || portnum == 73) {
         // NODEINFO_APP (User): id=1, long_name=2, short_name=3, macaddr=4, hw_model=5, is_licensed=6
-        // MAP_REPORT_APP (MapReport): long_name=1, short_name=2, role=3, hw_model=4,
-        //   firmware_version=5, region=6, modem_preset=7, has_default_channel=8,
-        //   latitude_i=9, longitude_i=10, altitude=11, position_precision=12, num_online_local_nodes=13
+        // MAP_REPORT_APP (MapReport): long_name=1, short_name=2, role=3, hw_model=4
         const uint8_t *up = dataPtr, *uend = dataPtr + dataLen;
         char shortName[12] = {0};
         char longName[24] = {0};
@@ -640,12 +899,65 @@ static bool tryDecodeMeshtastic(const uint8_t* pkt, size_t len, float rssi, floa
             DisplayEngine::showNotification("Meshtastic", msg, 4000, ICO_PODCASTS);
         }
         return true;
+    } else if (portnum == 67) {
+        // TELEMETRY_APP: device_metrics=2 (battery_level=1, voltage=2, uptime_seconds=5)
+        const uint8_t *tp = dataPtr, *tend = dataPtr + dataLen;
+        uint8_t batPct = 0;
+        float voltage = 0.0f;
+        while (tp < tend) {
+            uint64_t tag = pbVarint(tp, tend);
+            uint32_t field = (uint32_t)(tag >> 3), wt = (uint32_t)(tag & 7);
+            if (field == 2 && wt == 2) { // device_metrics
+                uint64_t subLen = pbVarint(tp, tend);
+                const uint8_t* dp = tp;
+                const uint8_t* dend = dp + subLen;
+                if (dend <= tend) {
+                    while (dp < dend) {
+                        uint64_t dtag = pbVarint(dp, dend);
+                        uint32_t dfield = (uint32_t)(dtag >> 3), dwt = (uint32_t)(dtag & 7);
+                        if (dfield == 1 && dwt == 0) {
+                            uint64_t bl = pbVarint(dp, dend);
+                            if (bl <= 100) batPct = (uint8_t)bl;
+                        } else if (dfield == 2 && dwt == 5 && dp + 4 <= dend) {
+                            memcpy(&voltage, dp, 4);
+                            dp += 4;
+                        } else if (!pbSkip(dp, dend, dwt)) {
+                            break;
+                        }
+                    }
+                }
+                tp += subLen;
+            } else if (!pbSkip(tp, tend, wt)) {
+                break;
+            }
+        }
+        updatePeer(fromNode, nullptr, nullptr, false, 0, 0, rssi, snr, chanHash, batPct, false, true);
+        char senderName[20] = {0};
+        portENTER_CRITICAL(&inboxMux);
+        for (int i = 0; i < sPeerCount; i++) {
+            if (sPeers[i].nodeId == fromNode && sPeers[i].hasName) {
+                strncpy(senderName, sPeers[i].shortName[0] ? sPeers[i].shortName : sPeers[i].name, sizeof(senderName) - 1);
+                break;
+            }
+        }
+        portEXIT_CRITICAL(&inboxMux);
+        char msg[72];
+        if (batPct > 0 && voltage > 0.0f) {
+            if (senderName[0]) snprintf(msg, sizeof(msg), "%s Akku %u%% (%.2fV)", senderName, batPct, voltage);
+            else snprintf(msg, sizeof(msg), "BAT !%04x: %u%% (%.2fV)", (unsigned)(fromNode & 0xFFFF), batPct, voltage);
+        } else if (batPct > 0) {
+            if (senderName[0]) snprintf(msg, sizeof(msg), "%s Akku %u%%", senderName, batPct);
+            else snprintf(msg, sizeof(msg), "BAT !%04x: %u%%", (unsigned)(fromNode & 0xFFFF), batPct);
+        } else {
+            snprintf(msg, sizeof(msg), "MESH TELEMETRIE von !%08lx", (unsigned long)fromNode);
+        }
+        storeMessage(msg, rssi, snr);
+        return true;
     } else {
-        // Any other Meshtastic portnum (e.g. 67=TELEMETRY_APP, 5=ROUTING_APP, 70=TRACEROUTE, 71=NEIGHBORINFO)
+        // Any other Meshtastic portnum (e.g. 5=ROUTING_APP, 70=TRACEROUTE, 71=NEIGHBORINFO)
         updatePeer(fromNode, nullptr, nullptr, false, 0, 0, rssi, snr, chanHash, 0, false, true);
         char msg[72];
-        const char* pName = (portnum == 67) ? "TELEMETRIE" :
-                            (portnum == 71) ? "NEIGHBORINFO" :
+        const char* pName = (portnum == 71) ? "NEIGHBORINFO" :
                             (portnum == 70) ? "TRACEROUTE" :
                             (portnum == 5)  ? "ROUTING" : "PAKET";
         snprintf(msg, sizeof(msg), "MESH %s von !%08lx", pName, (unsigned long)fromNode);
@@ -693,7 +1005,7 @@ static size_t buildMeshtasticFrame(uint32_t destNode, uint32_t portnum,
     uint8_t nonce[16] = {0};
     memcpy(nonce + 0, &pktId, 4);
     memcpy(nonce + 8, &from, 4);
-    aesCtr(MESH_DEFAULT_PSK, nonce, plain, out + 16, idx);
+    aesCtr(MESH_DEFAULT_PSK, 128, nonce, plain, out + 16, idx);
     return 16 + idx;
 }
 
@@ -1085,6 +1397,27 @@ void RadioLoRa::loop(unsigned long now) {
 
     serviceTx(now);
 
+    // Spontaneous & periodic Meshtastic discovery announce
+    if (sPreset != MESH_PRESET_KRONOS_DIR && isEnabled()) {
+        static unsigned long sLastAutoAnnounceMs = 0;
+        static bool sInitialAnnounceSent = false;
+        if (!sInitialAnnounceSent && now > 12000UL) {
+            sInitialAnnounceSent = true;
+            sLastAutoAnnounceMs = now;
+            sendNodeInfoDiscovery(0xFFFFFFFFUL);
+            Serial.println("[LORA] Meshtastic initial NodeInfo broadcast sent");
+        } else if (sInitialAnnounceSent && now - sLastAutoAnnounceMs >= 600000UL) { // every 10 min
+            sLastAutoAnnounceMs = now;
+            sendNodeInfoDiscovery(0xFFFFFFFFUL);
+            Serial.println("[LORA] Meshtastic periodic NodeInfo broadcast sent");
+        }
+    }
+
+    // Lazy load custom channels from SD if card is ready
+    if (!sChannelsLoadedFromSd && NavEngine::status().sdReady) {
+        loadChannelsFromSd();
+    }
+
     // Periodic beacon (user setting): position only with a real, recent fix
     if (SettingsStorage::get().loraBeaconEnabled && now - lastBeacon > BEACON_MS) {
         lastBeacon = now;
@@ -1120,7 +1453,9 @@ bool RadioLoRa::sendNodeInfoDiscovery(uint32_t targetNode) {
     if (!ready || !txQueue || !isEnabled()) return false;
     if (sPreset == MESH_PRESET_KRONOS_DIR) return false;
     unsigned long now = millis();
-    if (sLastNodeInfoMs != 0 && now - sLastNodeInfoMs < NODEINFO_MIN_MS) return false;
+    bool isBcast = (targetNode == 0xFFFFFFFFUL);
+    uint32_t cooldown = isBcast ? 60000UL : 10000UL;
+    if (sLastNodeInfoMs != 0 && now - sLastNodeInfoMs < cooldown) return false;
     TxReq r{};
     r.kind = TX_MESH_NODEINFO;
     r.targetNode = targetNode;
@@ -1298,3 +1633,12 @@ uint8_t RadioLoRa::getThreats(BleThreatInfo* out, uint8_t maxOut) {
     portEXIT_CRITICAL(&sThreatMux);
     return n;
 }
+
+bool RadioLoRa::reloadChannelsFromSd() {
+    return loadChannelsFromSd();
+}
+
+uint8_t RadioLoRa::getCustomChannelCount() {
+    return sCustomChannelCount;
+}
+

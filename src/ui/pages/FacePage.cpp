@@ -623,7 +623,7 @@ static void buildCyberpunk(lv_obj_t* f) {
     lv_obj_t* bBL = label(pan, F.title, CYBER_CYAN, "+"); lv_obj_align(bBL, LV_ALIGN_BOTTOM_LEFT, 24, -14);
     lv_obj_t* bBR = label(pan, F.title, CYBER_CYAN, "+"); lv_obj_align(bBR, LV_ALIGN_BOTTOM_RIGHT, -24, -14);
 
-    yHeader = label(pan, F.small, CYBER_GREEN, "// WATCHOS ULTRA _");
+    yHeader = label(pan, F.small, CYBER_GREEN, "// SYSTEM HUD • UHRZEIT");
     lv_obj_set_pos(yHeader, 24, 22);
 
     lv_obj_t* timeRow = box(pan, CW - 32, 90);
