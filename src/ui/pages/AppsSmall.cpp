@@ -161,17 +161,10 @@ void buildPower(lv_obj_t* scr) {
 }
 
 // ============================================================== CONNECT
-// BLE passkey is optional in the BleCompanion contract: detect getPasskey() at compile time.
-template <typename T, typename = void> struct HasPasskey : std::false_type {};
-template <typename T> struct HasPasskey<T, std::void_t<decltype(T::getPasskey())>> : std::true_type {};
-static void fmtPasskey(char* out, size_t n, const char* v) { snprintf(out, n, "%s", v && v[0] ? v : "--"); }
-static void fmtPasskey(char* out, size_t n, const String& v) { snprintf(out, n, "%s", v.length() ? v.c_str() : "--"); }
-template <typename V> static void fmtPasskey(char* out, size_t n, V v) {
-    snprintf(out, n, "%06lu", (unsigned long)v % 1000000UL);
-}
-template <typename T> static bool blePasskeyText(char* out, size_t n) {
-    if constexpr (HasPasskey<T>::value) { fmtPasskey(out, n, T::getPasskey()); return true; }
-    else { (void)out; (void)n; return false; }
+// 6-digit BLE pairing passkey (BleCompanion::getPasskey() returns uint32_t)
+static bool blePasskeyText(char* out, size_t n) {
+    snprintf(out, n, "%06lu", (unsigned long)BleCompanion::getPasskey() % 1000000UL);
+    return true;
 }
 
 static lv_obj_t *cnActive, *cnInactive, *cnQr, *cnSsid, *cnPw, *cnPin, *cnBle, *cnStartBtn, *cnStatusPill;
@@ -207,7 +200,7 @@ static void refreshConnect(bool) {
     }
     if (BleCompanion::isEnabled()) {
         char pk[24];
-        if (blePasskeyText<BleCompanion>(pk, sizeof(pk))) {
+        if (blePasskeyText(pk, sizeof(pk))) {
             snprintf(b, sizeof(b), "Bluetooth-Kopplung: %s%s", pk, BleCompanion::isConnected() ? "  (verbunden)" : "");
         } else {
             snprintf(b, sizeof(b), "Bluetooth: %s", BleCompanion::isConnected() ? "verbunden" : "bereit zur Kopplung");

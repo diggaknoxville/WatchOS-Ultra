@@ -82,7 +82,7 @@ void add(const char* title, const char* body, const char* icon) {
     sMetaDirty = true;
     sHead = (sHead + 1) % CAP;
     if (sCount < CAP) sCount++;
-    sRev++;
+    sRev = sRev + 1;
     portEXIT_CRITICAL(&sMux);
 }
 
@@ -174,7 +174,7 @@ void markAllRead() {
             changed = true;
         }
     }
-    if (changed) sRev++;
+    if (changed) sRev = sRev + 1;
     portEXIT_CRITICAL(&sMux);
 }
 
@@ -183,7 +183,7 @@ void clear() {
     sCount = 0;
     sHead = 0;
     sMetaDirty = true;       // slots become unreachable, no need to rewrite them
-    sRev++;
+    sRev = sRev + 1;
     portEXIT_CRITICAL(&sMux);
 }
 

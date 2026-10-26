@@ -257,7 +257,7 @@ class DataCallbacks : public NimBLECharacteristicCallbacks {
             RxSlot& s = sRxSlots[(sRxHead + sRxCount) % RX_SLOTS];
             s.len = (uint16_t)len;
             memcpy(s.data, val.data(), len);
-            sRxCount++;
+            sRxCount = sRxCount + 1;
         }
         portEXIT_CRITICAL(&sRxMux);
     }
@@ -314,7 +314,6 @@ static bool ensureStack() {
     );
     sCmdChar->setCallbacks(new CmdCallbacks());
 
-    pService->start();
 
     NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
     pAdvertising->setName(BLE_DEVICE_NAME);
@@ -429,7 +428,7 @@ void BleCompanion::loop(unsigned long now) {
         if (sRxCount > 0) {
             work = sRxSlots[sRxHead];
             sRxHead = (sRxHead + 1) % RX_SLOTS;
-            sRxCount--;
+            sRxCount = sRxCount - 1;
             have = true;
         }
         portEXIT_CRITICAL(&sRxMux);
@@ -455,7 +454,7 @@ void BleCompanion::loop(unsigned long now) {
         if (sCmdCount > 0) {
             memcpy(cmd, sCmdQueue[sCmdHead], CMD_BYTES);
             sCmdHead = (sCmdHead + 1) % CMD_SLOTS;
-            sCmdCount--;
+            sCmdCount = sCmdCount - 1;
             have = true;
         }
         portEXIT_CRITICAL(&sCmdMux);
@@ -526,7 +525,7 @@ void BleCompanion::sendMediaCommand(const char* cmd) {
         char* slot = sCmdQueue[(sCmdHead + sCmdCount) % CMD_SLOTS];
         strncpy(slot, cmd, CMD_BYTES - 1);
         slot[CMD_BYTES - 1] = 0;
-        sCmdCount++;
+        sCmdCount = sCmdCount + 1;
     }
     portEXIT_CRITICAL(&sCmdMux);
 }

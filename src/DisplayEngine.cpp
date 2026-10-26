@@ -262,7 +262,8 @@ static void perfReport(unsigned long now) {
                       (unsigned long)(g_kronosFlushPx / sPerfFrames / 1000));
     }
     sPerfFrames = sPerfCycleUs = sPerfMaxUs = 0;
-    g_kronosFlushUs = g_kronosFlushPx = 0;
+    g_kronosFlushUs = 0;
+    g_kronosFlushPx = 0;
 }
 
 // Serial console (UI task):
