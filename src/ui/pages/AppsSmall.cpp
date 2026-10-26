@@ -970,68 +970,124 @@ void buildCalib(lv_obj_t* scr) {
         lv_obj_remove_flag(r, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
     }
 
-    // 2. Corner radius rounded borders at full dimensions
+    // 2. Comprehensive Spectrum of Corner Radii (reaching all the way to center/inner display)
     static const struct { int r; uint32_t color; } RADII[] = {
-        {20, 0xFF3B30},  // R20: Red
-        {30, 0xFF9500},  // R30: Orange
-        {40, 0xFFCC00},  // R40: Yellow
-        {50, 0x34C759},  // R50: Green
-        {60, 0x00C7BE},  // R60: Cyan
-        {70, 0x007AFF},  // R70: Blue
-        {80, 0xAF52DE},  // R80: Purple
-        {90, 0xFF2D55},  // R90: Pink
+        { 20, 0xFF1744},  // Crimson
+        { 30, 0xFF5252},  // Coral
+        { 40, 0xFF6D00},  // Deep Orange
+        { 50, 0xFF9100},  // Orange
+        { 60, 0xFFD600},  // Amber
+        { 70, 0xFFFF00},  // Yellow
+        { 80, 0xAEEA00},  // Lime Yellow
+        { 90, 0x76FF03},  // Bright Lime
+        {100, 0x00E676},  // Spring Green
+        {110, 0x1DE9B6},  // Teal Mint
+        {120, 0x00E5FF},  // Cyan
+        {130, 0x00B0FF},  // Sky Blue
+        {140, 0x2979FF},  // Electric Blue
+        {150, 0x651FFF},  // Deep Indigo
+        {160, 0x7C4DFF},  // Purple
+        {175, 0xD500F9},  // Neon Violet
+        {190, 0xF50057},  // Hot Pink
+        {205, 0xFFFFFF},  // White (Half-Width Dome)
     };
+
+    // Draw full-dimension outer rounded boxes with increasing corner radius
     for (size_t i = 0; i < sizeof(RADII)/sizeof(RADII[0]); i++) {
         lv_obj_t* c = lv_obj_create(p);
         lv_obj_set_pos(c, 0, 0);
         lv_obj_set_size(c, SCR_W, SCR_H);
         lv_obj_set_style_bg_opa(c, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(c, 2, 0);
+        lv_obj_set_style_border_width(c, 1, 0);
         lv_obj_set_style_border_color(c, lv_color_hex(RADII[i].color), 0);
         lv_obj_set_style_radius(c, RADII[i].r, 0);
         lv_obj_remove_flag(c, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
     }
 
-    // Corner radius text indicators (top-left)
+    // 3. Inner Inset Curves: concentric rounded rectangles at 10px and 20px insets
+    static const int INSET_RADII[] = {30, 50, 70, 90, 110, 130, 150, 170};
+    for (int r : INSET_RADII) {
+        // 12px inset
+        lv_obj_t* in1 = lv_obj_create(p);
+        lv_obj_set_pos(in1, 12, 12);
+        lv_obj_set_size(in1, SCR_W - 24, SCR_H - 24);
+        lv_obj_set_style_bg_opa(in1, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(in1, 1, 0);
+        lv_obj_set_style_border_color(in1, lv_color_hex(0x224455), 0);
+        lv_obj_set_style_radius(in1, r, 0);
+        lv_obj_remove_flag(in1, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
+    }
+
+    // 4. Pure Circular Corner Arcs (Quadrant Circles centered at corners: 40px to 180px)
+    static const int CIRC_RADII[] = {40, 60, 80, 100, 120, 140, 160, 180};
+    for (int cr : CIRC_RADII) {
+        // Top-Left circular arc
+        lv_obj_t* caTL = lv_obj_create(p);
+        lv_obj_set_pos(caTL, -cr, -cr);
+        lv_obj_set_size(caTL, 2 * cr, 2 * cr);
+        lv_obj_set_style_bg_opa(caTL, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(caTL, 1, 0);
+        lv_obj_set_style_border_color(caTL, lv_color_hex(0x334466), 0);
+        lv_obj_set_style_radius(caTL, LV_RADIUS_CIRCLE, 0);
+        lv_obj_remove_flag(caTL, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
+
+        // Top-Right circular arc
+        lv_obj_t* caTR = lv_obj_create(p);
+        lv_obj_set_pos(caTR, SCR_W - cr, -cr);
+        lv_obj_set_size(caTR, 2 * cr, 2 * cr);
+        lv_obj_set_style_bg_opa(caTR, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(caTR, 1, 0);
+        lv_obj_set_style_border_color(caTR, lv_color_hex(0x334466), 0);
+        lv_obj_set_style_radius(caTR, LV_RADIUS_CIRCLE, 0);
+        lv_obj_remove_flag(caTR, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
+    }
+
+    // 5. Corner radius labels along the diagonal (Top-Left)
     for (size_t i = 0; i < sizeof(RADII)/sizeof(RADII[0]); i++) {
         int r = RADII[i].r;
-        int tx = (int)(r * 0.7071f) - 6;
-        int ty = (int)(r * 0.7071f) - 6;
+        // On diagonal: x = y = r * (1 - cos(45°)) = r * 0.2929
+        int dxy = (int)(r * 0.2929f);
         char rb[8];
         snprintf(rb, sizeof(rb), "%d", r);
         lv_obj_t* rl = lv_label_create(p);
         lv_label_set_text(rl, rb);
         lv_obj_set_style_text_font(rl, F.cap, 0);
         lv_obj_set_style_text_color(rl, lv_color_hex(RADII[i].color), 0);
-        lv_obj_set_pos(rl, tx, ty);
+        lv_obj_set_pos(rl, dxy + 2, dxy + 2);
+
+        // Also place a tick/label along the top edge where the curve begins
+        if (r <= 190 && (i % 2 == 0)) {
+            lv_obj_t* topLbl = lv_label_create(p);
+            lv_label_set_text(topLbl, rb);
+            lv_obj_set_style_text_font(topLbl, F.cap, 0);
+            lv_obj_set_style_text_color(topLbl, lv_color_hex(RADII[i].color), 0);
+            lv_obj_set_pos(topLbl, r - 8, 2);
+        }
     }
 
-    // 3. Center Caliper Card
-    lv_obj_t* cd = card(p, 300, 240);
-    lv_obj_center(cd);
-    lv_obj_set_style_bg_color(cd, lv_color_hex(0x161C28), 0);
+    // 6. Compact Center Caliper Card (leaves entire corners and perimeter fully visible)
+    lv_obj_t* cd = card(p, 270, 150);
+    lv_obj_align(cd, LV_ALIGN_CENTER, 0, 30);
+    lv_obj_set_style_bg_color(cd, lv_color_hex(0x101622), 0);
+    lv_obj_set_style_bg_opa(cd, LV_OPA_90, 0);
     lv_obj_set_style_border_width(cd, 1, 0);
-    lv_obj_set_style_border_color(cd, lv_color_hex(0x334466), 0);
+    lv_obj_set_style_border_color(cd, lv_color_hex(0x00FFFF), 0);
+    lv_obj_set_style_radius(cd, 16, 0);
 
     lv_obj_t* titleLbl = label(cd, F.body, lv_color_hex(0x00FFFF), "GLAS-KALIBRIERUNG");
-    lv_obj_align(titleLbl, LV_ALIGN_TOP_MID, 0, 10);
-
-    lv_obj_t* subLbl = caption(cd, "Berühre Rand & Ecken mit Finger:", cText2());
-    lv_obj_align(subLbl, LV_ALIGN_TOP_MID, 0, 36);
+    lv_obj_align(titleLbl, LV_ALIGN_TOP_MID, 0, 6);
 
     sCalibCoordLbl = label(cd, F.numM, lv_color_white(), "X: ---   Y: ---");
-    lv_obj_align(sCalibCoordLbl, LV_ALIGN_TOP_MID, 0, 64);
+    lv_obj_align(sCalibCoordLbl, LV_ALIGN_TOP_MID, 0, 32);
 
     sCalibDistLbl = label(cd, F.small, lv_color_hex(0x30D158), "L:--  R:--  T:--  B:--");
-    lv_obj_align(sCalibDistLbl, LV_ALIGN_TOP_MID, 0, 114);
+    lv_obj_align(sCalibDistLbl, LV_ALIGN_TOP_MID, 0, 74);
 
-    lv_obj_t* leg1 = caption(cd, "Ecken-Radien: R20 R30 R40 R50", cText3());
-    lv_obj_align(leg1, LV_ALIGN_TOP_MID, 0, 142);
-    lv_obj_t* leg2 = caption(cd, "R60 R70 R80 R90  |  Rand: 0..36px", cText3());
-    lv_obj_align(leg2, LV_ALIGN_TOP_MID, 0, 160);
+    lv_obj_t* leg = caption(cd, "Kurven R20..R205  |  Rand 0..36px", cText3());
+    lv_obj_align(leg, LV_ALIGN_TOP_MID, 0, 96);
 
-    lv_obj_t* backBtn = secondaryButton(cd, 140, 36, ICO_ARROW_BACK, "Schließen");
-    lv_obj_align(backBtn, LV_ALIGN_BOTTOM_MID, 0, -8);
+    lv_obj_t* backBtn = secondaryButton(cd, 120, 28, ICO_ARROW_BACK, "Schließen");
+    lv_obj_align(backBtn, LV_ALIGN_BOTTOM_MID, 0, -6);
     lv_obj_add_event_cb(backBtn, [](lv_event_t*) {
         nav::home();
         haptic(HAPTIC_CLICK);
