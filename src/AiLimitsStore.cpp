@@ -188,9 +188,11 @@ void AiLimitsStore::loadFromNvs() {
         AiLimitsNvsBlob blob;
         size_t read = p.getBytes("data_v2", &blob, sizeof(blob));
         if (read == sizeof(blob) && blob.version == NVS_BLOB_VERSION) {
-            clampData(blob.data);
+            AiLimitsData d;                       // copy out of the packed blob first
+            memcpy(&d, &blob.data, sizeof(d));
+            clampData(d);
             portENTER_CRITICAL(&sLimitsMux);
-            currentData = blob.data;
+            currentData = d;
             portEXIT_CRITICAL(&sLimitsMux);
             loaded = true;
         }
