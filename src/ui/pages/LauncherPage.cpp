@@ -30,6 +30,7 @@ static const AppEntry APPS[] = {
     {"Taschenlampe",  ICO_FLASHLIGHT_ON,     0xFFD60A, nav::PG_COUNT,         1},
     {"System",        ICO_MEMORY,            0x8E8E93, nav::PG_SYSTEM,        0},
     {"Einstellungen", ICO_SETTINGS,          0x636366, nav::PG_APP_SETTINGS,  0},
+    {"Kalibrierung",  ICO_TUNE,              0x00FFFF, nav::PG_APP_CALIB,     0},
     {"Energie",       ICO_POWER_SETTINGS_NEW,0xFF453A, nav::PG_APP_POWER,     0},
 };
 static const int N_APPS = sizeof(APPS) / sizeof(APPS[0]);

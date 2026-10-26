@@ -162,7 +162,7 @@ void buildPower(lv_obj_t* scr) {
 
 // ============================================================== CONNECT
 // 6-digit BLE pairing passkey (BleCompanion::getPasskey() returns uint32_t)
-static bool blePasskeyText(char* out, size_t n) {
+[[maybe_unused]] static bool blePasskeyText(char* out, size_t n) {
     snprintf(out, n, "%06lu", (unsigned long)BleCompanion::getPasskey() % 1000000UL);
     return true;
 }
@@ -199,12 +199,7 @@ static void refreshConnect(bool) {
         setButtonEnabled(cnStartBtn, !want);
     }
     if (BleCompanion::isEnabled()) {
-        char pk[24];
-        if (blePasskeyText(pk, sizeof(pk))) {
-            snprintf(b, sizeof(b), "Bluetooth-Kopplung: %s%s", pk, BleCompanion::isConnected() ? "  (verbunden)" : "");
-        } else {
-            snprintf(b, sizeof(b), "Bluetooth: %s", BleCompanion::isConnected() ? "verbunden" : "bereit zur Kopplung");
-        }
+        snprintf(b, sizeof(b), "Bluetooth: %s", BleCompanion::isConnected() ? "Verbunden" : "Bereit zur Kopplung");
     } else {
         snprintf(b, sizeof(b), "Bluetooth ist aus");
     }
@@ -921,6 +916,137 @@ void buildAppMedia(lv_obj_t* scr) {
     d.refreshMs = 500;
     d.ttlMs = 15000;
     nav::registerPage(nav::PG_APP_MEDIA, d);
+}
+
+// ======================================================= GLAS-KALIBRIERUNG ===
+static lv_obj_t *sCalibCoordLbl = nullptr, *sCalibDistLbl = nullptr;
+
+static void onCalibTouch(lv_event_t* e) {
+    lv_indev_t* indev = lv_indev_active();
+    if (!indev) return;
+    lv_point_t pt;
+    lv_indev_get_point(indev, &pt);
+
+    int x = pt.x, y = pt.y;
+    int dL = x;
+    int dR = SCR_W - 1 - x;
+    int dT = y;
+    int dB = SCR_H - 1 - y;
+
+    char cBuf[32], dBuf[48];
+    snprintf(cBuf, sizeof(cBuf), "X: %3d   Y: %3d", x, y);
+    snprintf(dBuf, sizeof(dBuf), "L:%d  R:%d  T:%d  B:%d", dL, dR, dT, dB);
+
+    if (sCalibCoordLbl) lv_label_set_text(sCalibCoordLbl, cBuf);
+    if (sCalibDistLbl) lv_label_set_text(sCalibDistLbl, dBuf);
+}
+
+void buildCalib(lv_obj_t* scr) {
+    lv_obj_t* p = pageRoot(scr);
+    lv_obj_set_style_bg_color(p, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(p, LV_OPA_COVER, 0);
+    lv_obj_add_flag(p, LV_OBJ_FLAG_CLICKABLE);
+
+    // 1. Concentric rectangular borders at specific pixel offsets
+    static const struct { int d; uint32_t color; } RECTS[] = {
+        { 0, 0xFF0000},  // 0 px:  Red
+        { 4, 0xFF7F00},  // 4 px:  Orange
+        { 8, 0xFFFF00},  // 8 px:  Yellow
+        {12, 0x00FF00},  // 12 px: Green
+        {16, 0x00FFFF},  // 16 px: Cyan
+        {20, 0x007FFF},  // 20 px: Blue
+        {28, 0xBF5AF2},  // 28 px: Violet
+        {36, 0x8E8E93},  // 36 px: Gray
+    };
+    for (size_t i = 0; i < sizeof(RECTS)/sizeof(RECTS[0]); i++) {
+        int d = RECTS[i].d;
+        lv_obj_t* r = lv_obj_create(p);
+        lv_obj_set_pos(r, d, d);
+        lv_obj_set_size(r, SCR_W - 2 * d, SCR_H - 2 * d);
+        lv_obj_set_style_bg_opa(r, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(r, 1, 0);
+        lv_obj_set_style_border_color(r, lv_color_hex(RECTS[i].color), 0);
+        lv_obj_set_style_radius(r, 0, 0);
+        lv_obj_remove_flag(r, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
+    }
+
+    // 2. Corner radius rounded borders at full dimensions
+    static const struct { int r; uint32_t color; } RADII[] = {
+        {20, 0xFF3B30},  // R20: Red
+        {30, 0xFF9500},  // R30: Orange
+        {40, 0xFFCC00},  // R40: Yellow
+        {50, 0x34C759},  // R50: Green
+        {60, 0x00C7BE},  // R60: Cyan
+        {70, 0x007AFF},  // R70: Blue
+        {80, 0xAF52DE},  // R80: Purple
+        {90, 0xFF2D55},  // R90: Pink
+    };
+    for (size_t i = 0; i < sizeof(RADII)/sizeof(RADII[0]); i++) {
+        lv_obj_t* c = lv_obj_create(p);
+        lv_obj_set_pos(c, 0, 0);
+        lv_obj_set_size(c, SCR_W, SCR_H);
+        lv_obj_set_style_bg_opa(c, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(c, 2, 0);
+        lv_obj_set_style_border_color(c, lv_color_hex(RADII[i].color), 0);
+        lv_obj_set_style_radius(c, RADII[i].r, 0);
+        lv_obj_remove_flag(c, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
+    }
+
+    // Corner radius text indicators (top-left)
+    for (size_t i = 0; i < sizeof(RADII)/sizeof(RADII[0]); i++) {
+        int r = RADII[i].r;
+        int tx = (int)(r * 0.7071f) - 6;
+        int ty = (int)(r * 0.7071f) - 6;
+        char rb[8];
+        snprintf(rb, sizeof(rb), "%d", r);
+        lv_obj_t* rl = lv_label_create(p);
+        lv_label_set_text(rl, rb);
+        lv_obj_set_style_text_font(rl, F.cap, 0);
+        lv_obj_set_style_text_color(rl, lv_color_hex(RADII[i].color), 0);
+        lv_obj_set_pos(rl, tx, ty);
+    }
+
+    // 3. Center Caliper Card
+    lv_obj_t* cd = card(p, 300, 240);
+    lv_obj_center(cd);
+    lv_obj_set_style_bg_color(cd, lv_color_hex(0x161C28), 0);
+    lv_obj_set_style_border_width(cd, 1, 0);
+    lv_obj_set_style_border_color(cd, lv_color_hex(0x334466), 0);
+
+    lv_obj_t* titleLbl = label(cd, F.body, lv_color_hex(0x00FFFF), "GLAS-KALIBRIERUNG");
+    lv_obj_align(titleLbl, LV_ALIGN_TOP_MID, 0, 10);
+
+    lv_obj_t* subLbl = caption(cd, "Berühre Rand & Ecken mit Finger:", cText2());
+    lv_obj_align(subLbl, LV_ALIGN_TOP_MID, 0, 36);
+
+    sCalibCoordLbl = label(cd, F.numM, lv_color_white(), "X: ---   Y: ---");
+    lv_obj_align(sCalibCoordLbl, LV_ALIGN_TOP_MID, 0, 64);
+
+    sCalibDistLbl = label(cd, F.small, lv_color_hex(0x30D158), "L:--  R:--  T:--  B:--");
+    lv_obj_align(sCalibDistLbl, LV_ALIGN_TOP_MID, 0, 114);
+
+    lv_obj_t* leg1 = caption(cd, "Ecken-Radien: R20 R30 R40 R50", cText3());
+    lv_obj_align(leg1, LV_ALIGN_TOP_MID, 0, 142);
+    lv_obj_t* leg2 = caption(cd, "R60 R70 R80 R90  |  Rand: 0..36px", cText3());
+    lv_obj_align(leg2, LV_ALIGN_TOP_MID, 0, 160);
+
+    lv_obj_t* backBtn = secondaryButton(cd, 140, 36, ICO_ARROW_BACK, "Schließen");
+    lv_obj_align(backBtn, LV_ALIGN_BOTTOM_MID, 0, -8);
+    lv_obj_add_event_cb(backBtn, [](lv_event_t*) {
+        nav::home();
+        haptic(HAPTIC_CLICK);
+    }, LV_EVENT_CLICKED, NULL);
+
+    // Track touch events on page
+    lv_obj_add_event_cb(p, onCalibTouch, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(p, onCalibTouch, LV_EVENT_PRESSING, NULL);
+
+    nav::PageDef d;
+    d.root = p;
+    d.refresh = nullptr;
+    d.refreshMs = 0;
+    d.ttlMs = 0;
+    nav::registerPage(nav::PG_APP_CALIB, d);
 }
 
 }  // namespace pages

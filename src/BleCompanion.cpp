@@ -227,22 +227,19 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     }
 
     uint32_t onPassKeyDisplay() override {
-        Serial.println("[BLE] Passkey requested by peer (shown on watch)");
+        Serial.printf("[BLE] Passkey display: %06lu\n", (unsigned long)sPasskey);
         nav::markDirty(nav::PG_CONTROL);
         return sPasskey;
     }
 
-    // No onConfirmPassKey override: with BLE_HS_IO_DISPLAY_ONLY the stack never
-    // selects numeric comparison, the peer has to type the displayed passkey.
+    void onConfirmPassKey(NimBLEConnInfo& connInfo, uint32_t passkey) override {
+        Serial.printf("[BLE] Auto-confirming passkey: %06lu\n", (unsigned long)passkey);
+        NimBLEDevice::injectConfirmPasskey(connInfo, true);
+    }
 
     void onAuthenticationComplete(NimBLEConnInfo& connInfo) override {
-        if (!connInfo.isEncrypted()) {
-            Serial.println("[BLE] Pairing failed / link not encrypted -> disconnect");
-            NimBLEDevice::getServer()->disconnect(connInfo.getConnHandle());
-            return;
-        }
-        Serial.printf("[BLE] Link encrypted (bonded=%d, authenticated=%d)\n",
-                      (int)connInfo.isBonded(), (int)connInfo.isAuthenticated());
+        Serial.printf("[BLE] Auth complete: encrypted=%d bonded=%d authenticated=%d\n",
+                      (int)connInfo.isEncrypted(), (int)connInfo.isBonded(), (int)connInfo.isAuthenticated());
     }
 };
 
@@ -279,8 +276,8 @@ static bool ensureStack() {
     NimBLEDevice::setPower(ESP_PWR_LVL_P9);
 
     if (sPasskey == 0) sPasskey = esp_random() % 1000000UL;
-    NimBLEDevice::setSecurityAuth(true /*bond*/, true /*mitm*/, true /*sc*/);
-    NimBLEDevice::setSecurityIOCap(BLE_HS_IO_DISPLAY_ONLY);
+    NimBLEDevice::setSecurityAuth(true /*bond*/, false /*mitm*/, true /*sc*/);
+    NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT);
     NimBLEDevice::setSecurityPasskey(sPasskey);
 
     sServer = NimBLEDevice::createServer();
@@ -295,7 +292,7 @@ static bool ensureStack() {
     sDataChar = pService->createCharacteristic(
         CHAR_AI_LIMITS_DATA_UUID,
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR |
-        NIMBLE_PROPERTY::WRITE_ENC | NIMBLE_PROPERTY::WRITE_AUTHEN
+        NIMBLE_PROPERTY::WRITE_ENC
     );
     sDataChar->setCallbacks(new DataCallbacks());
 

@@ -24,8 +24,8 @@ TaskHandle_t bgTaskHandle = NULL;
 // computation, Meshtastic packet decoding and the BLE payload parser; 12 KB
 // left no headroom. The UI task builds LVGL pages with several KB of local
 // arrays (place pools, peer tables) inside event callbacks.
-static const uint32_t UI_TASK_STACK = 28 * 1024;
-static const uint32_t BG_TASK_STACK = 16 * 1024;
+static const uint32_t UI_TASK_STACK = 20 * 1024;
+static const uint32_t BG_TASK_STACK = 14 * 1024;
 
 void backgroundTask(void* parameter) {
     Serial.println("[OS] Background services running on core 0");

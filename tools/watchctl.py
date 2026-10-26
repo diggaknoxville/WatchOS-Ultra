@@ -39,12 +39,12 @@ PAGES = {
     "control": 8, "notifs": 9,
     "app_calendar": 10, "app_navi": 11, "app_stopwatch": 12, "app_lora": 13,
     "app_connect": 14, "app_settings": 15, "app_faces": 16, "app_power": 17,
-    "app_media": 18,
+    "app_media": 18, "calib": 19, "app_calib": 19,
 }
 CAROUSEL = ["launcher", "face", "ailimits", "activity", "agenda", "position", "lora", "system"]
 SHEETS = ["control", "notifs"]
 APPS = ["app_calendar", "app_navi", "app_stopwatch", "app_lora", "app_connect",
-        "app_settings", "app_faces", "app_power", "app_media"]
+        "app_settings", "app_faces", "app_power", "app_media", "app_calib"]
 
 # Watch faces: must match `enum WatchFaceId` in include/Config.h (firmware 'F' command).
 FACES = [

@@ -475,6 +475,7 @@ bool DisplayEngine::init() {
     pages::buildFaces(scr);
     pages::buildSettings(scr);
     pages::buildAppMedia(scr);
+    pages::buildCalib(scr);
 
     buildBanner();
     buildAodAndTorch();

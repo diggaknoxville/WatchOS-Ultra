@@ -6,11 +6,11 @@
 #include <LilyGoLib.h>
 #include <esp_heap_caps.h>
 
-// Strip height of each render buffer. 2 x (410 x 48 x 2 B) = 77 KB internal SRAM;
-// if two contiguous DMA-capable chunks of that size are not available (WiFi AP
-// + NimBLE + SD SPI fragment the internal heap) we fall back to 32 rows (51 KB).
-#define STRIP_ROWS          48
-#define STRIP_ROWS_FALLBACK 32
+// Strip height of each render buffer: 2 x (410 x 24 x 2 B) = 39.3 KB internal DMA SRAM.
+// Leaves >50 KB of internal 8-bit heap free so ESP-IDF WiFi AP and NimBLE stacks
+// can initialize without running out of internal heap (ESP_ERR_NO_MEM).
+#define STRIP_ROWS          24
+#define STRIP_ROWS_FALLBACK 16
 
 static int sStripRows = STRIP_ROWS;
 

@@ -181,9 +181,10 @@ input:focus,select:focus{border-color:var(--acc)}
 
 <div class="card"><h2>Firmware</h2>
  <div class="cap" id="fwinfo">--</div>
+ <div id="ghbox" style="margin-top:10px"></div>
  <input type="file" id="fw" accept=".bin" style="margin-top:12px">
  <div class="prog"><i id="fwbar"></i></div>
- <button class="btn ghost" id="fwbtn" onclick="ota()">Firmware hochladen</button>
+ <button class="btn ghost" id="fwbtn" onclick="ota()">Lokale Datei hochladen</button>
  <div class="cap" id="fwstat" style="margin-top:10px">Nach dem Upload muss das Update auf der Uhr bestätigt werden.</div>
 </div>
 
@@ -223,6 +224,8 @@ function upload(url,file,bar,btn,done){const fd=new FormData();fd.append('file',
  x.onerror=()=>{btn.disabled=false;toast('Upload fehlgeschlagen')};x.send(fd)}
 function ota(){const f=$('fw').files[0];if(!f)return toast('Keine .bin-Datei gewählt');if(!confirm('Firmware "'+f.name+'" ('+Math.round(f.size/1024)+' KB) hochladen? Das Update wird erst nach Bestätigung auf der Uhr aktiviert.'))return;
  $('fwstat').textContent='Lade hoch...';upload('/api/ota/upload',f,$('fwbar'),$('fwbtn'),(st,d)=>{if(st===200&&d.status==='pending'){$('fwstat').textContent='Empfangen ('+Math.round(d.size/1024)+' KB). SHA-256 '+d.sha256.slice(0,8)+'… – jetzt auf der Uhr bestätigen (120 s).';toast('Auf der Uhr bestätigen')}else{$('fwstat').textContent='Fehler: '+(d.error||st);toast('Update abgelehnt')}})}
+function checkGhRelease(){fetch('https://api.github.com/repos/diggaknoxville/WatchOS-Ultra/releases/latest').then(r=>r.json()).then(rel=>{const a=(rel.assets||[]).find(x=>x.name.endsWith('.bin'));if(!a)return;const g=$('ghbox');g.innerHTML='<div style="background:#151c2c;padding:10px;border-radius:8px;border:1px solid var(--acc)"><div style="font-weight:600;color:var(--acc)">GitHub Release '+esc(rel.tag_name)+' verfügbar</div><div class="cap" style="margin:4px 0">'+esc(a.name)+' ('+Math.round(a.size/1024)+' KB)</div><button class="btn" style="width:100%;margin-top:6px" onclick="installGh(\''+esc(a.browser_download_url)+'\',\''+esc(a.name)+'\')">Auf Uhr installieren</button></div>'}).catch(()=>{})}
+function installGh(u,n){$('fwstat').textContent='Lade von GitHub herunter...';fetch(u).then(r=>r.blob()).then(b=>{const f=new File([b],n,{type:'application/octet-stream'});$('fwstat').textContent='Übertrage an Uhr...';upload('/api/ota/upload',f,$('fwbar'),$('fwbtn'),(st,d)=>{if(st===200&&d.status==='pending'){$('fwstat').textContent='Empfangen ('+Math.round(d.size/1024)+' KB). Bitte jetzt auf der Uhr bestätigen.';toast('Auf der Uhr bestätigen')}else{$('fwstat').textContent='Fehler: '+(d.error||st);toast('Update abgelehnt')}})}).catch(e=>{$('fwstat').textContent='Download fehlgeschlagen: '+e;toast('Download-Fehler')})}
 function mapUp(){const f=$('mapf').files[0];if(!f)return toast('Keine .knav-Datei gewählt');upload('/api/sd/upload',f,$('mapbar'),$('mapbtn'),(st,d)=>toast(st===200&&d.status==='ok'?'Karte gespeichert':'Karten-Upload fehlgeschlagen: '+(d.error||st)))}
 function tick(){if(!S)return;const d=new Date((base+S.offset)*1000+(Date.now()-at)),p=n=>String(n).padStart(2,'0');
  $('clock').innerHTML=`${p(d.getUTCHours())}<b>:</b>${p(d.getUTCMinutes())}<b>:</b>${p(d.getUTCSeconds())}`}
@@ -258,7 +261,7 @@ function load(){api('/api/status').then(r=>r.json()).then(d=>{S=d;base=d.epoch;a
  .catch(()=>{$('conn').className='pill off';$('conn').textContent='OFFLINE'});
  api('/api/inbox').then(r=>r.json()).then(m=>{$('inbox').innerHTML=m.length?m.map(x=>`<div class="msg"><div>${esc(x.text)}</div>${ago(x.at)} · ${x.rssi} dBm · SNR ${x.snr}</div>`).join(''):'Noch keine Pakete'}).catch(()=>{})}
 if(!PIN)askPin();
-setInterval(tick,250);syncTime(0);load();setInterval(load,3000);
+setInterval(tick,250);syncTime(0);load();setInterval(load,3000);checkGhRelease();
 </script></body></html>)HTML";
 
 // ---------------------------------------------------------------------------
@@ -330,17 +333,24 @@ void CompanionServer::startAp() {
     WiFi.persistent(false);
     WiFi.disconnect(true);
     WiFi.mode(WIFI_AP);
+    WiFi.setTxPower(WIFI_POWER_19_5dBm);
     IPAddress IP(192, 168, 4, 1);
     WiFi.softAPConfig(IP, IP, IPAddress(255, 255, 255, 0));
     bool ok = WiFi.softAP(apName, apPassword, 1, 0, 4);
     if (!ok) {
-        delay(100);
+        delay(150);
         ok = WiFi.softAP(apName, apPassword, 1, 0, 4);
     }
-    dnsServer.start(53, "*", IP);
-    server.begin();
-    apRunning = true;
-    Serial.printf("[WIFI] Access point '%s' up at %s (ok=%d), portal PIN active\n", apName, IP.toString().c_str(), ok);
+    if (ok) {
+        dnsServer.start(53, "*", IP);
+        server.begin();
+        apRunning = true;
+        Serial.printf("[WIFI] Access point '%s' up at %s, portal PIN active\n", apName, IP.toString().c_str());
+    } else {
+        apRunning = false;
+        WiFi.mode(WIFI_OFF);
+        Serial.printf("[WIFI] Failed to start SoftAP '%s' (out of internal memory)\n", apName);
+    }
 }
 
 void CompanionServer::stopAp() {
