@@ -17,10 +17,33 @@
 #define CHAR_AI_LIMITS_STATUS_UUID  "0000a102-0000-1000-8000-00805f9b34fb"
 #define CHAR_COMMAND_UUID           "0000a103-0000-1000-8000-00805f9b34fb"
 
+// Apple Notification Center Service (ANCS) UUIDs
+static const NimBLEUUID ANCS_SERVICE_UUID("7905F431-B5CE-4E99-A40F-4B1E122D00D0");
+static const NimBLEUUID ANCS_NOTIF_SRC_UUID("9FBF120D-6301-42D9-8C58-25E699A21DBD");
+static const NimBLEUUID ANCS_CTRL_PT_UUID("69D1D8F3-45E1-49A8-9821-9BBDFDAAD9D9");
+static const NimBLEUUID ANCS_DATA_SRC_UUID("22EAC6E9-24D6-4BB5-B36ACE7C7BFB");
+
+// Bluetooth SIG Alert Notification Service (ANS) UUIDs
+static const NimBLEUUID ANS_SERVICE_UUID((uint16_t)0x1811);
+static const NimBLEUUID ANS_CHAR_SUP_NEW_UUID((uint16_t)0x2A47);
+static const NimBLEUUID ANS_CHAR_NEW_ALERT_UUID((uint16_t)0x2A46);
+static const NimBLEUUID ANS_CHAR_SUP_UNREAD_UUID((uint16_t)0x2A48);
+static const NimBLEUUID ANS_CHAR_UNREAD_STATUS_UUID((uint16_t)0x2A45);
+static const NimBLEUUID ANS_CHAR_CTRL_PT_UUID((uint16_t)0x2A44);
+
 static NimBLEServer* sServer = nullptr;
 static NimBLECharacteristic* sDataChar = nullptr;
 static NimBLECharacteristic* sStatusChar = nullptr;
 static NimBLECharacteristic* sCmdChar = nullptr;
+static NimBLECharacteristic* sNewAlertChar = nullptr;
+static NimBLECharacteristic* sUnreadAlertChar = nullptr;
+
+// ANCS State
+static volatile bool sAncsDiscoveryPending = false;
+static uint16_t sAncsConnHandle = BLE_HS_CONN_HANDLE_NONE;
+static NimBLERemoteCharacteristic* sAncsCtrlPoint = nullptr;
+static uint32_t sLastAncsUid = 0;
+static const char* sLastAncsIcon = ICO_NOTIFICATIONS;
 
 // Native BLE HID Consumer Control (Media Play/Pause, Next, Prev, Vol+, Vol-)
 static NimBLEHIDDevice* sHid = nullptr;
@@ -228,12 +251,137 @@ static void commitCalendar(const CalendarEvent* evs, uint8_t n, const char* src)
 }
 
 // ---------------------------------------------------------------------------
+//  Apple Notification Center Service (ANCS) & Alert Notification Service (ANS)
+// ---------------------------------------------------------------------------
+static void onAncsNotificationSourceNotify(NimBLERemoteCharacteristic* pChar, uint8_t* pData, size_t length, bool isNotify) {
+    if (length < 8) return;
+    uint8_t eventId = pData[0]; // 0=Added, 1=Modified, 2=Removed
+    uint8_t categoryId = pData[2];
+    uint32_t uid = (uint32_t)pData[4] | ((uint32_t)pData[5] << 8) | ((uint32_t)pData[6] << 16) | ((uint32_t)pData[7] << 24);
+
+    Serial.printf("[BLE] ANCS Source: event=%u cat=%u uid=%lu\n", (unsigned)eventId, (unsigned)categoryId, (unsigned long)uid);
+
+    if (eventId == 0) { // New notification added
+        const char* icon = ICO_NOTIFICATIONS;
+        switch (categoryId) {
+            case 1: icon = ICO_CALL; break; // Incoming call
+            case 2: icon = ICO_CALL; break; // Missed call
+            case 3: icon = ICO_CALL; break; // Voicemail
+            case 4: icon = ICO_CHAT; break; // Social
+            case 5: icon = ICO_CALENDAR_MONTH; break; // Schedule
+            case 6: icon = ICO_MAIL; break; // Email
+            case 7: icon = ICO_PODCASTS; break; // News
+            case 8: icon = ICO_MONITOR_HEART; break; // Health
+            default: icon = ICO_NOTIFICATIONS; break;
+        }
+        sLastAncsUid = uid;
+        sLastAncsIcon = icon;
+
+        if (sAncsCtrlPoint) {
+            // Request Title (Attr 1, max 40 bytes)
+            uint8_t reqTitle[8] = {0x00, pData[4], pData[5], pData[6], pData[7], 0x01, 0x28, 0x00};
+            sAncsCtrlPoint->writeValue(reqTitle, sizeof(reqTitle), false);
+            // Request Message (Attr 3, max 100 bytes)
+            uint8_t reqMsg[8] = {0x00, pData[4], pData[5], pData[6], pData[7], 0x03, 0x64, 0x00};
+            sAncsCtrlPoint->writeValue(reqMsg, sizeof(reqMsg), false);
+        }
+    }
+}
+
+static void onAncsDataSourceNotify(NimBLERemoteCharacteristic* pChar, uint8_t* pData, size_t length, bool isNotify) {
+    if (length < 8) return;
+    uint8_t cmdId = pData[0];
+    if (cmdId != 0x00) return; // CommandIDGetNotificationAttributes
+
+    size_t idx = 5;
+    char title[44] = {0};
+    char message[116] = {0};
+    while (idx + 3 <= length) {
+        uint8_t attrId = pData[idx++];
+        uint16_t attrLen = (uint16_t)pData[idx] | ((uint16_t)pData[idx + 1] << 8);
+        idx += 2;
+        if (idx + attrLen > length) attrLen = length - idx;
+        if (attrId == 0x01) { // Title
+            size_t copyLen = min<size_t>(attrLen, sizeof(title) - 1);
+            memcpy(title, pData + idx, copyLen);
+            title[copyLen] = 0;
+        } else if (attrId == 0x03) { // Message
+            size_t copyLen = min<size_t>(attrLen, sizeof(message) - 1);
+            memcpy(message, pData + idx, copyLen);
+            message[copyLen] = 0;
+        }
+        idx += attrLen;
+    }
+    if (title[0] || message[0]) {
+        Serial.printf("[BLE] ANCS Notification: '%s' | '%s'\n", title, message);
+        DisplayEngine::showNotification(title[0] ? title : "iOS Mitteilung", message, 4500, sLastAncsIcon);
+    }
+}
+
+class AnsAlertCallbacks : public NimBLECharacteristicCallbacks {
+    void onWrite(NimBLECharacteristic* pChar, NimBLEConnInfo& connInfo) override {
+        NimBLEAttValue val = pChar->getValue();
+        size_t len = val.length();
+        if (len < 2) return;
+        uint8_t catId = val.data()[0];
+        const char* icon = ICO_NOTIFICATIONS;
+        const char* defaultTitle = "Mitteilung";
+        switch (catId) {
+            case 1: icon = ICO_MAIL; defaultTitle = "E-Mail"; break;
+            case 2: icon = ICO_PODCASTS; defaultTitle = "News"; break;
+            case 3: icon = ICO_CALL; defaultTitle = "Anruf"; break;
+            case 4: icon = ICO_CALL; defaultTitle = "Entgangener Anruf"; break;
+            case 5: icon = ICO_CHAT; defaultTitle = "SMS"; break;
+            case 7: icon = ICO_CALENDAR_MONTH; defaultTitle = "Termin"; break;
+            case 9: icon = ICO_CHAT; defaultTitle = "Nachricht"; break;
+            default: break;
+        }
+        char text[128] = {0};
+        if (len > 2) {
+            size_t textLen = min<size_t>(len - 2, sizeof(text) - 1);
+            memcpy(text, val.data() + 2, textLen);
+            text[textLen] = 0;
+        }
+        char title[44] = {0};
+        char body[112] = {0};
+        char* colon = strchr(text, ':');
+        char* nl = strchr(text, '\n');
+        if (nl) {
+            *nl = 0;
+            strncpy(title, text, sizeof(title) - 1);
+            strncpy(body, nl + 1, sizeof(body) - 1);
+        } else if (colon && (size_t)(colon - text) < sizeof(title)) {
+            *colon = 0;
+            strncpy(title, text, sizeof(title) - 1);
+            strncpy(body, colon + 1, sizeof(body) - 1);
+            while (body[0] == ' ') memmove(body, body + 1, strlen(body));
+        } else {
+            strncpy(title, defaultTitle, sizeof(title) - 1);
+            strncpy(body, text[0] ? text : "Neue Benachrichtigung", sizeof(body) - 1);
+        }
+        Serial.printf("[BLE] ANS Alert cat=%u: '%s' - '%s'\n", (unsigned)catId, title, body);
+        DisplayEngine::showNotification(title, body, 4000, icon);
+    }
+};
+
+class AnsCtrlCallbacks : public NimBLECharacteristicCallbacks {
+    void onWrite(NimBLECharacteristic* pChar, NimBLEConnInfo& connInfo) override {
+        NimBLEAttValue val = pChar->getValue();
+        if (val.length() >= 1) {
+            Serial.printf("[BLE] ANS Control Point cmd=0x%02X\n", (unsigned)val.data()[0]);
+        }
+    }
+};
+
+// ---------------------------------------------------------------------------
 //  NimBLE callbacks: only copy / flag, never parse or write NVS here.
 // ---------------------------------------------------------------------------
 class ServerCallbacks : public NimBLEServerCallbacks {
     void onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) override {
         sConnected = true;
         sCmdSubscribed = false;
+        sAncsConnHandle = connInfo.getConnHandle();
+        sAncsDiscoveryPending = true;
         AiLimitsStore::setBleConnected(true);
         Serial.printf("[BLE] Client connected (connId=%u)\n", connInfo.getConnHandle());
         pServer->updateConnParams(connInfo.getConnHandle(), 24, 40, 0, 400); // 30-50ms interval, 4s timeout
@@ -246,6 +394,8 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     void onDisconnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo, int reason) override {
         sConnected = false;
         sCmdSubscribed = false;
+        sAncsDiscoveryPending = false;
+        sAncsCtrlPoint = nullptr;
         AiLimitsStore::setBleConnected(false);
         Serial.printf("[BLE] Client disconnected (reason=%d)\n", reason);
         nav::markDirty(nav::PG_AI_LIMITS);
@@ -270,6 +420,10 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     void onAuthenticationComplete(NimBLEConnInfo& connInfo) override {
         Serial.printf("[BLE] Auth complete: encrypted=%d bonded=%d authenticated=%d\n",
                       (int)connInfo.isEncrypted(), (int)connInfo.isBonded(), (int)connInfo.isAuthenticated());
+        if (connInfo.isEncrypted() || connInfo.isBonded()) {
+            sAncsConnHandle = connInfo.getConnHandle();
+            sAncsDiscoveryPending = true;
+        }
     }
 };
 
@@ -348,6 +502,43 @@ static bool ensureStack() {
     );
     sCmdChar->setCallbacks(new CmdCallbacks());
 
+    // Standard Bluetooth SIG Alert Notification Service (ANS 0x1811) for Android & smart accessories
+    NimBLEService* pAnsService = sServer->createService(ANS_SERVICE_UUID);
+    if (pAnsService) {
+        NimBLECharacteristic* pSupNew = pAnsService->createCharacteristic(
+            ANS_CHAR_SUP_NEW_UUID,
+            NIMBLE_PROPERTY::READ
+        );
+        uint8_t supNew[2] = {0xFF, 0x03};
+        pSupNew->setValue(supNew, sizeof(supNew));
+
+        NimBLECharacteristic* pSupUnread = pAnsService->createCharacteristic(
+            ANS_CHAR_SUP_UNREAD_UUID,
+            NIMBLE_PROPERTY::READ
+        );
+        uint8_t supUnread[2] = {0xFF, 0x03};
+        pSupUnread->setValue(supUnread, sizeof(supUnread));
+
+        sNewAlertChar = pAnsService->createCharacteristic(
+            ANS_CHAR_NEW_ALERT_UUID,
+            NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::NOTIFY
+        );
+        sNewAlertChar->setCallbacks(new AnsAlertCallbacks());
+
+        sUnreadAlertChar = pAnsService->createCharacteristic(
+            ANS_CHAR_UNREAD_STATUS_UUID,
+            NIMBLE_PROPERTY::NOTIFY
+        );
+        uint8_t initialUnread[2] = {0x00, 0x00};
+        sUnreadAlertChar->setValue(initialUnread, sizeof(initialUnread));
+
+        NimBLECharacteristic* pAnsCtrl = pAnsService->createCharacteristic(
+            ANS_CHAR_CTRL_PT_UUID,
+            NIMBLE_PROPERTY::WRITE
+        );
+        pAnsCtrl->setCallbacks(new AnsCtrlCallbacks());
+    }
+
     sServer->start();
 
     NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
@@ -360,6 +551,7 @@ static bool ensureStack() {
 
     NimBLEAdvertisementData scanData;
     scanData.addServiceUUID(SERVICE_AI_LIMITS_UUID);
+    scanData.addServiceUUID(ANS_SERVICE_UUID);
     pAdvertising->setScanResponseData(scanData);
     pAdvertising->enableScanResponse(true);
     sStackInited = true;
@@ -388,6 +580,20 @@ uint32_t BleCompanion::getPasskey() { return sPasskey; }
 // ---------------------------------------------------------------------------
 static void processPayload(const uint8_t* bytes, size_t len) {
     bool updatedLimits = false;
+
+    if (len > 2 && bytes[0] == 'N') {
+        char buf[RX_SLOT_BYTES + 1];
+        memcpy(buf, bytes + 1, len - 1);
+        buf[len - 1] = 0;
+        char* sep = strchr(buf, '|');
+        if (sep) {
+            *sep = 0;
+            DisplayEngine::showNotification(buf, sep + 1, 4000, ICO_NOTIFICATIONS);
+        } else {
+            DisplayEngine::showNotification("Mitteilung", buf, 4000, ICO_NOTIFICATIONS);
+        }
+        return;
+    }
 
     if (bytes[0] == 0xA1) {
         updatedLimits = AiLimitsStore::updateFromBleBinary(bytes, len);
@@ -430,6 +636,12 @@ static void processPayload(const uint8_t* bytes, size_t len) {
             uint8_t vol = (uint8_t)min<uint32_t>(parseJsonUint(json, end, "vol", 50), 100);
             BleCompanion::setMediaState(isPlay, title, artist, vol);
             nav::markDirty(nav::PG_APP_MEDIA);
+        } else if (findKey(json, end, "notify")) {
+            char title[40] = {0};
+            char body[112] = {0};
+            parseJsonString(json, end, "title", title, sizeof(title));
+            parseJsonString(json, end, "body", body, sizeof(body));
+            DisplayEngine::showNotification(title[0] ? title : "Mitteilung", body, 4000, ICO_NOTIFICATIONS);
         } else {
             char tmp[RX_SLOT_BYTES + 1];
             memcpy(tmp, bytes, len);
@@ -485,6 +697,30 @@ void BleCompanion::loop(unsigned long now) {
         sLastAdvRestart = now;
         if (!NimBLEDevice::getAdvertising()->isAdvertising()) {
             NimBLEDevice::startAdvertising();
+        }
+    }
+
+    // Discover ANCS on connected iOS devices
+    if (sAncsDiscoveryPending && sConnected && sServer) {
+        sAncsDiscoveryPending = false;
+        NimBLEClient* pClient = sServer->getClient(sAncsConnHandle);
+        if (pClient && pClient->isConnected()) {
+            Serial.println("[BLE] Probing for Apple ANCS service...");
+            NimBLERemoteService* pAncs = pClient->getService(ANCS_SERVICE_UUID);
+            if (pAncs) {
+                Serial.println("[BLE] Found Apple ANCS Service!");
+                auto pNotifSource = pAncs->getCharacteristic(ANCS_NOTIF_SRC_UUID);
+                auto pCtrlPoint = pAncs->getCharacteristic(ANCS_CTRL_PT_UUID);
+                auto pDataSource = pAncs->getCharacteristic(ANCS_DATA_SRC_UUID);
+                if (pNotifSource && pCtrlPoint && pDataSource) {
+                    sAncsCtrlPoint = pCtrlPoint;
+                    pDataSource->subscribe(true, onAncsDataSourceNotify);
+                    pNotifSource->subscribe(true, onAncsNotificationSourceNotify);
+                    Serial.println("[BLE] Subscribed to Apple ANCS notifications!");
+                }
+            } else {
+                Serial.println("[BLE] Peer does not host ANCS (Android, PC or unsubscribed)");
+            }
         }
     }
 
