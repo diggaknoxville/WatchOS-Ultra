@@ -90,7 +90,15 @@ def open_port(port):
             os.close(fd)
         except Exception:
             pass
-    s = serial.Serial(port, BAUD, timeout=1.0)
+    s = serial.Serial()
+    s.port = port
+    s.baudrate = BAUD
+    s.timeout = 1.0
+    s.dtr = None
+    s.rts = None
+    s.open()
+    s.rts = False
+    s.dtr = True
     time.sleep(0.1)
     s.reset_input_buffer()
     return s
@@ -221,11 +229,11 @@ def _snapshot_once(s, path):
         raise WatchError("no SNAP header")
     w, h, stride = (int(x) for x in m.groups())
     need = stride * h
-    data = _read_exact(s, need, timeout=30.0)
+    data = _read_exact(s, need, timeout=120.0)
     if len(data) != need:
         raise WatchError(f"short read {len(data)}/{need}")
     # trailer: "\nEND\n" must follow the pixel data immediately
-    trailer = _read_exact(s, 5, timeout=3.0)
+    trailer = _read_exact(s, 5, timeout=5.0)
     if trailer != b"\nEND\n":
         raise WatchError(f"stream corrupted (trailer {trailer!r}); background log interleaved?")
     # RGB565 little endian -> RGB888
@@ -251,7 +259,11 @@ def snapshot(s, path, retries=3):
         except WatchError as e:
             last = e
             print(f"  snapshot attempt {attempt} failed: {e}")
-            time.sleep(0.5)
+            time.sleep(1.0)
+            try:
+                s.reset_input_buffer()
+            except Exception:
+                pass
     raise WatchError(f"screenshot failed after {retries} attempts: {last}")
 
 
