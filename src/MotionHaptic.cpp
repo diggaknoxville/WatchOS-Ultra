@@ -170,6 +170,10 @@ static void onGameRotVec(uint8_t, uint8_t* data, uint32_t, uint64_t*, void*) {
 
 void MotionHaptic::setHardwareMask(uint32_t mask) { sHwMask = mask; }
 
+static volatile bool sGameModeReq = false;
+static bool sGameModeApplied = false;
+void MotionHaptic::setGameMode(bool on) { sGameModeReq = on; }
+
 bool MotionHaptic::init() {
     const uint32_t mask = sHwMask ? sHwMask : instance.getDeviceProbe();
     drvReady = (mask & HW_DRV_ONLINE) != 0;
@@ -253,8 +257,14 @@ void MotionHaptic::updateMotion(unsigned long now) {
         }
     }
 
-    // Throttle sensor FIFO polling during Smart Sleep to save power
-    uint32_t pollInterval = sSleeping ? 200 : 40;
+    // Throttle sensor FIFO polling during Smart Sleep to save power; a running
+    // game polls at 50 Hz and gets the orientation at 50 Hz.
+    if (sGameModeReq != sGameModeApplied && sensorOnline && PowerManager::lockI2C(15)) {
+        sGameModeApplied = sGameModeReq;
+        instance.sensor.configure(SensorBHI260AP::GAME_ROTATION_VECTOR, sGameModeApplied ? 50.0f : 20.0f, 0);
+        PowerManager::unlockI2C();
+    }
+    uint32_t pollInterval = sSleeping ? 200 : (sGameModeApplied ? 20 : 40);
     if (sensorOnline && now - lastPoll >= pollInterval) {
         lastPoll = now;
         if (PowerManager::lockI2C(15)) {

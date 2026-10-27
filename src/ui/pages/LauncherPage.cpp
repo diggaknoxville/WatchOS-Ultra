@@ -22,6 +22,7 @@ static const AppEntry APPS[] = {
     {"Kalender",      ICO_CALENDAR_MONTH,    0xFF453A, nav::PG_AGENDA,        0},
     {"Aktivität",     ICO_DIRECTIONS_RUN,    0x30D158, nav::PG_ACTIVITY,      0},
     {"Stoppuhr",      ICO_TIMER,             0xFF9F0A, nav::PG_APP_STOPWATCH, 0},
+    {"Spiele",        ICO_SPORTS_SCORE,      0xFF2D55, nav::PG_APP_GAMES,     0},
     {"Position",      ICO_MY_LOCATION,       0x64D2FF, nav::PG_POSITION,      0},
     {"LoRa",          ICO_PODCASTS,          0xBF5AF2, nav::PG_LORA,          0},
     {"Mitteilungen",  ICO_NOTIFICATIONS,     0xFF375F, nav::PG_NOTIFS,        0},

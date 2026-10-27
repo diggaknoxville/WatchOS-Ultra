@@ -77,6 +77,7 @@ Karussell (horizontal wischen), Reihenfolge wie in `include/ui/Navigator.h`:
 
 `LAUNCHER ← ZIFFERBLATT → AI-LIMITS → AKTIVITÄT → AGENDA → POSITION → LORA → SYSTEM`
 
+- **Spiele** (App-Drawer, Ordner mit 3 × 3 Kacheln): Labyrinth, Breakout, Würfel-Duell und Balance nutzen die Neigung bzw. das Schütteln des Handgelenks (BHI260AP), Snake und 2048 werden gewischt, Reaktion, Memory und Flappy getippt. Bestwerte liegen im NVS. Linke Kante nach rechts wischen = zurück zum Ordner.
 - Vom Zifferblatt nach unten wischen: **Control Center** (Helligkeit, AOD, Wrist-Wake, Haptik, WLAN, Ton, Medien-Karte). Nach oben: **Mitteilungen**.
 - Launcher-Apps: Kalender, Navi, Stoppuhr, LoRa, Connect, Einstellungen, Zifferblätter, Power, Media. Zurück per Wischen vom linken Rand, Home per Wischen vom unteren Rand oder Seitentaste.
 - Action-Taste (GPIO 0): Klick = Position/Control, Doppelklick = Taschenlampe, lang = Meshtastic-NodeInfo senden.
