@@ -21,6 +21,7 @@ void buildFaces(lv_obj_t* scr);
 void buildSettings(lv_obj_t* scr);
 void buildAppMedia(lv_obj_t* scr);
 void buildCalib(lv_obj_t* scr);
+void buildGames(lv_obj_t* scr);        // games folder + game host (src/ui/games)
 
 // watch face helpers used by the engine and the face picker
 void faceNext();

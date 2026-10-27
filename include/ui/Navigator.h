@@ -29,6 +29,7 @@ enum PageId : uint8_t {
     // apps
     PG_APP_CALENDAR, PG_APP_NAVI, PG_APP_STOPWATCH, PG_APP_LORA, PG_APP_CONNECT, PG_APP_SETTINGS,
     PG_APP_FACES, PG_APP_POWER, PG_APP_MEDIA, PG_APP_CALIB,
+    PG_APP_GAMES, PG_APP_GAME,                // games folder, running game
     PG_COUNT
 };
 

@@ -45,6 +45,8 @@ public:
     // reading: computed from the game-rotation-vector Euler angles.
     static void getAccel(float &ax, float &ay, float &az);
     static void getEuler(float &roll, float &pitch, float &yaw);
+    // Games: orientation at 50 Hz instead of 20 Hz while on (applied on the bg task).
+    static void setGameMode(bool on);
     static float getHeadingDeg();
     static void calibrateLevelAndCompass();
 

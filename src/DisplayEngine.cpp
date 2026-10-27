@@ -534,6 +534,7 @@ bool DisplayEngine::init() {
     pages::buildSettings(scr);
     pages::buildAppMedia(scr);
     pages::buildCalib(scr);
+    pages::buildGames(scr);
 
     buildBanner();
     buildAodAndTorch();
