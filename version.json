@@ -1,7 +1,7 @@
 {
-  "version": "1.1.0",
+  "version": "1.2.0",
   "codename": "Kronos",
-  "build_date": "2026-10-25T00:00:00Z",
+  "build_date": "2026-10-27T00:00:00Z",
   "target": "LilyGO T-Watch Ultra (ESP32-S3)",
   "display": "CO5300 QSPI AMOLED 410x502",
   "framework": "LVGL 9.4 + FreeRTOS Dual-Core",

@@ -11,7 +11,14 @@
 
 class DisplayEngine {
 public:
-    static bool init();                 // UI task
+    // Boot, all on the UI task: beginSplash() right after the display driver
+    // is up (panel still dark, fades in), splashTick() while setup() brings up
+    // the subsystems, init() builds the UI, renders every page once and
+    // cross-fades from the splash to the watch face.
+    static void beginSplash();
+    static void splashTick();
+    static void bootProgress(float p);  // thread-safe, 0..1 of the subsystem bring-up
+    static bool init();
     static void update(unsigned long now);
     static bool isReady();
 

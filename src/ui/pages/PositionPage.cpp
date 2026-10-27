@@ -635,7 +635,7 @@ void buildPosition(lv_obj_t* scr) {
         haptic(HAPTIC_TICK);
         DisplayEngine::showToast("GPX-Aufzeichnung", rec ? "Gestartet (nur mit GPS-Fix)" : "Gestoppt", 2000, ICO_ROUTE);
         refresh(true);
-    }, LV_EVENT_CLICKED, NULL);
+    }, LV_EVENT_SHORT_CLICKED, NULL);   // not after the long press (backtrack)
     lv_obj_add_event_cb(sRecBtn, [](lv_event_t*) {
         haptic(HAPTIC_SUCCESS);
         if (!NavEngine::startBacktrack()) {

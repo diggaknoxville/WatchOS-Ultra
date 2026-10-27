@@ -160,6 +160,7 @@ struct Job {
     lv_obj_t* obj = nullptr;
     Surface* dst = nullptr;
     int y = 0;
+    int yOff = 0;                 // window start inside a tall object
     size_t pos = 0;
 };
 static Job sJob;
@@ -188,11 +189,12 @@ void renderCancel() { sJob = Job(); }
 bool renderBusy() { return sJob.obj != nullptr; }
 lv_obj_t* renderTarget() { return sJob.obj; }
 
-bool renderBegin(lv_obj_t* obj, Surface& dst) {
+bool renderBegin(lv_obj_t* obj, Surface& dst, int yOffset) {
     if (!obj || !sScratchEnc) return false;
     sJob.obj = obj;
     sJob.dst = &dst;
     sJob.y = 0;
+    sJob.yOff = yOffset;
     sJob.pos = (size_t)H * 2;
     bool wasHidden = showForRender(obj);
     lv_display_t* d = lv_display_get_default();
@@ -217,7 +219,7 @@ bool renderStep() {
 
     lv_area_t oc;
     lv_obj_get_coords(obj, &oc);
-    lv_area_t area = {oc.x1, oc.y1 + y0, oc.x1 + W - 1, oc.y1 + y0 + rows - 1};
+    lv_area_t area = {oc.x1, oc.y1 + sJob.yOff + y0, oc.x1 + W - 1, oc.y1 + sJob.yOff + y0 + rows - 1};
 
     lv_layer_t layer;
     lv_layer_init(&layer);
@@ -273,8 +275,8 @@ bool renderStep() {
     return true;
 }
 
-bool render(lv_obj_t* obj, Surface& dst) {
-    if (!renderBegin(obj, dst)) return false;
+bool render(lv_obj_t* obj, Surface& dst, int yOffset) {
+    if (!renderBegin(obj, dst, yOffset)) return false;
     while (!renderStep()) {}
     return dst.valid;
 }
@@ -356,7 +358,12 @@ static void decodeSpan(const Surface& s, int sy, int sx0, int sx1, uint16_t* out
     }
 }
 
-static void composeStrip(int y0, int rows, const Layer* layers, int n, uint16_t* out) {
+static inline bool layerRow(const Layer& L, int y) {
+    return L.src && L.src->valid && y >= L.clipY0 && y < L.clipY1 && y - L.y >= 0 && y - L.y < H;
+}
+
+static void composeStrip(int y0, int rows, const Layer* layers, int n, uint16_t* out,
+                         const Bar* bars, int nBars) {
     for (int r = 0; r < rows; r++) {
         int y = y0 + r;
         uint16_t* o = out + r * W;
@@ -364,7 +371,7 @@ static void composeStrip(int y0, int rows, const Layer* layers, int n, uint16_t*
         int covered = 0;
         for (int i = 0; i < n; i++) {
             const Layer& L = layers[i];
-            if (L.src && L.src->valid && y - L.y >= 0 && y - L.y < H) {
+            if (layerRow(L, y)) {
                 int x0 = L.x < 0 ? 0 : L.x, x1 = L.x + W > W ? W : L.x + W;
                 if (x1 > x0) covered += x1 - x0;
             }
@@ -372,23 +379,35 @@ static void composeStrip(int y0, int rows, const Layer* layers, int n, uint16_t*
         if (covered < W) memset(o, 0, W * sizeof(uint16_t));
         for (int i = 0; i < n; i++) {
             const Layer& L = layers[i];
-            if (!L.src || !L.src->valid) continue;
+            if (!layerRow(L, y)) continue;
             int sy = y - L.y;
-            if (sy < 0 || sy >= H) continue;
             int x0 = L.x < 0 ? 0 : L.x, x1 = L.x + W > W ? W : L.x + W;
             if (x1 <= x0) continue;
             decodeSpan(*L.src, sy, x0 - L.x, x1 - L.x, o + x0, L.dim);
         }
+        for (int b = 0; b < nBars; b++) {
+            const Bar& B = bars[b];
+            if (y < B.y || y >= B.y + B.h) continue;
+            int x0 = B.x < 0 ? 0 : B.x, x1 = B.x + B.w > W ? W : B.x + B.w;
+            if (x1 <= x0) continue;
+            fill16(o + x0, (uint16_t)((B.color >> 8) | (B.color << 8)), x1 - x0);   // panel byte order
+        }
     }
 }
 
-void present(const Layer* layers, int n, bool vsync) {
+static inline void toMirrorRows(int y0, int rows, const uint16_t* px) {
+    if (!sMirror) return;
+    memcpy(sMirror + y0 * W, px, (size_t)rows * W * sizeof(uint16_t));
+    memset(sRowDirty + y0, 1, rows);
+}
+
+void present(const Layer* layers, int n, bool vsync, bool toMirror, const Bar* bars, int nBars) {
     uint32_t t0 = micros();
     instance.waitPushComplete();
     int cur = 0;
     int rows0 = sRows < H ? sRows : H;
     uint32_t tc = micros();
-    composeStrip(0, rows0, layers, n, sStrip[0]);
+    composeStrip(0, rows0, layers, n, sStrip[0], bars, nBars);
     g_compComposeUs += micros() - tc;
     if (vsync && sVsync) {
         xSemaphoreTake(sVsync, 0);                         // drop a stale edge
@@ -399,11 +418,12 @@ void present(const Layer* layers, int n, bool vsync) {
         uint32_t tp = micros();
         instance.pushColorsAsync(0, y0, W, rows, sStrip[cur]);
         g_compPushUs += micros() - tp;
+        if (toMirror) toMirrorRows(y0, rows, sStrip[cur]);              // DMA only reads the strip
         int y1 = y0 + sRows;
         if (y1 < H) {
             int rows1 = (y1 + sRows > H) ? H - y1 : sRows;
             tc = micros();
-            composeStrip(y1, rows1, layers, n, sStrip[cur ^ 1]);   // overlaps the DMA of strip y0
+            composeStrip(y1, rows1, layers, n, sStrip[cur ^ 1], bars, nBars);   // overlaps the DMA of strip y0
             g_compComposeUs += micros() - tc;
         }
         cur ^= 1;

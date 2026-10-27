@@ -49,11 +49,15 @@ void SettingsStorage::init() {
         settings.hapticEnabled = prefs.getBool("haptic", true);
         settings.aodEnabled = prefs.getBool("aod", true);
         settings.soundEnabled = prefs.getBool("sound", true);
-        settings.wifiApEnabled = prefs.getBool("wifi_ap", true);
+        // The hotspot is a session (CompanionServer switches it off when idle):
+        // it is never restored at boot, whatever was stored before.
+        settings.wifiApEnabled = false;
         settings.bleEnabled = prefs.getBool("ble_en", true);
         settings.gpsEnabled = prefs.getBool("gps_en", true);
         settings.loraEnabled = prefs.getBool("lora_en", true);
         settings.loraBeaconEnabled = prefs.getBool("lora_bcn", false);
+        settings.powerSaver = prefs.getBool("pwr_saver", false);
+        settings.saverRestore = prefs.getUChar("saver_rs", 0);
         settings.timezoneOffsetSec = prefs.getInt("tz_sec", 7200); // Default UTC+2
         settings.dailyStepGoal = prefs.getUInt("step_goal", 10000);
         String tzp = prefs.getString("tz_posix", DEFAULT_TZ_POSIX);
@@ -92,11 +96,12 @@ void SettingsStorage::flushNow() {
     if (settings.hapticEnabled != sCommitted.hapticEnabled)   prefs.putBool("haptic", settings.hapticEnabled);
     if (settings.aodEnabled != sCommitted.aodEnabled)         prefs.putBool("aod", settings.aodEnabled);
     if (settings.soundEnabled != sCommitted.soundEnabled)     prefs.putBool("sound", settings.soundEnabled);
-    if (settings.wifiApEnabled != sCommitted.wifiApEnabled)   prefs.putBool("wifi_ap", settings.wifiApEnabled);
     if (settings.bleEnabled != sCommitted.bleEnabled)         prefs.putBool("ble_en", settings.bleEnabled);
     if (settings.gpsEnabled != sCommitted.gpsEnabled)         prefs.putBool("gps_en", settings.gpsEnabled);
     if (settings.loraEnabled != sCommitted.loraEnabled)       prefs.putBool("lora_en", settings.loraEnabled);
     if (settings.loraBeaconEnabled != sCommitted.loraBeaconEnabled) prefs.putBool("lora_bcn", settings.loraBeaconEnabled);
+    if (settings.powerSaver != sCommitted.powerSaver)         prefs.putBool("pwr_saver", settings.powerSaver);
+    if (settings.saverRestore != sCommitted.saverRestore)     prefs.putUChar("saver_rs", settings.saverRestore);
     if (settings.timezoneOffsetSec != sCommitted.timezoneOffsetSec) prefs.putInt("tz_sec", settings.timezoneOffsetSec);
     if (settings.dailyStepGoal != sCommitted.dailyStepGoal)   prefs.putUInt("step_goal", settings.dailyStepGoal);
     if (strcmp(settings.customTitle, sCommitted.customTitle) != 0) prefs.putString("title", settings.customTitle);
@@ -121,11 +126,13 @@ void SettingsStorage::resetDefaults() {
     settings.hapticEnabled = true;
     settings.aodEnabled = true;
     settings.soundEnabled = true;
-    settings.wifiApEnabled = true;
+    settings.wifiApEnabled = false;
     settings.bleEnabled = true;
     settings.gpsEnabled = true;
     settings.loraEnabled = true;
     settings.loraBeaconEnabled = false;
+    settings.powerSaver = false;
+    settings.saverRestore = 0;
     settings.timezoneOffsetSec = 7200;
     settings.dailyStepGoal = 10000;
     strncpy(settings.customTitle, DEFAULT_TITLE, sizeof(settings.customTitle) - 1);

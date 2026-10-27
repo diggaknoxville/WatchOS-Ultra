@@ -28,8 +28,10 @@ struct MediaState {
 // NimBLE host task only copies the raw bytes into a small queue.
 class BleCompanion {
 public:
+    static void preload();                   // setup(): cached calendar from NVS (before the UI is built)
     static bool init();
     static void loop(unsigned long now);     // background task
+    static bool isStackRunning();            // NimBLE host + controller initialised (no light sleep)
     static bool isConnected();
     static void setEnabled(bool en);
     static bool isEnabled();

@@ -935,7 +935,7 @@ static void refreshBadge() {
     }
 }
 
-static void refresh(bool) {
+static void refresh(bool force) {
     showFace(SettingsStorage::get().watchfaceIndex);
 
     struct timeval tv;
@@ -945,7 +945,9 @@ static void refresh(bool) {
     localtime_r(&secs, &ti);
     int ms = (int)(tv.tv_usec / 1000);
     static int lastSec = -1;
-    bool secTick = (ti.tm_sec != lastSec);                // once-per-second work
+    // once-per-second work; a forced refresh (boot warm-up, wake, page show)
+    // fills every complication at once instead of over the next minute
+    bool secTick = force || (ti.tm_sec != lastSec);
     lastSec = ti.tm_sec;
 
     char b[80];
@@ -977,7 +979,7 @@ static void refresh(bool) {
             snprintf(b, sizeof(b), "%s, %d. %s", WD_DE_L[ti.tm_wday % 7], ti.tm_mday, MO_DE_L[ti.tm_mon % 12]);
             setText(mDate, b);
 
-            if (secTick && ti.tm_sec % 30 == 0) {            // next calendar event, twice a minute
+            if (force || (secTick && ti.tm_sec % 30 == 0)) {  // next calendar event, twice a minute
                 CalendarEvent ev;
                 if (BleCompanion::getUpcomingEvents(&ev, 1) > 0) {
                     time_t st = (time_t)ev.startEpoch;

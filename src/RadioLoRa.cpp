@@ -297,6 +297,30 @@ static void logMessageToSd(uint32_t fromNode, const char* text, float rssi, floa
 
 static void IRAM_ATTR onDio1() { rxFlag = true; }
 
+// ---------------------------------------------------------------------------
+//  Receive mode. While the display is on the SX1262 listens continuously.
+//  While it is off (AOD / sleep) it uses the chip's RX duty cycle: it sleeps
+//  between short listen windows that are still long enough to catch the
+//  16-symbol Meshtastic preamble (SF11: ~41 ms listen / ~66 ms sleep, about a
+//  third of the continuous RX current). Presets with an 8-symbol preamble or
+//  too short symbols fall back to continuous RX inside RadioLib.
+// ---------------------------------------------------------------------------
+static uint16_t sPreambleLen = 16;
+static bool sRxDutyCycled = false;
+
+static bool wantDutyCycledRx() { return PowerManager::isLowPowerState(); }
+
+static void rxStart() {
+    bool duty = wantDutyCycledRx();
+    int st = RADIOLIB_ERR_UNKNOWN;
+    if (duty) st = radio.startReceiveDutyCycleAuto(sPreambleLen, 4);
+    if (!duty || st != RADIOLIB_ERR_NONE) {
+        radio.startReceive();
+        duty = false;
+    }
+    sRxDutyCycled = duty;
+}
+
 static inline uint32_t rd_u32le(const uint8_t* p) { uint32_t v; memcpy(&v, p, 4); return v; }
 static inline int32_t  rd_s32le(const uint8_t* p) { int32_t v;  memcpy(&v, p, 4); return v; }
 
@@ -479,6 +503,7 @@ static void configureRadioParams() {
         radio.setSyncWord(0x2B);
         radio.setOutputPower(20);
         radio.setPreambleLength(16);
+        sPreambleLen = 16;
         radio.setCRC(true);
     } else if (sPreset == MESH_PRESET_MED_FAST) {
         radio.setFrequency(869.525f);
@@ -488,6 +513,7 @@ static void configureRadioParams() {
         radio.setSyncWord(0x2B);
         radio.setOutputPower(20);
         radio.setPreambleLength(16);
+        sPreambleLen = 16;
         radio.setCRC(true);
     } else if (sPreset == MESH_PRESET_SHORT_FAST) {
         radio.setFrequency(869.525f);
@@ -497,6 +523,7 @@ static void configureRadioParams() {
         radio.setSyncWord(0x2B);
         radio.setOutputPower(20);
         radio.setPreambleLength(16);
+        sPreambleLen = 16;
         radio.setCRC(true);
     } else {
         // Direct ASCII mode: 868.0 MHz, BW 125 kHz, SF9, CR 4/7, SyncWord 0x12, Preamble 8
@@ -507,6 +534,7 @@ static void configureRadioParams() {
         radio.setSyncWord(0x12);
         radio.setOutputPower(17);
         radio.setPreambleLength(8);
+        sPreambleLen = 8;
         radio.setCRC(true);
     }
     radio.setRxBoostedGainMode(true); // +3 dB SX1262 LNA sensitivity boost
@@ -561,7 +589,7 @@ bool RadioLoRa::init(float freq) {
     radio.setPacketReceivedAction(onDio1);
     ready = true;
     if (SettingsStorage::get().loraEnabled) {
-        radio.startReceive();
+        rxStart();
         sSleeping = false;
         Serial.printf("[LORA] SX1262 listening in %s mode (%u peers, %u msgs)\n",
                       getPresetLabel(), sPeerCount, inboxCount);
@@ -909,9 +937,11 @@ static bool tryDecodeMeshtastic(const uint8_t* pkt, size_t len, float rssi, floa
             uint32_t field = (uint32_t)(tag >> 3), wt = (uint32_t)(tag & 7);
             if (field == 2 && wt == 2) { // device_metrics
                 uint64_t subLen = pbVarint(tp, tend);
+                // bounds first: a forged length must not wrap the read pointer
+                if (subLen > (uint64_t)(tend - tp)) break;
                 const uint8_t* dp = tp;
                 const uint8_t* dend = dp + subLen;
-                if (dend <= tend) {
+                {
                     while (dp < dend) {
                         uint64_t dtag = pbVarint(dp, dend);
                         uint32_t dfield = (uint32_t)(dtag >> 3), dwt = (uint32_t)(dtag & 7);
@@ -1101,7 +1131,7 @@ static TxBegin beginTransmit(const uint8_t* data, size_t len, unsigned long now)
     if (st != RADIOLIB_ERR_NONE) {
         Serial.printf("[LORA] startTransmit failed (%d)\n", st);
         rxFlag = false;
-        radio.startReceive();
+        rxStart();
         return TXB_FAILED;
     }
     sTxState = TXS_WAIT;
@@ -1129,7 +1159,7 @@ static void serviceTx(unsigned long now) {
             radio.standby();
         }
         sTxState = TXS_IDLE;
-        radio.startReceive();
+        rxStart();
         nav::markDirty(nav::PG_LORA);
         return;
     }
@@ -1273,7 +1303,7 @@ static bool serviceSpectrum(unsigned long now) {
             radio.standby();
             configureRadioParams();
             rxFlag = false;
-            radio.startReceive();
+            rxStart();
         }
         return false;
     }
@@ -1303,7 +1333,7 @@ static bool serviceSpectrum(unsigned long now) {
         radio.standby();
         configureRadioParams();
         rxFlag = false;
-        radio.startReceive();
+        rxStart();
         nav::markDirty(nav::PG_LORA);
         return false;
     }
@@ -1335,7 +1365,7 @@ void RadioLoRa::loop(unsigned long now) {
         radio.standby();
         configureRadioParams();
         if (SettingsStorage::get().loraEnabled) {
-            radio.startReceive();
+            rxStart();
             sSleeping = false;
         }
         sInboxDirty = true;   // preset is stored with the inbox blob
@@ -1357,7 +1387,7 @@ void RadioLoRa::loop(unsigned long now) {
         sSleeping = false;
         radio.standby();
         configureRadioParams();
-        radio.startReceive();
+        rxStart();
         Serial.println("[LORA] SX1262 wake (receiving)");
     }
 
@@ -1367,6 +1397,11 @@ void RadioLoRa::loop(unsigned long now) {
     }
 
     if (serviceSpectrum(now)) return;   // radio is parked on a sweep frequency
+
+    if (!rxFlag && sRxDutyCycled != wantDutyCycledRx()) {
+        radio.standby();
+        rxStart();
+    }
 
     if (rxFlag) {
         rxFlag = false;
@@ -1392,7 +1427,7 @@ void RadioLoRa::loop(unsigned long now) {
                 }
             }
         }
-        radio.startReceive();
+        rxStart();
     }
 
     serviceTx(now);
@@ -1413,8 +1448,12 @@ void RadioLoRa::loop(unsigned long now) {
         }
     }
 
-    // Lazy load custom channels from SD if card is ready
-    if (!sChannelsLoadedFromSd && NavEngine::status().sdReady) {
+    // Lazy load custom channels from SD if card is ready. Without a channel
+    // file this used to probe the card on every 10 ms pass: once a minute.
+    static unsigned long sChannelsTryAt = 0;
+    if (!sChannelsLoadedFromSd && NavEngine::status().sdReady &&
+        (sChannelsTryAt == 0 || now - sChannelsTryAt >= 60000UL)) {
+        sChannelsTryAt = now ? now : 1;
         loadChannelsFromSd();
     }
 
@@ -1454,7 +1493,11 @@ bool RadioLoRa::sendNodeInfoDiscovery(uint32_t targetNode) {
     if (sPreset == MESH_PRESET_KRONOS_DIR) return false;
     unsigned long now = millis();
     bool isBcast = (targetNode == 0xFFFFFFFFUL);
-    uint32_t cooldown = isBcast ? 60000UL : 10000UL;
+    // Unicast replies are triggered by received frames (sender IDs can be
+    // forged): same 60 s floor as broadcasts so they cannot drain the duty
+    // cycle budget that SOS beacons depend on.
+    (void)isBcast;
+    uint32_t cooldown = 60000UL;
     if (sLastNodeInfoMs != 0 && now - sLastNodeInfoMs < cooldown) return false;
     TxReq r{};
     r.kind = TX_MESH_NODEINFO;
@@ -1514,6 +1557,7 @@ void RadioLoRa::setEnabled(bool en) {
     nav::markDirty(nav::PG_SYSTEM);
 }
 bool RadioLoRa::isEnabled() { return SettingsStorage::get().loraEnabled; }
+void RadioLoRa::notifyIrq() { rxFlag = true; }
 
 void RadioLoRa::setMeshtasticMode(bool mesh) {
     sPreset = mesh ? MESH_PRESET_LONG_FAST : MESH_PRESET_KRONOS_DIR;

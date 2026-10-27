@@ -24,6 +24,7 @@ public:
     static void playSoundFx(SoundFx fx);
     static void stop();
     static bool isReady();
+    static bool isBusy();                    // amplifier powered or tones queued (no light sleep)
 
     // Output volume 0..100 % (scales the synthesis amplitude). Default 70.
     // Not persisted; callers that want persistence store it themselves.

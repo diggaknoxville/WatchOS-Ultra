@@ -57,6 +57,8 @@ static bool setAmpRail(bool on) {
     return true;
 }
 
+static volatile bool sAmpOn = false;          // amplifier rail on / tone in flight
+
 static void audioTask(void*) {
     bool powered = false;
     bool havePending = false;
@@ -74,6 +76,7 @@ static void audioTask(void*) {
                 }
                 vTaskDelay(pdMS_TO_TICKS(15));
                 powered = true;
+                sAmpOn = true;
             }
             sStop = false;
             renderTone(pending);
@@ -83,7 +86,7 @@ static void audioTask(void*) {
             // flush silence through the DMA, then cut the amplifier rail
             ToneReq silence = {0, 40};
             renderTone(silence);
-            if (setAmpRail(false)) powered = false;    // else retry next iteration
+            if (setAmpRail(false)) { powered = false; sAmpOn = false; }   // else retry next iteration
         }
     }
 }
@@ -99,6 +102,7 @@ bool AudioEngine::init() {
 }
 
 bool AudioEngine::isReady() { return ready; }
+bool AudioEngine::isBusy() { return sAmpOn || (sQueue && uxQueueMessagesWaiting(sQueue) > 0); }
 
 void AudioEngine::setVolumePct(uint8_t pct) { sVolumePct = pct > 100 ? 100 : pct; }
 uint8_t AudioEngine::getVolumePct() { return sVolumePct; }

@@ -79,6 +79,21 @@ static volatile bool sCmdSubscribed = false;
 static uint32_t sLastAdvRestart = 0;
 static uint32_t sPasskey = 0;
 
+// ---- power: advertising cadence, connection parameters, stack shutdown ----
+// Fast advertising for 30 s after boot / disconnect (quick reconnect), then the
+// slow 417.5..546.25 ms interval recommended for accessories. A connection
+// starts with a 30..50 ms interval for service discovery and is relaxed after
+// 15 s to 120..180 ms with peripheral latency 4 (<= 0.9 s, supervision 6 s).
+static constexpr uint32_t ADV_FAST_MS = 30000;
+static constexpr uint16_t ADV_FAST_MIN = 32, ADV_FAST_MAX = 48;      // 20 .. 30 ms (0.625 ms units)
+static constexpr uint16_t ADV_SLOW_MIN = 668, ADV_SLOW_MAX = 874;    // 417.5 .. 546.25 ms
+static constexpr uint32_t CONN_RELAX_AFTER_MS = 15000;
+static volatile uint32_t sAdvFastSince = 0;       // 0 = slow cadence active
+static volatile uint32_t sConnectedAt = 0;
+static volatile bool sConnRelaxed = false;
+static volatile bool sShutdownPending = false;    // setEnabled(false): release the stack on the bg task
+static volatile bool sEnableRequest = false;      // setEnabled(true): build / restart on the bg task
+
 // ---- raw write queue: NimBLE host task -> BleCompanion::loop() -----------
 static constexpr size_t RX_SLOT_BYTES = 512;
 static constexpr int    RX_SLOTS = 2;
@@ -385,6 +400,8 @@ class ServerCallbacks : public NimBLEServerCallbacks {
         AiLimitsStore::setBleConnected(true);
         Serial.printf("[BLE] Client connected (connId=%u)\n", connInfo.getConnHandle());
         pServer->updateConnParams(connInfo.getConnHandle(), 24, 40, 0, 400); // 30-50ms interval, 4s timeout
+        sConnectedAt = millis() ? millis() : 1;
+        sConnRelaxed = false;
         nav::markDirty(nav::PG_AI_LIMITS);
         nav::markDirty(nav::PG_CONTROL);
         nav::markDirty(nav::PG_AGENDA);
@@ -401,7 +418,12 @@ class ServerCallbacks : public NimBLEServerCallbacks {
         nav::markDirty(nav::PG_AI_LIMITS);
         nav::markDirty(nav::PG_CONTROL);
         nav::markDirty(nav::PG_AGENDA);
-        if (sBleEnabled) {
+        sConnectedAt = 0;
+        if (sBleEnabled && !sShutdownPending) {
+            NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
+            adv->setMinInterval(ADV_FAST_MIN);
+            adv->setMaxInterval(ADV_FAST_MAX);
+            sAdvFastSince = millis() ? millis() : 1;
             NimBLEDevice::startAdvertising();
         }
     }
@@ -457,7 +479,7 @@ static bool ensureStack() {
     if (sStackInited) return true;
     Serial.println("[BLE] Initializing NimBLE stack...");
     NimBLEDevice::init(BLE_DEVICE_NAME);
-    NimBLEDevice::setPower(ESP_PWR_LVL_P9);
+    NimBLEDevice::setPower(ESP_PWR_LVL_P3);      // wrist to phone range; +9 dBm only costs current
 
     // Standard BLE Security: Just Works (no passkey prompt error on smartphones)
     NimBLEDevice::setSecurityAuth(true /*bond*/, false /*mitm*/, true /*sc*/);
@@ -554,12 +576,55 @@ static bool ensureStack() {
     scanData.addServiceUUID(ANS_SERVICE_UUID);
     pAdvertising->setScanResponseData(scanData);
     pAdvertising->enableScanResponse(true);
+    pAdvertising->setMinInterval(ADV_FAST_MIN);
+    pAdvertising->setMaxInterval(ADV_FAST_MAX);
+    sAdvFastSince = millis() ? millis() : 1;
     sStackInited = true;
     return true;
 }
 
-bool BleCompanion::init() {
+static bool sPreloaded = false;
+
+void BleCompanion::preload() {
+    if (sPreloaded) return;
+    sPreloaded = true;
     loadCalendarFromNvs();
+}
+
+// bg task: release the whole NimBLE host + controller so the CPU can light-sleep
+static void shutdownStack() {
+    if (!sStackInited) { sShutdownPending = false; return; }
+    static uint32_t sDiscAt = 0;
+    if (sConnected && sServer) {
+        if (!sDiscAt) {
+            sDiscAt = millis() ? millis() : 1;
+            std::vector<uint16_t> peers = sServer->getPeerDevices();
+            for (uint16_t connId : peers) sServer->disconnect(connId);
+        }
+        if (millis() - sDiscAt < 1500) return;          // give the link time to close
+    }
+    sDiscAt = 0;
+    if (NimBLEDevice::getAdvertising()->isAdvertising()) NimBLEDevice::stopAdvertising();
+    sConnected = false;
+    sCmdSubscribed = false;
+    sAncsDiscoveryPending = false;
+    AiLimitsStore::setBleConnected(false);
+    // deinit(true) deletes server, services, characteristics and clients
+    bool ok = NimBLEDevice::deinit(true);
+    sServer = nullptr;
+    sDataChar = sStatusChar = sCmdChar = sNewAlertChar = sUnreadAlertChar = nullptr;
+    sAncsCtrlPoint = nullptr;
+    if (sHid) { delete sHid; sHid = nullptr; }   // only holds pointers into the deleted server
+    sInputReport = nullptr;
+    sStackInited = false;
+    sShutdownPending = false;
+    Serial.printf("[BLE] Stack released (%s)\n", ok ? "ok" : "deinit failed");
+}
+
+bool BleCompanion::isStackRunning() { return sStackInited; }
+
+bool BleCompanion::init() {
+    preload();
     sBleEnabled = SettingsStorage::get().bleEnabled;
     if (sPasskey == 0) sPasskey = esp_random() % 1000000UL;
     if (sBleEnabled) {
@@ -691,13 +756,39 @@ static bool sendCommandNow(const char* cmd) {
 }
 
 void BleCompanion::loop(unsigned long now) {
+    if (sShutdownPending) { shutdownStack(); return; }
+    if (sEnableRequest) {
+        sEnableRequest = false;
+        if (sBleEnabled && ensureStack() && !sConnected && !NimBLEDevice::getAdvertising()->isAdvertising()) {
+            NimBLEDevice::getAdvertising()->setMinInterval(ADV_FAST_MIN);
+            NimBLEDevice::getAdvertising()->setMaxInterval(ADV_FAST_MAX);
+            sAdvFastSince = now ? now : 1;
+            NimBLEDevice::startAdvertising();
+            Serial.println("[BLE] Enabled, advertising");
+        }
+    }
     if (!sBleEnabled || !sStackInited) return;
 
+    NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
+    if (!sConnected && sAdvFastSince && now - sAdvFastSince >= ADV_FAST_MS) {
+        sAdvFastSince = 0;                              // fast window over: slow cadence
+        bool was = adv->isAdvertising();
+        if (was) adv->stop();
+        adv->setMinInterval(ADV_SLOW_MIN);
+        adv->setMaxInterval(ADV_SLOW_MAX);
+        if (was) adv->start();
+    }
     if (!sConnected && (now - sLastAdvRestart >= 10000)) {
         sLastAdvRestart = now;
-        if (!NimBLEDevice::getAdvertising()->isAdvertising()) {
+        if (!adv->isAdvertising()) {
             NimBLEDevice::startAdvertising();
         }
+    }
+    if (sConnected && !sConnRelaxed && sConnectedAt && now - sConnectedAt >= CONN_RELAX_AFTER_MS && sServer) {
+        sConnRelaxed = true;
+        std::vector<uint16_t> peers = sServer->getPeerDevices();
+        for (uint16_t h : peers) sServer->updateConnParams(h, 96, 144, 4, 600);
+        Serial.println("[BLE] Connection parameters relaxed (120-180 ms, latency 4)");
     }
 
     // Discover ANCS on connected iOS devices
@@ -777,26 +868,13 @@ void BleCompanion::setEnabled(bool en) {
     SettingsStorage::get().bleEnabled = en;
     SettingsStorage::save();
     if (!en) {
-        if (sStackInited) {
-            if (NimBLEDevice::getAdvertising()->isAdvertising()) {
-                NimBLEDevice::stopAdvertising();
-            }
-            if (sConnected && sServer) {
-                std::vector<uint16_t> peers = sServer->getPeerDevices();
-                for (uint16_t connId : peers) {
-                    sServer->disconnect(connId);
-                }
-                sConnected = false;
-                sCmdSubscribed = false;
-                AiLimitsStore::setBleConnected(false);
-            }
-        }
-        Serial.println("[BLE] Disabled");
+        // Disconnect, stop advertising and release host + controller on the
+        // background task (NimBLE calls must not run on the UI task).
+        sShutdownPending = true;
+        Serial.println("[BLE] Disabled (stack release pending)");
     } else {
-        if (ensureStack() && !sConnected && !NimBLEDevice::getAdvertising()->isAdvertising()) {
-            NimBLEDevice::startAdvertising();
-            Serial.println("[BLE] Re-enabled advertising");
-        }
+        sShutdownPending = false;
+        sEnableRequest = true;                          // stack is (re)built on the bg task
     }
     nav::markDirty(nav::PG_AI_LIMITS);
     nav::markDirty(nav::PG_CONTROL);

@@ -49,6 +49,12 @@ struct PageDef {
     // optional: may a horizontal carousel swipe start at (x, y)? nullptr = always
     // (e.g. a map canvas keeps horizontal drags for panning)
     bool (*allowHorizontalGesture)(int x, int y) = nullptr;
+    // optional composited vertical scroller (60 fps, follows the finger 1:1,
+    // momentum + rubber band): `scrollView` is a fixed, non-scrollable viewport,
+    // `scrollContent` its tall child. The navigator moves the child (y = -offset)
+    // and renders it from cached surfaces instead of letting LVGL redraw it.
+    lv_obj_t* scrollView = nullptr;
+    lv_obj_t* scrollContent = nullptr;
 };
 
 void registerPage(PageId id, const PageDef& def);
@@ -56,12 +62,18 @@ void setRefreshInterval(PageId id, uint16_t ms);  // runtime override of PageDef
 void begin(PageId initial);
 
 // boot: render every page once (warms glyph caches + fills the surface cache),
-// reporting progress 0..1, then reveal `initial` over whatever is on the glass
+// reporting progress 0..1, then cross-fade from the splash to `initial`
 void warmup(void (*progress)(float));
 void bootReveal(PageId initial);
+
+// show the current page at once from a fresh surface (display wake, AOD exit):
+// no strip-by-strip LVGL repaint becomes visible
+void repaint();
 // every UI loop pass. refreshPages = false (low power): only pending actions
 // and touch tracking are serviced, no page refresh / background prerender.
-void update(uint32_t now, bool refreshPages = true);
+// minRefreshMs caps how often a live page (refreshMs 0) is refreshed: frame
+// rate governor (ACTIVE ~30 fps, DIM 1 Hz).
+void update(uint32_t now, bool refreshPages = true, uint16_t minRefreshMs = 0);
 
 PageId current();
 bool transitioning();

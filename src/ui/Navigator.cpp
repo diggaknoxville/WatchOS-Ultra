@@ -13,7 +13,7 @@ using Compositor::Layer;
 
 static const int W = Compositor::W;
 static const int H = Compositor::H;
-static const int SLOP = 10;                 // px before a drag is classified
+static const int SLOP = 16;                 // px before a drag is classified (taps may wobble)
 static const float SPRING_RESPONSE = 0.18f; // s, snappy critically damped spring
 static const float PROJECTION_S = 0.18f;    // velocity projection for commit decisions
 
@@ -21,7 +21,7 @@ enum Mode : uint8_t { M_CAROUSEL, M_SHEET_TOP, M_SHEET_BOTTOM, M_APP };
 
 enum Gesture : uint8_t {
     G_NONE, G_PAGE, G_SHEET_TOP_OPEN, G_SHEET_TOP_CLOSE, G_SHEET_BOT_OPEN, G_SHEET_BOT_CLOSE,
-    G_BACK, G_HOME, G_APP_OPEN
+    G_BACK, G_HOME, G_APP_OPEN, G_SCROLL
 };
 
 static const PageId CAROUSEL[] = {PG_LAUNCHER, PG_FACE, PG_AI_LIMITS, PG_ACTIVITY, PG_AGENDA, PG_POSITION, PG_LORA, PG_SYSTEM};
@@ -108,6 +108,8 @@ static bool surfaceFresh(PageId id) {
 }
 
 static PageId sJobPage = PG_COUNT;                   // page being rendered in the background
+static void sJobPageReset() { sJobPage = PG_COUNT; }
+static int sJobScroll = -1;                          // scroll chunk being rendered in the background (-1 none)
 
 static bool ensureSurface(PageId id) {
     if (!registered(id)) return false;
@@ -118,7 +120,7 @@ static bool ensureSurface(PageId id) {
         return sSurf[id].valid;
     }
     if (surfaceFresh(id)) return true;
-    if (Compositor::renderBusy()) { Compositor::renderCancel(); sJobPage = PG_COUNT; }
+    if (Compositor::renderBusy()) { Compositor::renderCancel(); sJobPage = PG_COUNT; sJobScroll = -1; }
     refreshPage(id, true);                               // objects up to date before rendering
     bool ok = Compositor::render(sPages[id].root, sSurf[id]);
     if (ok) sDirty[id] = false;
@@ -328,6 +330,240 @@ static bool interactive(Scene& sc, bool horizontal, int x0, int y0) {
     }
     settle(sc, pos, vel, commit ? sc.full : 0);
     return commit;
+}
+
+// ------------------------------------------------------------------ composited scroller
+// The content of a scroll page is cached as up to SCROLL_CHUNKS surfaces of H
+// rows each (rendered in the background like neighbour pages). A scroll frame
+// is then a pure RLE composition: header rows from the glass, viewport rows
+// from the chunks at the current offset. LVGL only gets the final offset.
+static void claimTouch(int x0, int y0);
+static const int SCROLL_CHUNKS = 3;
+static const float SCROLL_TAU = 0.325f;       // s, momentum decay (iOS-like "normal" rate)
+static const float SCROLL_MIN_V = 18.0f;      // px/s, momentum stops below
+static Surface sScrollSurf[SCROLL_CHUNKS];
+static bool sScrollValid[SCROLL_CHUNKS];
+static PageId sScrollPage = PG_COUNT;         // page the chunk cache belongs to
+static volatile bool sScrollDirtyReq = false; // markDirty() from another task: drop chunks on the UI task
+
+static bool hasScroller(PageId id) {
+    return registered(id) && sPages[id].scrollView && sPages[id].scrollContent;
+}
+
+static int scrollChunks(PageId id) {
+    int c = (int)lv_obj_get_height(sPages[id].scrollContent);
+    int n = (c + H - 1) / H;
+    return n < 1 ? 1 : (n > SCROLL_CHUNKS ? SCROLL_CHUNKS : n);
+}
+
+static void scrollInvalidate() {
+    for (int k = 0; k < SCROLL_CHUNKS; k++) sScrollValid[k] = false;
+    if (sJobScroll >= 0) { Compositor::renderCancel(); sJobScroll = -1; }
+}
+
+static void scrollAdopt(PageId id) {
+    if (sScrollPage != id) { scrollInvalidate(); sScrollPage = id; }
+}
+
+// blocking: make every chunk of `id` valid (normally already prerendered)
+static bool ensureScrollChunks(PageId id) {
+    scrollAdopt(id);
+    lv_obj_t* content = sPages[id].scrollContent;
+    lv_display_t* d = lv_display_get_default();
+    lv_display_enable_invalidation(d, false);
+    lv_obj_update_layout(content);
+    lv_display_enable_invalidation(d, true);
+    int n = scrollChunks(id);
+    for (int k = 0; k < n; k++) {
+        if (sScrollValid[k]) continue;
+        if (sJobScroll == k && Compositor::renderBusy()) {
+            while (!Compositor::renderStep()) {}
+            sJobScroll = -1;
+            sScrollValid[k] = sScrollSurf[k].valid;
+            continue;
+        }
+        if (Compositor::renderBusy()) { Compositor::renderCancel(); sJobScroll = -1; sJobPageReset(); }
+        sScrollValid[k] = Compositor::render(content, sScrollSurf[k], k * H);
+        if (!sScrollValid[k]) return false;
+    }
+    return true;
+}
+
+struct ScrollGeo {
+    int vy0, vy1;            // viewport rows on screen
+    float maxOff;
+};
+
+static ScrollGeo scrollGeo(PageId id) {
+    lv_area_t a;
+    lv_obj_get_coords(sPages[id].scrollView, &a);
+    ScrollGeo g;
+    g.vy0 = a.y1 < 0 ? 0 : a.y1;
+    g.vy1 = a.y2 + 1 > H ? H : a.y2 + 1;
+    float content = (float)lv_obj_get_height(sPages[id].scrollContent);
+    g.maxOff = content - (float)(g.vy1 - g.vy0);
+    if (g.maxOff < 0) g.maxOff = 0;
+    return g;
+}
+
+static float scrollOffsetNow(PageId id) { return (float)-lv_obj_get_y(sPages[id].scrollContent); }
+
+// iOS rubber band: displacement for an overscroll of `over` px
+static float rubberBand(float over, float dim) {
+    float s = over < 0 ? -1.0f : 1.0f;
+    float x = fabsf(over);
+    return s * (1.0f - 1.0f / (x * 0.55f / dim + 1.0f)) * dim;
+}
+
+static void scrollFrame(PageId id, const ScrollGeo& g, float off, bool indicator, bool final) {
+    Layer L[SCROLL_CHUNKS + 2];
+    int n = 0;
+    // header / footer rows: the glass (captured at gesture start)
+    L[n++] = {&sGlass, 0, 0, 256, 0, (int16_t)g.vy0};
+    if (g.vy1 < H) L[n++] = {&sGlass, 0, 0, 256, (int16_t)g.vy1, (int16_t)H};
+    int oi = (int)lroundf(off);
+    int nc = scrollChunks(id);
+    for (int k = 0; k < nc; k++) {
+        if (!sScrollValid[k]) continue;
+        L[n++] = {&sScrollSurf[k], 0, g.vy0 - oi + k * H, 256, (int16_t)g.vy0, (int16_t)g.vy1};
+    }
+    Compositor::Bar bar;
+    int nb = 0;
+    if (indicator && g.maxOff > 0) {
+        int track = (g.vy1 - g.vy0) - 120;                 // clear of the rounded corners
+        float vis = (float)(g.vy1 - g.vy0) / (g.maxOff + (g.vy1 - g.vy0));
+        int bh = (int)(track * vis);
+        if (bh < 28) bh = 28;
+        float f = off / g.maxOff;
+        if (f < 0) f = 0;
+        if (f > 1) f = 1;
+        bar = {(int16_t)(W - 14), (int16_t)(g.vy0 + 60 + (int)((track - bh) * f)), 5, (int16_t)bh, 0x8C71};
+        nb = 1;
+    }
+    Compositor::present(L, n, !final, final, nb ? &bar : nullptr, nb);
+}
+
+// Drag + momentum + rubber band. Returns when the content rests and no finger
+// is on the glass (a touch during momentum stops it and is swallowed).
+static void runScroll(int x0, int y0) {
+    PageId id = sCur;
+    sBusy = true;
+    claimTouch(x0, y0);
+    instance.waitPushComplete();
+    Compositor::captureMirror(sGlass);
+    if (!ensureScrollChunks(id)) { sBusy = false; return; }
+    const ScrollGeo g = scrollGeo(id);
+    const float vh = (float)(g.vy1 - g.vy0);
+    float off = scrollOffsetNow(id);
+    int fingerY0 = y0;
+    float offAtDown = off;
+    bool dragging = true;
+    float vel = 0;                                  // offset velocity, px/s
+    struct Sample { uint32_t ms; float off; } hist[8];
+    int hn = 0;
+    hist[hn++] = {millis(), off};
+    float raw = off;                                // unclamped drag target
+
+    for (;;) {
+        if (dragging) {
+            KronosDisplay::Touch t = KronosDisplay::pollTouch();
+            if (!t.pressed) {
+                // release velocity: peak of the recent segment velocities
+                vel = 0;
+                for (int k = hn - 1; k > 0; k--) {
+                    if (hist[hn - 1].ms - hist[k].ms > 100) break;
+                    int j = k - 1;
+                    uint32_t dt = hist[k].ms - hist[j].ms;
+                    if (dt == 0) dt = 8;
+                    float v = (hist[k].off - hist[j].off) * 1000.0f / dt;
+                    if (fabsf(v) > fabsf(vel)) vel = v;
+                }
+                if (millis() - hist[hn - 1].ms > 90) vel = 0;      // finger rested before lifting
+                if (vel > 6000) vel = 6000;
+                if (vel < -6000) vel = -6000;
+                dragging = false;
+                continue;
+            }
+            raw = offAtDown - (float)(t.y - fingerY0);
+            float shown = raw;
+            if (raw < 0) shown = rubberBand(raw, vh);
+            else if (raw > g.maxOff) shown = g.maxOff + rubberBand(raw - g.maxOff, vh);
+            if (fabsf(shown - off) >= 0.5f) {
+                off = shown;
+                if (hn == 8) { memmove(hist, hist + 1, sizeof(Sample) * 7); hn = 7; }
+                hist[hn++] = {t.ms, off};
+                scrollFrame(id, g, off, true, false);
+            } else {
+                delay(1);
+            }
+            continue;
+        }
+
+        // ---- release: momentum and / or spring back --------------------------
+        uint32_t t0 = micros();
+        const float startOff = off, v0 = vel;
+        bool interrupted = false;
+        bool springing = (off < 0 || off > g.maxOff);
+        float springFrom = off, springVel = vel, springTarget = off < 0 ? 0 : g.maxOff;
+        uint32_t ts = t0;
+        for (;;) {
+            KronosDisplay::Touch tc = KronosDisplay::pollTouch();
+            if (tc.pressed) { interrupted = true; fingerY0 = tc.y; break; }
+            if (!springing) {
+                float t = (micros() - t0) / 1e6f;
+                float e = expf(-t / SCROLL_TAU);
+                off = startOff + v0 * SCROLL_TAU * (1.0f - e);
+                float v = v0 * e;
+                if (off < 0 || off > g.maxOff) {                 // hit an end: bounce
+                    springing = true;
+                    springFrom = off;
+                    springVel = v;
+                    springTarget = off < 0 ? 0 : g.maxOff;
+                    ts = micros();
+                } else if (fabsf(v) < SCROLL_MIN_V) {
+                    break;
+                }
+            }
+            if (springing) {
+                // critically damped spring (response 0.30 s) towards the edge
+                const float w = 2.0f * (float)M_PI / 0.30f;
+                float t = (micros() - ts) / 1e6f;
+                float x0s = springFrom - springTarget;
+                float x = (x0s + (springVel + w * x0s) * t) * expf(-w * t);
+                off = springTarget + x;
+                if (fabsf(x) < 0.5f || t > 0.9f) { off = springTarget; break; }
+            }
+            scrollFrame(id, g, off, true, false);
+        }
+        if (interrupted) {
+            // the finger stopped the motion: it may drag on, a tap only stops
+            claimTouch(KronosDisplay::lastTouch().x, KronosDisplay::lastTouch().y);
+            if (off < 0) off = 0;
+            if (off > g.maxOff) off = g.maxOff;
+            offAtDown = off;
+            raw = off;
+            hn = 0;
+            hist[hn++] = {millis(), off};
+            dragging = true;
+            continue;
+        }
+        break;
+    }
+
+    // ---- rest: hand the final offset to LVGL, glass mirror = final frame ------
+    if (off < 0) off = 0;
+    if (off > g.maxOff) off = g.maxOff;
+    off = (float)lroundf(off);
+    lv_display_t* d = lv_display_get_default();
+    lv_display_enable_invalidation(d, false);
+    lv_obj_set_y(sPages[id].scrollContent, -(int32_t)off);
+    lv_obj_update_layout(sPages[id].scrollView);
+    lv_display_enable_invalidation(d, true);
+    scrollFrame(id, g, off, false, true);
+    sDirty[id] = true;                          // page surface shows the old offset
+    sBusy = false;
+    sTracking = false;
+    sTriggered = false;
 }
 
 // ------------------------------------------------------------------ actions
@@ -563,6 +799,8 @@ static Gesture classify(bool horizontal, int dx, int dy, int x0, int y0, int* di
                 // a page may keep horizontal drags for itself (map panning)
                 const PageDef& cp = sPages[sCur];
                 if (cp.allowHorizontalGesture && !cp.allowHorizontalGesture(x0, y0)) return G_NONE;
+                // LVGL already scrolls a list under the finger: no page swipe mid-scroll
+                if (lv_indev_get_scroll_obj(KronosDisplay::touch())) return G_NONE;
                 *dir = dx < 0 ? 1 : -1;
                 if (neighbour(sCur, *dir) == PG_COUNT) *dir = 0;   // rubber band
                 return G_PAGE;
@@ -573,6 +811,7 @@ static Gesture classify(bool horizontal, int dx, int dy, int x0, int y0, int* di
                 int maxTopY = (sCur == PG_POSITION || sCur == PG_LAUNCHER) ? 72 : 160;
                 if (y0 <= maxTopY) return G_SHEET_TOP_OPEN;
             }
+            if (hasScroller(sCur) && y0 >= scrollGeo(sCur).vy0) return G_SCROLL;
             return G_NONE;                                          // let LVGL scroll content
         case M_SHEET_TOP:
             if (!horizontal && dy < 0) {
@@ -590,6 +829,7 @@ static Gesture classify(bool horizontal, int dx, int dy, int x0, int y0, int* di
             if (horizontal && dx > 0 && x0 < BACK_EDGE) return G_BACK;
             if (!horizontal && dy > 0 && y0 <= 72) return G_SHEET_TOP_OPEN;
             if (!horizontal && dy < 0 && y0 > H - HOME_EDGE) return G_HOME;
+            if (!horizontal && hasScroller(sCur) && y0 >= scrollGeo(sCur).vy0) return G_SCROLL;
             return G_NONE;
     }
     return G_NONE;
@@ -608,7 +848,7 @@ static void flick(int dx, int dy) {
         case G_SHEET_BOT_CLOSE:
         case G_BACK:            doBack(); break;
         case G_HOME:            doHome(); break;
-        default: break;
+        default: break;                                  // G_SCROLL: classified while dragging
     }
 }
 
@@ -655,6 +895,10 @@ static void trackGestures() {
         else if (ady * 10 > adx * 13) horizontal = false;
         else if (dist < 40) return;
         else horizontal = adx > ady;
+    } else if (hasScroller(sCur) || lv_indev_get_scroll_obj(KronosDisplay::touch())) {
+        // vertical content under the finger: a page swipe must be clearly
+        // horizontal (< ~37 deg), anything steeper scrolls
+        horizontal = adx * 10 >= ady * 13;
     } else {
         horizontal = adx * 10 >= ady * 7;
     }
@@ -662,6 +906,7 @@ static void trackGestures() {
     Gesture g = classify(horizontal, dx, dy, sX0, sY0, &dir);
     if (g == G_NONE) return;                 // keep evaluating while the finger moves
     sTriggered = true;
+    if (g == G_SCROLL) { runScroll(sX0, sY0); return; }
     runGesture(g, dir, sX0, sY0, horizontal);
 }
 
@@ -672,12 +917,35 @@ static void prerender(uint32_t now) {
     if (sBusy || KronosDisplay::lastTouch().pressed) return;
     if (Compositor::renderBusy()) {
         if (Compositor::renderStep()) {
-            sDirty[sJobPage] = false;
+            if (sJobScroll >= 0) {
+                sScrollValid[sJobScroll] = sScrollSurf[sJobScroll].valid;
+                sJobScroll = -1;
+            } else if (sJobPage < PG_COUNT) {
+                sDirty[sJobPage] = false;
+            }
             sJobPage = PG_COUNT;
         }
         return;
     }
     if (now - sLastTouchMs < 120 || now - sLastPrerender < 20) return;
+    // scroll chunks of the current page (or the launcher next to the face)
+    PageId sp = hasScroller(sCur) ? sCur : PG_COUNT;
+    if (sp == PG_COUNT && sMode == M_CAROUSEL) {
+        PageId nb[2] = {neighbour(sCur, 1), neighbour(sCur, -1)};
+        for (PageId q : nb) if (q < PG_COUNT && hasScroller(q)) sp = q;
+    }
+    if (sp < PG_COUNT) {
+        scrollAdopt(sp);
+        int nc = scrollChunks(sp);
+        for (int k = 0; k < nc; k++) {
+            if (sScrollValid[k]) continue;
+            Compositor::renderBegin(sPages[sp].scrollContent, sScrollSurf[k], k * H);
+            sJobScroll = k;
+            sJobPage = PG_COUNT;
+            sLastPrerender = now;
+            return;
+        }
+    }
     PageId want[6];
     int n = 0;
     if (sMode == M_CAROUSEL) {
@@ -724,13 +992,15 @@ void begin(PageId initial) {
     refreshPage(initial, true);
 }
 
-void update(uint32_t now, bool refreshPages) {
+void update(uint32_t now, bool refreshPages, uint16_t minRefreshMs) {
+    if (sScrollDirtyReq && !sBusy) { sScrollDirtyReq = false; scrollInvalidate(); }
     flushPendingAction();
     trackGestures();
     flushPendingAction();
     if (!refreshPages) return;                           // AOD / sleep: nothing to draw
     const PageDef& p = sPages[sCur];
-    if (registered(sCur) && p.refresh && (p.refreshMs == 0 || now - sLastRefresh[sCur] >= p.refreshMs)) {
+    uint16_t every = p.refreshMs < minRefreshMs ? minRefreshMs : p.refreshMs;
+    if (registered(sCur) && p.refresh && (every == 0 || now - sLastRefresh[sCur] >= every)) {
         p.refresh(false);
         sLastRefresh[sCur] = now;
     }
@@ -751,10 +1021,27 @@ void warmup(void (*progress)(float)) {
 
 void bootReveal(PageId initial) {
     sBusy = true;
-    prepareGlass();
+    prepareGlass();                                       // the splash
     ensureSurface(initial);
-    Scene sc = {G_APP_OPEN, &sGlass, &sSurf[initial], 0, (float)H};
-    animate(sc);
+    // cross-fade through black: the splash fades out, then the page fades in.
+    // Nothing of the page is visible before it is complete.
+    const float OUT_S = 0.18f, IN_S = 0.26f;
+    uint32_t t0 = micros();
+    for (;;) {
+        float t = (micros() - t0) / 1e6f;
+        if (t >= OUT_S + IN_S) break;
+        Layer L;
+        if (t < OUT_S) {
+            float k = 1.0f - t / OUT_S;
+            L = {&sGlass, 0, 0, (uint16_t)(256 * k * k)};
+        } else {
+            float k = (t - OUT_S) / IN_S;
+            L = {&sSurf[initial], 0, 0, (uint16_t)(256 * (1.0f - (1.0f - k) * (1.0f - k)))};
+        }
+        Compositor::present(&L, 1, true);
+    }
+    Layer L = {&sSurf[initial], 0, 0, 256};
+    Compositor::present(&L, 1, true);
     sMode = modeFor(initial);
     if (sMode == M_CAROUSEL) sBase = initial;
     sDepth = 0;
@@ -762,10 +1049,40 @@ void bootReveal(PageId initial) {
     sBusy = false;
 }
 
+void repaint() {
+    if (sBusy || !registered(sCur)) return;
+    sBusy = true;
+    if (Compositor::renderBusy()) { Compositor::renderCancel(); sJobPage = PG_COUNT; sJobScroll = -1; }
+    refreshPage(sCur, true);
+    if (Compositor::render(sPages[sCur].root, sSurf[sCur])) {
+        sDirty[sCur] = false;
+        Layer L = {&sSurf[sCur], 0, 0, 256};
+        Compositor::present(&L, 1, false);
+        Compositor::setMirror(sSurf[sCur]);
+        // overlays above the pages (banner, dialogs) are redrawn by LVGL
+        lv_obj_t* top = lv_layer_top();
+        for (uint32_t i = 0; i < lv_obj_get_child_count(top); i++) {
+            lv_obj_t* c = lv_obj_get_child(top, i);
+            if (!lv_obj_has_flag(c, LV_OBJ_FLAG_HIDDEN)) lv_obj_invalidate(c);
+        }
+    } else {
+        lv_obj_invalidate(lv_screen_active());
+        lv_refr_now(NULL);
+    }
+    sBusy = false;
+}
+
 PageId current() { return sCur; }
 bool transitioning() { return sBusy; }
-void markDirty(PageId id) { if (id < PG_COUNT) sDirty[id] = true; }
-void markAllDirty() { for (int i = 0; i < PG_COUNT; i++) sDirty[i] = true; }
+void markDirty(PageId id) {
+    if (id >= PG_COUNT) return;
+    sDirty[id] = true;
+    if (id == sScrollPage) sScrollDirtyReq = true;      // may be called from any task
+}
+void markAllDirty() {
+    for (int i = 0; i < PG_COUNT; i++) sDirty[i] = true;
+    scrollInvalidate();
+}
 void setGesturesEnabled(bool en) { sGestures = en; }
 
 }  // namespace nav

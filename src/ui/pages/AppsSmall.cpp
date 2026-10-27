@@ -112,28 +112,57 @@ static void doRestart() {
 
 static void onRestartConfirm(bool ok, void*) { if (ok) doRestart(); }
 
+static lv_obj_t* sSaverRow = nullptr;
+static lv_obj_t* sSaverInfo = nullptr;
+
+static void powerRefresh(bool) {
+    bool on = PowerManager::powerSaver();
+    setToggleRow(sSaverRow, on);
+    char b[64];
+    if (on) {
+        snprintf(b, sizeof(b), "TIEFSCHLAF %lu MIN  •  CPU %lu MHZ",
+                 (unsigned long)(PowerManager::lightSleepMs() / 60000UL), (unsigned long)PowerManager::cpuMhz());
+    } else {
+        snprintf(b, sizeof(b), "BLUETOOTH, LORA UND AOD AUS");
+    }
+    setText(sSaverInfo, b);
+}
+
 void buildPower(lv_obj_t* scr) {
     lv_obj_t* p = pageRoot(scr);
     title(p, "ENERGIE");
 
-    lv_obj_t* sleepB = secondaryButton(p, CW, 76, ICO_BEDTIME, "Display aus");
-    lv_obj_set_pos(sleepB, M, 96);
+    // Energiesparmodus: radios + AOD off, the CPU light-sleeps with the display off
+    sSaverRow = toggleRow(p, 92, ICO_BATTERY_FULL, "Energiesparmodus", PowerManager::powerSaver(),
+                          [](lv_event_t*) {
+        bool on = !PowerManager::powerSaver();
+        haptic(HAPTIC_TICK);
+        PowerManager::setPowerSaver(on);
+        powerRefresh(true);
+        DisplayEngine::showToast("Energiesparmodus", on ? "An: Bluetooth, LoRa und AOD aus" : "Aus: vorherige Funk-Einstellungen",
+                                 2200, ICO_BATTERY_FULL);
+    });
+    sSaverInfo = caption(p, "", cText3());
+    lv_obj_set_pos(sSaverInfo, M + 6, 162);
+
+    lv_obj_t* sleepB = secondaryButton(p, CW, 64, ICO_BEDTIME, "Display aus");
+    lv_obj_set_pos(sleepB, M, 190);
     lv_obj_add_event_cb(sleepB, [](lv_event_t*) {
         haptic(HAPTIC_TICK);
         nav::home();
         PowerManager::requestSleep();              // honoured by PowerManager for a grace window
     }, LV_EVENT_CLICKED, NULL);
 
-    lv_obj_t* rst = secondaryButton(p, CW, 76, ICO_RESTART_ALT, "Neustart");
-    lv_obj_set_pos(rst, M, 184);
+    lv_obj_t* rst = secondaryButton(p, CW, 64, ICO_RESTART_ALT, "Neustart");
+    lv_obj_set_pos(rst, M, 266);
     lv_obj_add_event_cb(rst, [](lv_event_t*) {
         haptic(HAPTIC_TICK);
         confirmDialog("Neustart?", "Die Uhr startet neu. Einstellungen werden gespeichert.",
                       "Neustart", "Abbrechen", onRestartConfirm, nullptr, false);
     }, LV_EVENT_CLICKED, NULL);
 
-    lv_obj_t* off = dangerButton(p, CW, 76, ICO_POWER_SETTINGS_NEW, "Ausschalten (halten)");
-    lv_obj_set_pos(off, M, 272);
+    lv_obj_t* off = dangerButton(p, CW, 64, ICO_POWER_SETTINGS_NEW, "Ausschalten (halten)");
+    lv_obj_set_pos(off, M, 342);
     lv_obj_add_event_cb(off, [](lv_event_t*) {
         SettingsStorage::flushNow();
         haptic(HAPTIC_ALERT_LONG);
@@ -153,10 +182,12 @@ void buildPower(lv_obj_t* scr) {
     lv_obj_set_style_bg_color(grab, cText3(), 0);
     lv_obj_align(grab, LV_ALIGN_BOTTOM_MID, 0, -14);
 
+    powerRefresh(true);
     nav::PageDef d;
     d.root = p;
-    d.refreshMs = 0xFFFF;
-    d.ttlMs = 0;
+    d.refresh = powerRefresh;
+    d.refreshMs = 2000;
+    d.ttlMs = 10000;
     nav::registerPage(nav::PG_APP_POWER, d);
 }
 

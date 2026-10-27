@@ -2,7 +2,7 @@
 
 Firmware für die **LilyGO T-Watch Ultra** (ESP32-S3) auf Basis von Arduino-ESP32 3.3 (pioarduino), LVGL 9.4 und FreeRTOS. Zwei Tasks (UI auf Core 1, Hintergrunddienste auf Core 0), ein RLE-Compositor für das 410×502-AMOLED, Meshtastic-kompatibler LoRa-Funk, Offline-Karten von der microSD-Karte, GNSS, Schrittzähler und ein WLAN-Portal zur Konfiguration.
 
-Version 1.1.0, Codename „Kronos“. Interne Bezeichner (`Kronos*`-Klassen, `kronos_*`-NVS-Namespaces) sind aus Kompatibilitätsgründen mit gespeicherten Daten beibehalten.
+Version 1.2.0, Codename „Kronos“. Interne Bezeichner (`Kronos*`-Klassen, `kronos_*`-NVS-Namespaces) sind aus Kompatibilitätsgründen mit gespeicherten Daten beibehalten.
 
 ---
 
@@ -116,7 +116,7 @@ Termine und die AI-Limits-Seite werden von einer Companion-App per BLE (JSON) ge
 
 ## Sicherheit
 
-- **WLAN-AP**: SSID `WATCHOS-ULTRA-xxxx`, Passwort pro Gerät (10 Zeichen, aus der eFuse-MAC abgeleitet, im NVS gespeichert). Es wird nur auf der Uhr (Connect-Seite) angezeigt und steht nicht im Quelltext.
+- **WLAN-AP**: startet nur auf Wunsch (Control Center oder Verbinden) und schaltet sich nach 5 Minuten ohne verbundenes Gerät selbst ab. SSID `WATCHOS-ULTRA-xxxx`, Passwort pro Gerät (10 Zeichen, aus der eFuse-MAC abgeleitet, im NVS gespeichert). Es wird nur auf der Uhr (Connect-Seite) angezeigt und steht nicht im Quelltext.
 - **Portal-PIN**: Sechsstellige PIN, bei jedem AP-Start neu erzeugt und auf der Uhr angezeigt; alle `/api/*`-Aufrufe benötigen sie (`X-Pin`-Header oder `?pin=`). Ein gesetzter `Origin`-Header muss zur AP-Adresse passen, sonst 403.
 - **BLE**: Characteristics verlangen verschlüsselte, authentifizierte Verbindungen; Kopplung per Passkey, der auf der Uhr angezeigt wird. BLE-Schreibzugriffe werden nicht im NimBLE-Host-Task, sondern in der Hintergrundschleife verarbeitet.
 - **OTA**: Upload über `/api/ota/upload` (PIN) in die inaktive Partition mit SHA-256-Berechnung; der Neustart erfolgt erst nach Bestätigung auf der Uhr (Hash-Präfix und Größe werden angezeigt, 120 s Timeout = Ablehnung). Keine Signaturprüfung (kein Secure Boot).
@@ -216,14 +216,15 @@ WatchOS-Ultra/
 ├── .github/workflows/build-firmware.yml
 ├── platformio.ini, build_firmware.sh, version.json
 ├── LICENSE, THIRD_PARTY_NOTICES.md
-└── REVIEW.md                          # Code-Review, Grundlage der Überarbeitung 1.1.0
+├── REVIEW.md                          # Code-Review, Grundlage der Überarbeitung 1.1.0
+└── REVIEW-2.md                        # Review 2: Akku, Touch, App-Drawer, Start (1.2.0)
 ```
 
 ---
 
 ## Bekannte Einschränkungen
 
-- Kein Light Sleep: WiFi/BLE/LoRa-Interrupts würden verloren gehen. Stromsparen beschränkt sich auf Display aus, UI-Task-Drosselung und GNSS-Abschaltung. Keine CPU-Taktabsenkung (APB-Glitches mit QSPI-DMA).
+- Energie: CPU-Takt nach Zustand (240/160/80 MHz), Panel-Sleep bei dunklem Display, LoRa-RX im Duty-Cycle, sparsame BLE-Intervalle. Light Sleep greift nur, solange Bluetooth aus ist (Energiesparmodus in der Energie-App): die vorkompilierten Arduino-Bibliotheken haben kein BT-Modem-Sleep. Details in `REVIEW-2.md`.
 - Der Routing-Graph ist rasterbasiert (Zellen 0,5–2,4 km), nicht topologisch; Routen sind Näherungen.
 - Straßen- und Gebäudeebene der Karte nur im Raum Stuttgart; außerhalb Autobahn bis Kreisstraße, Bahn, Gewässer.
 - Nur 24-h-Anzeige, keine 12-h-Uhr.

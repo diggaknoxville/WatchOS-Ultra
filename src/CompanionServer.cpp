@@ -327,13 +327,21 @@ void CompanionServer::regeneratePin() {
     nav::markDirty(nav::PG_APP_CONNECT);
 }
 
+// The hotspot is a session: it switches itself off after AP_IDLE_MS without
+// a connected station (and no OTA in progress). A running SoftAP costs far
+// more than everything else on the watch together.
+static const uint32_t AP_IDLE_MS = 5UL * 60UL * 1000UL;
+static uint32_t sApLastUseMs = 0;
+
 void CompanionServer::startAp() {
     if (apRunning) return;
     regeneratePin();
     WiFi.persistent(false);
     WiFi.disconnect(true);
     WiFi.mode(WIFI_AP);
-    WiFi.setTxPower(WIFI_POWER_19_5dBm);
+    // 11 dBm covers wrist to phone comfortably; 19.5 dBm only drained the
+    // battery and stressed the AXP2101 rail during TX bursts.
+    WiFi.setTxPower(WIFI_POWER_11dBm);
     IPAddress IP(192, 168, 4, 1);
     WiFi.softAPConfig(IP, IP, IPAddress(255, 255, 255, 0));
     bool ok = WiFi.softAP(apName, apPassword, 1, 0, 4);
@@ -345,6 +353,7 @@ void CompanionServer::startAp() {
         dnsServer.start(53, "*", IP);
         server.begin();
         apRunning = true;
+        sApLastUseMs = millis();
         Serial.printf("[WIFI] Access point '%s' up at %s, portal PIN active\n", apName, IP.toString().c_str());
     } else {
         apRunning = false;
@@ -678,12 +687,10 @@ bool CompanionServer::init() {
         server.send(302, "text/plain", "");
     });
 
-    if (SettingsStorage::get().wifiApEnabled) {
-        startAp();
-    } else {
-        WiFi.mode(WIFI_OFF);
-        Serial.println("[WIFI] Access point disabled by user settings");
-    }
+    // Never started at boot: the user opens the hotspot from the watch when
+    // the phone portal is needed (SettingsStorage resets wifiApEnabled).
+    WiFi.mode(WIFI_OFF);
+    Serial.println("[WIFI] Access point off (started on demand)");
     return true;
 }
 
@@ -1001,6 +1008,18 @@ void CompanionServer::handleClient() {
     if (!apRunning) return;
     dnsServer.processNextRequest();
     server.handleClient();
+
+    // idle auto-off
+    if (WiFi.softAPgetStationNum() > 0 || sOtaState != OTA_IDLE) {
+        sApLastUseMs = now;
+    } else if (now - sApLastUseMs >= AP_IDLE_MS) {
+        stopAp();
+        SettingsStorage::get().wifiApEnabled = false;
+        nav::markDirty(nav::PG_CONTROL);
+        nav::markDirty(nav::PG_APP_CONNECT);
+        nav::markDirty(nav::PG_APP_SETTINGS);
+        DisplayEngine::showToast("Hotspot aus", "5 Minuten ohne Verbindung", 2500, ICO_WIFI);
+    }
 }
 
 bool CompanionServer::isApActive() { return apRunning; }

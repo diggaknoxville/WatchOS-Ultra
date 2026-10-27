@@ -54,6 +54,22 @@ static void rounderCb(lv_event_t* e) {
 
 static KronosDisplay::Touch sLast = {false, 0, 0, 0};
 
+// touch filter state (see pollTouch)
+static const uint32_t RELEASE_DEBOUNCE_MS = 35;
+struct RawTouch {
+    bool pressed = false;
+    int16_t x = 0, y = 0;
+    uint32_t downAt = 0, upAt = 0, irqAt = 0;
+    uint16_t frames = 0;
+    uint8_t maxPoints = 0;
+};
+static RawTouch sRaw;
+static bool sDown = false;          // debounced contact
+static bool sSwallow = false;       // contact that woke the display: not reported
+static bool sPalm = false;
+static bool sPalmSlept = false;
+static uint32_t sPalmSince = 0;
+
 static bool sSynth = false;
 static int sSx0, sSy0, sSx1, sSy1;
 static uint32_t sSt0, sSdur;
@@ -82,35 +98,90 @@ KronosDisplay::Touch KronosDisplay::pollTouch() {
         return sLast;
     }
 
+    // ---- 1. raw controller state ------------------------------------------
     // CST9217 sends a TP_INT falling edge for each new scan frame (~70 Hz while
     // pressed) and one final TP_INT falling edge with evt=0x00 on finger release.
     // Polling touch.getPoint() when TP_INT has not fired reads an already-ACKed
     // buffer (0xAB) and falsely returns 0. Only read I2C when TP_INT fired!
-    static uint32_t sLastIrqMs = 0;
     if (instance.getTouched()) {
-        int16_t px = 0, py = 0;
-        uint8_t tp = 0;
-        bool locked = PowerManager::lockI2C(25);
-        if (locked) {
-            tp = instance.getPoint(&px, &py, 1);
+        int16_t px[2] = {0, 0}, py[2] = {0, 0};
+        if (PowerManager::lockI2C(25)) {
+            uint8_t tp = instance.getPoint(px, py, 2);
             PowerManager::unlockI2C();
             if (tp > 0) {
-                sLast.pressed = true;
-                sLast.x = px;
-                sLast.y = py;
-                sLastIrqMs = now;
-            } else {
-                sLast.pressed = false;            // evt=0x00 release frame from CST9217
-                sLastIrqMs = now;
+                if (!sRaw.pressed) { sRaw.downAt = now; sRaw.frames = 0; sRaw.maxPoints = 0; }
+                sRaw.pressed = true;
+                sRaw.x = px[0];
+                sRaw.y = py[0];
+                sRaw.frames++;
+                if (tp > sRaw.maxPoints) sRaw.maxPoints = tp;
+                sRaw.upAt = 0;
+            } else if (sRaw.pressed) {
+                sRaw.pressed = false;             // evt=0x00 release frame from CST9217
+                sRaw.upAt = now;
             }
+            sRaw.irqAt = now;
         }
-        // If I2C was busy, do NOT set pressed=false; retain previous state until lock is acquired!
-        sLast.ms = now;
-    } else if (sLast.pressed && (now - sLastIrqMs > 350)) {
-        // Safety fallback if release IRQ was ever missed
+        // If I2C was busy the IRQ bit stays set and the frame is read next pass.
+    } else if (sRaw.pressed && (now - sRaw.irqAt > 350)) {
+        // Safety fallback if the release IRQ was ever missed: release at once
+        sRaw.pressed = false;
+        sRaw.upAt = now - RELEASE_DEBOUNCE_MS;
+    }
+
+    // ---- 2. palm / cover: two or more contacts --------------------------------
+    // A hand or sleeve over the glass reports several points. The whole
+    // contact is ignored; held for 0.7 s it switches the display off (as on
+    // other watches: cover to sleep).
+    if (sRaw.pressed && sRaw.maxPoints >= 2 && !sPalm) {
+        sPalm = true;
+        sPalmSince = now;
+        sPalmSlept = false;
+    }
+    if (sPalm) {
+        bool released = !sRaw.pressed && sRaw.upAt && (now - sRaw.upAt >= RELEASE_DEBOUNCE_MS);
+        if (released) {
+            sPalm = false;
+        } else if (!sPalmSlept && now - sPalmSince >= 700 && !PowerManager::isLowPowerState()) {
+            sPalmSlept = true;
+            PowerManager::requestSleep();
+        }
+        sDown = false;
+        sSwallow = false;
         sLast.pressed = false;
         sLast.ms = now;
+        return sLast;
     }
+
+    // ---- 3. debounced press / release ----------------------------------------
+    if (!sDown) {
+        // a contact must last 2 scan frames (or 24 ms): drops, sleeve brushes
+        // and single-frame glitches never become taps
+        if (sRaw.pressed && (sRaw.frames >= 2 || now - sRaw.downAt >= 24)) {
+            sDown = true;
+            // touching a dark / always-on display only wakes it; the contact
+            // is not passed on, so nothing under the finger is activated
+            sSwallow = PowerManager::isLowPowerState();
+            PowerManager::handleActivity();
+            sLast.x = sRaw.x;
+            sLast.y = sRaw.y;
+        }
+    } else if (!sRaw.pressed) {
+        // a release followed by a new contact within RELEASE_DEBOUNCE_MS is a
+        // dropout of the controller, not a lift: drags no longer split into taps
+        if (sRaw.upAt && now - sRaw.upAt >= RELEASE_DEBOUNCE_MS) {
+            sDown = false;
+            sSwallow = false;
+        }
+    } else {
+        // jitter deadband: a resting finger does not wander by 1-2 px
+        if (abs(sRaw.x - sLast.x) >= 3 || abs(sRaw.y - sLast.y) >= 3) {
+            sLast.x = sRaw.x;
+            sLast.y = sRaw.y;
+        }
+    }
+    sLast.pressed = sDown && !sSwallow;
+    sLast.ms = now;
     return sLast;
 }
 
@@ -166,7 +237,7 @@ bool KronosDisplay::begin() {
     lv_indev_set_type(sTouch, LV_INDEV_TYPE_POINTER);
     lv_indev_set_read_cb(sTouch, touchReadCb);
     lv_indev_set_display(sTouch, sDisp);
-    lv_indev_set_scroll_limit(sTouch, 8);
+    lv_indev_set_scroll_limit(sTouch, 14);         // a resting finger is a tap, not a scroll
     lv_indev_set_long_press_time(sTouch, 450);
 
     Serial.printf("[DISP] %ux%u, 2x %u-row strips in internal DMA RAM (%u KB), heap left %u KB\n",

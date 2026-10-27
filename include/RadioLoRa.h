@@ -64,6 +64,8 @@ public:
     static bool isReady();
     static void setEnabled(bool en);
     static bool isEnabled();
+    // light sleep: DIO1 went high while the GPIO matrix was unclocked (edge lost)
+    static void notifyIrq();
 
     // Switch between Meshtastic EU_868 Presets and Direct mode
     static void setMeshtasticMode(bool mesh);

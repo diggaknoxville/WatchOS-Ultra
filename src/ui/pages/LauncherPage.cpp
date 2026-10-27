@@ -50,17 +50,21 @@ void buildLauncher(lv_obj_t* scr) {
     lv_obj_t* p = pageRoot(scr);
     title(p, "APPS");
 
-    lv_obj_t* grid = box(p, SCR_W, SCR_H - CONTENT_Y);
-    lv_obj_set_pos(grid, 0, CONTENT_Y);
-    lv_obj_add_flag(grid, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_scroll_dir(grid, LV_DIR_VER);
-    lv_obj_set_scrollbar_mode(grid, LV_SCROLLBAR_MODE_OFF);
+    // Fixed viewport below the title; the tall grid inside it is moved by the
+    // navigator's composited scroller (no LVGL scrolling, no per-frame redraw).
+    lv_obj_t* view = box(p, SCR_W, SCR_H - CONTENT_Y);
+    lv_obj_set_pos(view, 0, CONTENT_Y);
+    lv_obj_remove_flag(view, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t* grid = box(view, SCR_W, LV_SIZE_CONTENT);
+    lv_obj_set_pos(grid, 0, 0);
+    lv_obj_remove_flag(grid, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_flex_align(grid, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_set_style_pad_row(grid, 16, 0);
     lv_obj_set_style_pad_hor(grid, 10, 0);
     lv_obj_set_style_pad_top(grid, 6, 0);
-    lv_obj_set_style_pad_bottom(grid, 54, 0);
+    lv_obj_set_style_pad_bottom(grid, 64, 0);
 
     for (int i = 0; i < N_APPS; i++) {
         const AppEntry& a = APPS[i];
@@ -88,6 +92,8 @@ void buildLauncher(lv_obj_t* scr) {
     d.root = p;
     d.refreshMs = 0xFFFF;
     d.ttlMs = 0;                 // static content
+    d.scrollView = view;
+    d.scrollContent = grid;
     nav::registerPage(nav::PG_LAUNCHER, d);
 }
 

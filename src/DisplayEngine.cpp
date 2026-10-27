@@ -33,6 +33,7 @@ static lv_obj_t *sTorch;
 static uint16_t sLastAccent = 0xFFFF;
 static bool sReady = false;
 static bool sDnd = false;
+static bool sPanelAsleep = false;              // AMOLED in sleep-in (POWER_SLEEP)
 
 // cross-task banner inbox (latest wins; history lives in NotificationStore)
 static portMUX_TYPE sInboxMux = portMUX_INITIALIZER_UNLOCKED;
@@ -118,16 +119,18 @@ static void refreshAod() {
     bool aod = PowerManager::getPowerState() == POWER_AOD;
     bool shown = !lv_obj_has_flag(sAod, LV_OBJ_FLAG_HIDDEN);
     if (aod != shown) {
-        setHidden(sAod, !aod);
+        if (aod) setHidden(sAod, false);
         if (aod) {
             lv_obj_move_foreground(sAod);
             lastMin = -1;                                   // force a clock update on show
         } else {
-            // Immediately repaint the active screen when leaving AOD so the AOD clock
-            // never lingers on the panel or in the compositor mirror.
-            nav::markDirty(nav::current());
-            lv_obj_invalidate(lv_screen_active());
-            lv_refr_now(NULL);
+            // Leaving AOD: hide the overlay without letting LVGL repaint the
+            // screen strip by strip; the navigator presents the fresh page at once.
+            lv_display_t* d = lv_display_get_default();
+            lv_display_enable_invalidation(d, false);
+            setHidden(sAod, true);
+            lv_display_enable_invalidation(d, true);
+            nav::repaint();
         }
     }
     if (!aod) return;
@@ -442,11 +445,29 @@ static void debugConsole() {
     }
 }
 
-// ------------------------------------------------------------------ public
-bool DisplayEngine::init() {
-    Serial.println("[UI] Building WatchOS Ultra interface...");
-    initFonts();
+// ------------------------------------------------------------------ boot splash
+// The splash lives on lv_layer_top() and is opaque: nothing of the pages that
+// are built and rendered behind it can ever show through. The panel stays dark
+// until the first splash frame is on the glass, then fades in.
+static lv_obj_t* sSplash = nullptr;
+static lv_obj_t* sBootBar = nullptr;
+static volatile float sBootSubsys = 0.0f;     // setup(): subsystem bring-up 0..1
+static int sBootShown = -1;
+static const float BOOT_SUBSYS_SHARE = 0.45f; // bar share of the bring-up, rest = page warm-up
 
+static void setBootBar(float p) {
+    int v = (int)(p * 100.0f);
+    if (v > 100) v = 100;
+    if (v == sBootShown || !sBootBar) return;
+    sBootShown = v;
+    lv_bar_set_value(sBootBar, v, LV_ANIM_OFF);
+    lv_refr_now(NULL);
+}
+
+void DisplayEngine::bootProgress(float p) { sBootSubsys = p < 0 ? 0 : (p > 1 ? 1 : p); }
+
+void DisplayEngine::beginSplash() {
+    initFonts();
     lv_obj_t* scr = lv_screen_active();
     lv_obj_set_style_bg_color(scr, cBg(), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
@@ -454,22 +475,20 @@ bool DisplayEngine::init() {
     lv_obj_set_style_text_color(scr, cText(), 0);
     lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
 
-    // ---- boot splash (shown while every page is rendered once) ----
-    lv_obj_t* splash = box(scr, SCR_W, SCR_H);
-    lv_obj_set_style_bg_opa(splash, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(splash, cBg(), 0);
-    lv_obj_t* logo = label(splash, F.numM, cText(), "WATCHOS");
+    sSplash = box(lv_layer_top(), SCR_W, SCR_H);
+    lv_obj_set_style_bg_opa(sSplash, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(sSplash, cBg(), 0);
+    lv_obj_t* logo = label(sSplash, F.numM, cText(), "WATCHOS");
     lv_obj_set_style_text_letter_space(logo, 10, 0);
     lv_obj_align(logo, LV_ALIGN_CENTER, 5, -18);
-    lv_obj_t* sub = caption(splash, "ULTRA", accent());
+    lv_obj_t* sub = caption(sSplash, "ULTRA", accent());
     lv_obj_set_style_text_letter_space(sub, 8, 0);
     lv_obj_align(sub, LV_ALIGN_CENTER, 4, 22);
     char ver[48];
     snprintf(ver, sizeof(ver), "VERSION %s  •  BUILD %s", OS_VERSION, OS_BUILD);
-    lv_obj_t* vl = caption(splash, ver, cText3());
+    lv_obj_t* vl = caption(sSplash, ver, cText3());
     lv_obj_align(vl, LV_ALIGN_BOTTOM_MID, 0, -96);
-    static lv_obj_t* sBootBar;
-    sBootBar = lv_bar_create(splash);
+    sBootBar = lv_bar_create(sSplash);
     lv_obj_set_size(sBootBar, 120, 3);
     lv_obj_align(sBootBar, LV_ALIGN_BOTTOM_MID, 0, -70);
     lv_bar_set_range(sBootBar, 0, 100);
@@ -478,7 +497,25 @@ bool DisplayEngine::init() {
     lv_obj_set_style_bg_color(sBootBar, accent(), LV_PART_INDICATOR);
     lv_obj_set_style_radius(sBootBar, 2, LV_PART_MAIN);
     lv_obj_set_style_radius(sBootBar, 2, LV_PART_INDICATOR);
+    lv_obj_invalidate(lv_screen_active());
     lv_refr_now(NULL);
+    instance.waitPushComplete();
+
+    // fade in from black (the panel was dark since setup())
+    const uint8_t target = PowerManager::hwBrightnessFor(SettingsStorage::get().brightness);
+    for (int i = 1; i <= 12; i++) {
+        instance.setBrightness((uint8_t)((uint32_t)target * i * i / 144));
+        vTaskDelay(pdMS_TO_TICKS(22));
+    }
+}
+
+void DisplayEngine::splashTick() { setBootBar(sBootSubsys * BOOT_SUBSYS_SHARE); }
+
+// ------------------------------------------------------------------ public
+bool DisplayEngine::init() {
+    Serial.println("[UI] Building WatchOS Ultra interface...");
+    if (!sSplash) beginSplash();
+    lv_obj_t* scr = lv_screen_active();
 
     pages::buildFace(scr);
     pages::buildAiLimits(scr);
@@ -501,16 +538,18 @@ bool DisplayEngine::init() {
     buildBanner();
     buildAodAndTorch();
 
+    // the overlays were created after the splash: keep the splash on top
+    lv_obj_move_foreground(sSplash);
+
     uint32_t tw = millis();
-    nav::warmup([](float p) {
-        lv_bar_set_value(sBootBar, (int)(p * 100), LV_ANIM_OFF);
-        lv_refr_now(NULL);
-    });
+    nav::warmup([](float p) { setBootBar(BOOT_SUBSYS_SHARE + p * (1.0f - BOOT_SUBSYS_SHARE)); });
     Serial.printf("[UI] warm-up: all pages rendered in %lu ms\n", (unsigned long)(millis() - tw));
     nav::bootReveal(nav::PG_FACE);
     lv_display_t* dsp = lv_display_get_default();
     lv_display_enable_invalidation(dsp, false);
-    lv_obj_delete(splash);                      // glass already shows the face
+    lv_obj_delete(sSplash);                     // glass already shows the face
+    sSplash = nullptr;
+    sBootBar = nullptr;
     lv_display_enable_invalidation(dsp, true);
 
     lv_display_add_event_cb(dsp, perfRenderEvent, LV_EVENT_RENDER_START, NULL);
@@ -565,6 +604,19 @@ void DisplayEngine::update(unsigned long now) {
         }
     }
 
+    // ---- panel power: wake before anything is drawn ----
+    PowerState ps = PowerManager::getPowerState();
+    if (sPanelAsleep && ps != POWER_SLEEP) {
+        PowerManager::boostCpu();                       // render the wake frame at full speed
+        if (PowerManager::lockI2C(50)) {
+            instance.wakeupDisplay();                   // DISP_EN + SLPOUT, brightness still 0
+            PowerManager::unlockI2C();
+            sPanelAsleep = false;
+            vTaskDelay(pdMS_TO_TICKS(6));               // SLPOUT -> first RAM write
+            if (ps != POWER_AOD) nav::repaint();        // AOD: refreshAod() draws the clock
+        }
+    }
+
     uint16_t acc = SettingsStorage::get().accentColor;
     if (acc != sLastAccent) {
         sLastAccent = acc;
@@ -573,14 +625,29 @@ void DisplayEngine::update(unsigned long now) {
     }
 
     static unsigned long lastAod = 0;
-    if (now - lastAod >= 250) { lastAod = now; refreshAod(); }
+    bool aodWanted = (ps == POWER_AOD);
+    bool aodShown = !lv_obj_has_flag(sAod, LV_OBJ_FLAG_HIDDEN);
+    if (aodWanted != aodShown || now - lastAod >= 250) { lastAod = now; refreshAod(); }
     bool lowPower = PowerManager::isLowPowerState();
     nav::setGesturesEnabled(lv_obj_has_flag(sAod, LV_OBJ_FLAG_HIDDEN) && !torchOn() && !dialogOpen());
     // AOD / sleep: only the AOD clock is maintained; pages are neither refreshed
-    // nor pre-rendered (nav still services touch wake-up and pending actions)
-    nav::update(now, !lowPower);
+    // nor pre-rendered (nav still services touch wake-up and pending actions).
+    // Frame-rate governor for live pages: ~30 fps when active, 1 Hz when dimmed
+    // (sweeping hands tick, nothing animates at full rate on a dim screen).
+    nav::update(now, !lowPower, ps == POWER_DIM ? 1000 : 33);
     if (!lowPower) pollOta(now);
     PowerManager::applyBrightnessOnUiThread();
+
+    // ---- panel power: sleep once the screen is dark ----
+    if (!sPanelAsleep && ps == POWER_SLEEP && PowerManager::appliedHwBrightness() == 0 &&
+        !nav::transitioning()) {
+        instance.waitPushComplete();
+        if (PowerManager::lockI2C(50)) {
+            instance.sleepDisplay();                    // SLPIN + DISP_EN low
+            PowerManager::unlockI2C();
+            sPanelAsleep = true;
+        }
+    }
 }
 
 void DisplayEngine::showNotification(const String& title, const String& msg, uint32_t durationMs, const char* icon) {
