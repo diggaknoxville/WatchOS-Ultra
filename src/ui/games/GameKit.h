@@ -73,4 +73,9 @@ lv_obj_t* text(lv_obj_t* parent, const lv_font_t* font, lv_color_t color, const 
 void place(lv_obj_t* o, int x, int y);         // change-only lv_obj_set_pos
 void tint(lv_obj_t* o, lv_color_t c);          // change-only background colour
 
+// the nine games (one translation unit each); extern here so the
+// definitions get external linkage
+extern const Game GAME_LABYRINTH, GAME_BREAKOUT, GAME_DICE, GAME_BALANCE, GAME_SNAKE,
+                  GAME_2048, GAME_REACTION, GAME_MEMORY, GAME_FLAPPY;
+
 }  // namespace games

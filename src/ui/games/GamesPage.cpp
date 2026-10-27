@@ -16,11 +16,6 @@
 
 using namespace ui;
 
-namespace games {
-extern const Game GAME_LABYRINTH, GAME_BREAKOUT, GAME_DICE, GAME_BALANCE, GAME_SNAKE,
-                  GAME_2048, GAME_REACTION, GAME_MEMORY, GAME_FLAPPY;
-}
-
 namespace {
 
 using namespace games;
