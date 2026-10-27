@@ -616,7 +616,7 @@ static const uint32_t GOAL_STEPS[] = {5000, 8000, 10000, 12000, 15000, 20000};
 
 enum SetRow : uint8_t {
     SR_AOD = 0, SR_WRIST, SR_WIFI, SR_BLE, SR_GPS, SR_LORA, SR_BEACON, SR_SOUND, SR_HAPTIC,   // toggles
-    SR_TIMEOUT, SR_GOAL, SR_TZ, SR_SYNC, SR_ABOUT,                                           // value rows
+    SR_TIMEOUT, SR_GOAL, SR_TZ, SR_SYNC, SR_TIME_FMT, SR_ABOUT,                             // value rows
     SR_COUNT
 };
 static lv_obj_t* sSetRows[SR_COUNT] = {nullptr};
@@ -657,6 +657,7 @@ static void refreshSettings(bool) {
     const char* src = RtcManager::lastSyncSource();
     snprintf(b, sizeof(b), "%s %s", src && src[0] ? src : "--", a);
     setValueRow(sSetRows[SR_SYNC], b);
+    setValueRow(sSetRows[SR_TIME_FMT], s.timeFormat12h ? "12h (AM/PM)" : "24h");
 }
 
 static void onSetToggle(lv_event_t* e) {
@@ -763,6 +764,14 @@ void buildSettings(lv_obj_t* scr) {
 
     // ---- ZEIT ----
     sectionHeader(list, -1, "ZEIT");
+    sSetRows[SR_TIME_FMT] = valueRow(list, -1, ICO_SCHEDULE, "Zeitformat", "24h", [](lv_event_t*) {
+        SystemSettings& s = SettingsStorage::get();
+        s.timeFormat12h = !s.timeFormat12h;
+        SettingsStorage::save();
+        nav::markDirty(nav::PG_FACE);
+        haptic(HAPTIC_TICK);
+        refreshSettings(true);
+    });
     sSetRows[SR_TZ]   = valueRow(list, -1, ICO_SCHEDULE, "Zeitzone", "--", nullptr);
     sSetRows[SR_SYNC] = valueRow(list, -1, ICO_SYNC, "Letzte Zeitsync", "--", nullptr);
 

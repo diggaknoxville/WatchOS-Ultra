@@ -56,6 +56,7 @@ void SettingsStorage::init() {
         settings.gpsEnabled = prefs.getBool("gps_en", true);
         settings.loraEnabled = prefs.getBool("lora_en", true);
         settings.loraBeaconEnabled = prefs.getBool("lora_bcn", false);
+        settings.timeFormat12h = prefs.getBool("tf_12h", false);
         settings.powerSaver = prefs.getBool("pwr_saver", false);
         settings.saverRestore = prefs.getUChar("saver_rs", 0);
         settings.timezoneOffsetSec = prefs.getInt("tz_sec", 7200); // Default UTC+2
@@ -100,6 +101,7 @@ void SettingsStorage::flushNow() {
     if (settings.gpsEnabled != sCommitted.gpsEnabled)         prefs.putBool("gps_en", settings.gpsEnabled);
     if (settings.loraEnabled != sCommitted.loraEnabled)       prefs.putBool("lora_en", settings.loraEnabled);
     if (settings.loraBeaconEnabled != sCommitted.loraBeaconEnabled) prefs.putBool("lora_bcn", settings.loraBeaconEnabled);
+    if (settings.timeFormat12h != sCommitted.timeFormat12h)         prefs.putBool("tf_12h", settings.timeFormat12h);
     if (settings.powerSaver != sCommitted.powerSaver)         prefs.putBool("pwr_saver", settings.powerSaver);
     if (settings.saverRestore != sCommitted.saverRestore)     prefs.putUChar("saver_rs", settings.saverRestore);
     if (settings.timezoneOffsetSec != sCommitted.timezoneOffsetSec) prefs.putInt("tz_sec", settings.timezoneOffsetSec);
@@ -131,6 +133,7 @@ void SettingsStorage::resetDefaults() {
     settings.gpsEnabled = true;
     settings.loraEnabled = true;
     settings.loraBeaconEnabled = false;
+    settings.timeFormat12h = false;
     settings.powerSaver = false;
     settings.saverRestore = 0;
     settings.timezoneOffsetSec = 7200;

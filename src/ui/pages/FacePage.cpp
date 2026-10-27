@@ -153,8 +153,37 @@ static const char* cardinalDe(float deg) {
 // ---------------------------------------------------------------- WIDGET DEFS
 // 0: Modular
 static lv_obj_t *mStatus, *mWifi, *mBle, *mLora, *mGps, *mBatIcon, *mBatTxt;
-static lv_obj_t *mHH, *mMM, *mSecBar, *mDate, *mEvent;
+static lv_obj_t *mHH, *mMM, *mSecBar, *mDate, *mEvent, *mAmPm;
 static lv_obj_t *mRing[3], *mRingVal[3], *mDetail[3];
+
+// 3-Rings Detailansicht widgets
+static lv_obj_t* sRingsDetailModal = nullptr;
+static lv_obj_t *sRdStepArc = nullptr, *sRdStepVal = nullptr, *sRdStepMeta = nullptr, *sRdStepSub = nullptr;
+static lv_obj_t *sRdBatArc = nullptr, *sRdBatVal = nullptr, *sRdBatMeta = nullptr, *sRdBatSub = nullptr;
+static lv_obj_t *sRdDayArc = nullptr, *sRdDayVal = nullptr, *sRdDayMeta = nullptr, *sRdDaySub = nullptr;
+static lv_obj_t *sRdTimeFmtBtn = nullptr, *sRdTimeFmtVal = nullptr;
+
+static inline int formatHour(int hour24, bool* isPm = nullptr) {
+    if (isPm) *isPm = (hour24 >= 12);
+    if (!SettingsStorage::get().timeFormat12h) return hour24;
+    int h = hour24 % 12;
+    return (h == 0) ? 12 : h;
+}
+
+bool closeRingsDetailIfOpen() {
+    if (sRingsDetailModal && !lv_obj_has_flag(sRingsDetailModal, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_add_flag(sRingsDetailModal, LV_OBJ_FLAG_HIDDEN);
+        return true;
+    }
+    return false;
+}
+
+static void openRingsDetail() {
+    if (sRingsDetailModal) {
+        lv_obj_remove_flag(sRingsDetailModal, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(sRingsDetailModal);
+    }
+}
 
 // 1: Chrono
 static lv_obj_t *cDial, *cDate, *cDigital;
@@ -254,6 +283,11 @@ static void buildModular(lv_obj_t* f) {
     lv_obj_t* colon = label(hero, F.hero, accent(), ":");
     accReg(colon, ACC_TEXT);
     mMM = label(hero, F.hero, cText(), "00");
+    mAmPm = caption(hero, "AM", accent());
+    accReg(mAmPm, ACC_TEXT);
+    lv_obj_set_style_text_font(mAmPm, F.small, 0);
+    lv_obj_set_style_pad_left(mAmPm, 6, 0);
+    lv_obj_add_flag(mAmPm, LV_OBJ_FLAG_HIDDEN);
 
     mSecBar = lv_bar_create(f);
     lv_obj_set_size(mSecBar, 300, 4);
@@ -282,6 +316,11 @@ static void buildModular(lv_obj_t* f) {
         lv_obj_t* c = card(f, cw, ch);
         lv_obj_set_style_radius(c, R_TILE, 0);
         lv_obj_set_pos(c, startX + i * (cw + 8), cy);
+        pressable(c);
+        lv_obj_add_event_cb(c, [](lv_event_t*) {
+            openRingsDetail();
+            haptic(HAPTIC_CLICK);
+        }, LV_EVENT_CLICKED, NULL);
         lv_color_t col = (i == 1) ? cOk() : (i == 2 ? cInfo() : accent());
         mRing[i] = ring(c, 74, 7, col);
         if (i == 0) accReg(mRing[i], ACC_ARC, LV_PART_INDICATOR);
@@ -915,6 +954,161 @@ static void buildLifetime(lv_obj_t* f) {
 }
 
 // ============================================================================
+//  3-RINGS DETAILANSICHT (SCHRITTE, AKKU, TAG)
+// ============================================================================
+static void buildRingsDetail(lv_obj_t* parent) {
+    sRingsDetailModal = lv_obj_create(parent);
+    lv_obj_set_size(sRingsDetailModal, SCR_W, SCR_H);
+    lv_obj_set_pos(sRingsDetailModal, 0, 0);
+    lv_obj_set_style_bg_color(sRingsDetailModal, cBg(), 0);
+    lv_obj_set_style_bg_opa(sRingsDetailModal, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(sRingsDetailModal, 0, 0);
+    lv_obj_set_style_radius(sRingsDetailModal, 0, 0);
+    lv_obj_set_style_pad_all(sRingsDetailModal, 0, 0);
+    lv_obj_remove_flag(sRingsDetailModal, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(sRingsDetailModal, LV_OBJ_FLAG_HIDDEN);
+
+    // Top Bar (Header)
+    lv_obj_t* hdr = box(sRingsDetailModal, SCR_W, 68);
+    lv_obj_set_pos(hdr, 0, 0);
+    lv_obj_set_style_pad_hor(hdr, 16, 0);
+    lv_obj_set_style_pad_top(hdr, 18, 0);
+
+    lv_obj_t* backBtn = lv_obj_create(hdr);
+    lv_obj_set_size(backBtn, 106, 36);
+    lv_obj_align(backBtn, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_style_bg_color(backBtn, cSurf(), 0);
+    lv_obj_set_style_bg_opa(backBtn, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(backBtn, 18, 0);
+    lv_obj_set_style_border_width(backBtn, 1, 0);
+    lv_obj_set_style_border_color(backBtn, cStroke(), 0);
+    pressable(backBtn);
+    lv_obj_t* bLbl = label(backBtn, F.small, accent(), "< ZURÜCK");
+    accReg(bLbl, ACC_TEXT);
+    lv_obj_center(bLbl);
+    lv_obj_add_event_cb(backBtn, [](lv_event_t*) {
+        closeRingsDetailIfOpen();
+        haptic(HAPTIC_TICK);
+    }, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t* t = label(hdr, F.title, cText(), "RINGE DETAIL");
+    lv_obj_align(t, LV_ALIGN_CENTER, 22, 0);
+
+    // Scrollable content
+    lv_obj_t* list = lv_obj_create(sRingsDetailModal);
+    lv_obj_set_size(list, SCR_W, SCR_H - 70);
+    lv_obj_set_pos(list, 0, 70);
+    lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(list, 0, 0);
+    lv_obj_set_style_radius(list, 0, 0);
+    lv_obj_set_style_pad_hor(list, 18, 0);
+    lv_obj_set_style_pad_top(list, 4, 0);
+    lv_obj_set_style_pad_bottom(list, 40, 0);
+    lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(list, 10, 0);
+
+    // Card 1: Schritte & Aktivität
+    lv_obj_t* c1 = card(list, CW, 108);
+    lv_obj_set_style_radius(c1, R_TILE, 0);
+    pressable(c1);
+    lv_obj_add_event_cb(c1, [](lv_event_t*) {
+        closeRingsDetailIfOpen();
+        nav::openApp(nav::PG_ACTIVITY);
+        haptic(HAPTIC_TICK);
+    }, LV_EVENT_CLICKED, NULL);
+
+    sRdStepArc = ring(c1, 64, 6, accent());
+    accReg(sRdStepArc, ACC_ARC, LV_PART_INDICATOR);
+    lv_obj_set_pos(sRdStepArc, 12, 18);
+    sRdStepVal = label(sRdStepArc, F.cap, cText(), "0%");
+    lv_obj_center(sRdStepVal);
+
+    lv_obj_t* l1 = caption(c1, "SCHRITTE & BEWEGUNG", accent());
+    accReg(l1, ACC_TEXT);
+    lv_obj_set_pos(l1, 88, 14);
+    sRdStepMeta = label(c1, F.body, cText(), "0 / 10.000");
+    lv_obj_set_pos(sRdStepMeta, 88, 36);
+    sRdStepSub = caption(c1, "0.0 km · 0 kcal · Aktivität >", cText2());
+    lv_obj_set_pos(sRdStepSub, 88, 70);
+
+    // Card 2: Akku & Energie
+    lv_obj_t* c2 = card(list, CW, 108);
+    lv_obj_set_style_radius(c2, R_TILE, 0);
+    pressable(c2);
+    lv_obj_add_event_cb(c2, [](lv_event_t*) {
+        closeRingsDetailIfOpen();
+        nav::openApp(nav::PG_APP_POWER);
+        haptic(HAPTIC_TICK);
+    }, LV_EVENT_CLICKED, NULL);
+
+    sRdBatArc = ring(c2, 64, 6, cOk());
+    lv_obj_set_pos(sRdBatArc, 12, 18);
+    sRdBatVal = label(sRdBatArc, F.cap, cText(), "--%");
+    lv_obj_center(sRdBatVal);
+
+    lv_obj_t* l2 = caption(c2, "AKKU & ENERGIE", cOk());
+    lv_obj_set_pos(l2, 88, 14);
+    sRdBatMeta = label(c2, F.body, cText(), "--%");
+    lv_obj_set_pos(sRdBatMeta, 88, 36);
+    sRdBatSub = caption(c2, "-- V · Energie-App >", cText2());
+    lv_obj_set_pos(sRdBatSub, 88, 70);
+
+    // Card 3: Tag & Datum
+    lv_obj_t* c3 = card(list, CW, 108);
+    lv_obj_set_style_radius(c3, R_TILE, 0);
+    pressable(c3);
+    lv_obj_add_event_cb(c3, [](lv_event_t*) {
+        closeRingsDetailIfOpen();
+        nav::openApp(nav::PG_AGENDA);
+        haptic(HAPTIC_TICK);
+    }, LV_EVENT_CLICKED, NULL);
+
+    sRdDayArc = ring(c3, 64, 6, cInfo());
+    lv_obj_set_pos(sRdDayArc, 12, 18);
+    sRdDayVal = label(sRdDayArc, F.cap, cText(), "0%");
+    lv_obj_center(sRdDayVal);
+
+    lv_obj_t* l3 = caption(c3, "TAG & DATUM", cInfo());
+    lv_obj_set_pos(l3, 88, 14);
+    sRdDayMeta = label(c3, F.body, cText(), "--");
+    lv_obj_set_pos(sRdDayMeta, 88, 36);
+    sRdDaySub = caption(c3, "Kalender & Termine >", cText2());
+    lv_obj_set_pos(sRdDaySub, 88, 70);
+
+    // Card 4: Quick 12h / 24h toggle
+    lv_obj_t* c4 = card(list, CW, 74);
+    lv_obj_set_style_radius(c4, R_TILE, 0);
+    pressable(c4);
+    lv_obj_t* l4 = caption(c4, "ZEITFORMAT", cText3());
+    lv_obj_set_pos(l4, 18, 12);
+    sRdTimeFmtVal = label(c4, F.body, accent(), "24h");
+    accReg(sRdTimeFmtVal, ACC_TEXT);
+    lv_obj_set_pos(sRdTimeFmtVal, 18, 36);
+    sRdTimeFmtBtn = secondaryButton(c4, 124, 38, nullptr, "12h / 24h");
+    lv_obj_align(sRdTimeFmtBtn, LV_ALIGN_RIGHT_MID, -14, 0);
+    lv_obj_set_style_border_width(sRdTimeFmtBtn, 1, 0);
+    lv_obj_set_style_border_color(sRdTimeFmtBtn, cStroke(), 0);
+    auto onToggleTime = [](lv_event_t*) {
+        SystemSettings& s = SettingsStorage::get();
+        s.timeFormat12h = !s.timeFormat12h;
+        SettingsStorage::save();
+        haptic(HAPTIC_TICK);
+        nav::markDirty(nav::PG_FACE);
+    };
+    lv_obj_add_event_cb(c4, onToggleTime, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(sRdTimeFmtBtn, onToggleTime, LV_EVENT_CLICKED, NULL);
+
+    // Card 5: Big prominent Return Button
+    lv_obj_t* retBtn = primaryButton(list, CW, 50, nullptr, "STARTSEITE ZURÜCK");
+    accReg(retBtn, ACC_BG);
+    lv_obj_set_style_radius(retBtn, 16, 0);
+    lv_obj_add_event_cb(retBtn, [](lv_event_t*) {
+        closeRingsDetailIfOpen();
+        haptic(HAPTIC_CLICK);
+    }, LV_EVENT_CLICKED, NULL);
+}
+
+// ============================================================================
 //  SHOW / REFRESH LOOP
 // ============================================================================
 static void showFace(int idx) {
@@ -973,7 +1167,17 @@ static void refresh(bool force) {
             snprintf(b, sizeof(b), "%d%%", bat);
             setText(mBatTxt, b);
 
-            snprintf(b, sizeof(b), "%02d", ti.tm_hour); setText(mHH, b);
+            bool isPm = false;
+            int hDisp = formatHour(ti.tm_hour, &isPm);
+            if (SettingsStorage::get().timeFormat12h) {
+                setHidden(mAmPm, false);
+                setText(mAmPm, isPm ? "PM" : "AM");
+                snprintf(b, sizeof(b), "%02d", hDisp);
+            } else {
+                setHidden(mAmPm, true);
+                snprintf(b, sizeof(b), "%02d", ti.tm_hour);
+            }
+            setText(mHH, b);
             snprintf(b, sizeof(b), "%02d", ti.tm_min);  setText(mMM, b);
             setBar(mSecBar, ti.tm_sec * 1000 + ms);
             snprintf(b, sizeof(b), "%s, %d. %s", WD_DE_L[ti.tm_wday % 7], ti.tm_mday, MO_DE_L[ti.tm_mon % 12]);
@@ -1019,21 +1223,21 @@ static void refresh(bool force) {
         case FACE_CHRONO: {
             updateHands(cHands, hr, min, sec, 92, 14, 140, 16, 152, 26);
             snprintf(b, sizeof(b), "%s %02d", WD_DE_S[ti.tm_wday % 7], ti.tm_mday); setText(cDate, b);
-            snprintf(b, sizeof(b), "%02d:%02d:%02d", ti.tm_hour, ti.tm_min, ti.tm_sec); setText(cDigital, b);
+            snprintf(b, sizeof(b), "%02d:%02d:%02d", formatHour(ti.tm_hour), ti.tm_min, ti.tm_sec); setText(cDigital, b);
             break;
         }
 
         case FACE_MINIMAL: {
             snprintf(b, sizeof(b), "%s %d. %s", WD_DE_L[ti.tm_wday % 7], ti.tm_mday, MO_DE_S[ti.tm_mon % 12]);
             setText(nDate, b);
-            snprintf(b, sizeof(b), "%02d", ti.tm_hour); setText(nHH, b);
+            snprintf(b, sizeof(b), "%02d", formatHour(ti.tm_hour)); setText(nHH, b);
             snprintf(b, sizeof(b), "%02d", ti.tm_min);  setText(nMM, b);
             snprintf(b, sizeof(b), "%d%%%s", bat, chg ? "  LÄDT" : ""); setText(nBat, b);
             break;
         }
 
         case FACE_ULTRA_WAYFINDER: {
-            snprintf(b, sizeof(b), "%02d", ti.tm_hour); setText(wHH, b);
+            snprintf(b, sizeof(b), "%02d", formatHour(ti.tm_hour)); setText(wHH, b);
             snprintf(b, sizeof(b), "%02d", ti.tm_min);  setText(wMM, b);
             snprintf(b, sizeof(b), "%02d", ti.tm_sec);  setText(wSec, b);
             snprintf(b, sizeof(b), "%s %02d. %s", WD_DE_S[ti.tm_wday % 7], ti.tm_mday, MO_DE_S[ti.tm_mon % 12]);
@@ -1103,7 +1307,7 @@ static void refresh(bool force) {
             for (int g = 0; g < 10; g++) {
                 setBgColorIf(kBarDots[g], (g <= (ti.tm_sec % 10)) ? lv_color_hex(0x111611) : lv_color_hex(0x8D9B7C));
             }
-            snprintf(b, sizeof(b), "%02d", ti.tm_hour); setText(kHH, b);
+            snprintf(b, sizeof(b), "%02d", formatHour(ti.tm_hour)); setText(kHH, b);
             snprintf(b, sizeof(b), "%02d", ti.tm_min);  setText(kMM, b);
             snprintf(b, sizeof(b), "%02d", ti.tm_sec);  setText(kSS, b);
             snprintf(b, sizeof(b), "AKKU %d%%%s", bat, chg ? " LÄDT" : ""); setText(kBat, b);
@@ -1119,7 +1323,7 @@ static void refresh(bool force) {
         case FACE_CYBERPUNK: {
             snprintf(b, sizeof(b), "// WATCHOS %s %s", OS_VERSION, (ti.tm_sec % 2) ? "_" : " ");
             setText(yHeader, b);
-            snprintf(b, sizeof(b), "%02d:%02d", ti.tm_hour, ti.tm_min); setText(yHero, b);
+            snprintf(b, sizeof(b), "%02d:%02d", formatHour(ti.tm_hour), ti.tm_min); setText(yHero, b);
             snprintf(b, sizeof(b), ":%02d", ti.tm_sec); setText(ySec, b);
             if (secTick) {
                 snprintf(b, sizeof(b), "HEAP: %u KB • PSRAM: %u KB",
@@ -1177,7 +1381,7 @@ static void refresh(bool force) {
         }
 
         case FACE_NEON_HORIZON: {
-            snprintf(b, sizeof(b), "%02d", ti.tm_hour); setText(nhHH, b);
+            snprintf(b, sizeof(b), "%02d", formatHour(ti.tm_hour)); setText(nhHH, b);
             snprintf(b, sizeof(b), "%02d", ti.tm_min);  setText(nhMM, b);
             snprintf(b, sizeof(b), "%02d", ti.tm_sec);  setText(nhSec, b);
             snprintf(b, sizeof(b), "%s %02d. %s %d", WD_DE_S[ti.tm_wday % 7], ti.tm_mday, MO_DE_S[ti.tm_mon % 12],
@@ -1242,7 +1446,7 @@ static void refresh(bool force) {
         }
 
         case FACE_LIFETIME: {
-            snprintf(b, sizeof(b), "%02d:%02d", ti.tm_hour, ti.tm_min); setText(ltTime, b);
+            snprintf(b, sizeof(b), "%02d:%02d", formatHour(ti.tm_hour), ti.tm_min); setText(ltTime, b);
             snprintf(b, sizeof(b), "%s, %02d. %s", WD_DE_L[ti.tm_wday % 7], ti.tm_mday, MO_DE_L[ti.tm_mon % 12]);
             setText(ltDate, b);
             if (secTick) {
@@ -1266,6 +1470,36 @@ static void refresh(bool force) {
 
         default:
             break;
+    }
+
+    if (sRingsDetailModal && !lv_obj_has_flag(sRingsDetailModal, LV_OBJ_FLAG_HIDDEN)) {
+        uint32_t steps = MotionHaptic::getStepsToday();
+        uint32_t goal = SettingsStorage::get().dailyStepGoal;
+        if (!goal) goal = 1;
+        float sf = (float)steps / goal;
+        setArc(sRdStepArc, sf);
+        snprintf(b, sizeof(b), "%d%%", (int)fminf(999, sf * 100)); setText(sRdStepVal, b);
+        snprintf(b, sizeof(b), "%lu / %lu Schritte", (unsigned long)steps, (unsigned long)goal); setText(sRdStepMeta, b);
+        float km = (float)steps * 0.00075f;
+        uint32_t kcal = (uint32_t)(steps * 0.045f);
+        snprintf(b, sizeof(b), "%.1f km · %lu kcal · Aktivität >", km, (unsigned long)kcal); setText(sRdStepSub, b);
+
+        setArc(sRdBatArc, bat / 100.0f);
+        setArcColorIf(sRdBatArc, batteryColor(bat, chg));
+        snprintf(b, sizeof(b), "%d%%", bat); setText(sRdBatVal, b);
+        snprintf(b, sizeof(b), "%d%% · %s", bat, chg ? "Lädt über USB" : (PowerManager::isVbusConnected() ? "USB versorgt" : "Batteriebetrieb")); setText(sRdBatMeta, b);
+        snprintf(b, sizeof(b), "%.2f V · PMU %.0f°C · Energie-App >", PowerManager::getBatteryVoltage(), PowerManager::getTempCelsius()); setText(sRdBatSub, b);
+
+        int secOfDay = ti.tm_hour * 3600 + ti.tm_min * 60 + ti.tm_sec;
+        float df = secOfDay / 86400.0f;
+        setArc(sRdDayArc, df);
+        snprintf(b, sizeof(b), "%d%%", (int)(df * 100)); setText(sRdDayVal, b);
+        snprintf(b, sizeof(b), "%s, %d. %s", WD_DE_L[ti.tm_wday % 7], ti.tm_mday, MO_DE_L[ti.tm_mon % 12]); setText(sRdDayMeta, b);
+        char wk[8];
+        strftime(wk, sizeof(wk), "%V", &ti);
+        snprintf(b, sizeof(b), "Tag %d/365 · KW %s (%d%%) · Termine >", ti.tm_yday + 1, wk, (int)(df * 100)); setText(sRdDaySub, b);
+
+        setText(sRdTimeFmtVal, SettingsStorage::get().timeFormat12h ? "12h (AM/PM)" : "24h (Standard)");
     }
 }
 
@@ -1316,6 +1550,9 @@ void buildFace(lv_obj_t* scr) {
     lv_obj_center(sBadgeTxt);
     lv_obj_align(sBadge, LV_ALIGN_TOP_MID, 0, 14);
     lv_obj_add_flag(sBadge, LV_OBJ_FLAG_HIDDEN);
+
+    // 3-Rings Detailansicht modal
+    buildRingsDetail(sRoot);
 
     for (int i = 0; i < FACE_COUNT; i++) lv_obj_add_flag(sFaces[i], LV_OBJ_FLAG_HIDDEN);
     showFace(SettingsStorage::get().watchfaceIndex);

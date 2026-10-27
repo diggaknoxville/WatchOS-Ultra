@@ -2661,72 +2661,74 @@ void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double vi
 
             if (passPolys) {
                 if (cls == FEAT_FARMLAND) {
-                    drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(26, 36, 20));
-                    for (int k = 0; k + 1 < cnt; k++) drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], rgb565(40, 54, 30), 1);
+                    drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(32, 44, 28));
+                    for (int k = 0; k + 1 < cnt; k++) drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], rgb565(48, 64, 40), 1);
                 } else if (cls == FEAT_FOREST) {
-                    drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(16, 52, 28));
-                    for (int k = 0; k + 1 < cnt; k++) drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], rgb565(28, 78, 44), 1);
+                    drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(20, 68, 36));
+                    for (int k = 0; k + 1 < cnt; k++) drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], rgb565(36, 96, 54), 1);
                 } else if (cls == FEAT_PARK) {
-                    drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(22, 68, 36));
+                    drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(28, 85, 46));
+                    for (int k = 0; k + 1 < cnt; k++) drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], rgb565(44, 115, 66), 1);
                 } else if (cls == FEAT_URBAN) {
-                    drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(22, 28, 38));
+                    drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(26, 32, 44));
                 } else if (cls == FEAT_WATER_POLY) {
-                    drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(20, 88, 156));
+                    drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(24, 105, 185));
+                    for (int k = 0; k + 1 < cnt; k++) drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], rgb565(52, 165, 255), 1);
                 } else if (cls == FEAT_BUILDING) {
-                    uint16_t bFill = (zoom >= 15) ? rgb565(46, 54, 70) : rgb565(38, 45, 58);
-                    uint16_t bEdge = (zoom >= 15) ? rgb565(82, 94, 118) : rgb565(60, 70, 88);
+                    uint16_t bFill = (zoom >= 15) ? rgb565(52, 60, 78) : rgb565(42, 50, 65);
+                    uint16_t bEdge = (zoom >= 15) ? rgb565(95, 115, 145) : rgb565(75, 88, 110);
                     drawFilledPolygon(buf, w, h, polyX, polyY, cnt, bFill);
                     if (zoom >= 14) {
                         for (int k = 0; k + 1 < cnt; k++) drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], bEdge, 1);
                     }
                 }
             } else {
-                uint16_t coreCol = rgb565(100, 112, 132);
+                uint16_t coreCol = rgb565(120, 135, 155);
                 uint16_t caseCol = 0;
                 int coreW = 1, caseW = 0;
                 switch (cls) {
                     case FEAT_WATER:
-                        coreCol = rgb565(28, 138, 220);
+                        coreCol = rgb565(36, 150, 240);
                         coreW = (zoom >= 13) ? 3 : 2;
                         break;
                     case FEAT_BOUNDARY:
-                        coreCol = rgb565(75, 95, 125);
+                        coreCol = rgb565(85, 110, 145);
                         break;
                     case FEAT_RAIL:
-                        coreCol = rgb565(115, 125, 155);
+                        coreCol = rgb565(135, 145, 175);
                         coreW = (zoom >= 14) ? 2 : 1;
                         break;
                     case FEAT_PATH:
-                        coreCol = rgb565(92, 165, 112);
+                        coreCol = rgb565(110, 215, 140);
                         coreW = (zoom >= 15) ? 2 : 1;
                         break;
                     case FEAT_RESIDENTIAL:
-                        coreCol = rgb565(132, 145, 168);
-                        caseCol = rgb565(32, 38, 50);
+                        coreCol = rgb565(150, 165, 188);
+                        caseCol = rgb565(36, 42, 56);
                         coreW = (zoom >= 16) ? 4 : (zoom >= 15) ? 3 : (zoom >= 14) ? 2 : 1;
                         caseW = (zoom >= 14) ? (coreW + 2) : 0;
                         break;
                     case FEAT_TERTIARY:
-                        coreCol = rgb565(158, 170, 192);
-                        caseCol = rgb565(34, 40, 52);
+                        coreCol = rgb565(180, 195, 218);
+                        caseCol = rgb565(40, 48, 62);
                         coreW = (zoom >= 15) ? 4 : (zoom >= 13) ? 2 : 1;
                         caseW = (zoom >= 13) ? (coreW + 2) : 0;
                         break;
                     case FEAT_SECONDARY:
-                        coreCol = rgb565(190, 202, 222);
-                        caseCol = rgb565(38, 44, 58);
+                        coreCol = rgb565(220, 230, 245);
+                        caseCol = rgb565(46, 54, 70);
                         coreW = (zoom >= 15) ? 4 : (zoom >= 12) ? 2 : 1;
                         caseW = (zoom >= 12) ? (coreW + 2) : 0;
                         break;
                     case FEAT_PRIMARY:
-                        coreCol = rgb565(245, 192, 38);
-                        caseCol = rgb565(70, 52, 12);
+                        coreCol = rgb565(255, 198, 45);
+                        caseCol = rgb565(90, 65, 16);
                         coreW = (zoom >= 14) ? 4 : 2;
                         caseW = (zoom >= 12) ? (coreW + 2) : 0;
                         break;
                     case FEAT_MOTORWAY:
-                        coreCol = rgb565(255, 110, 28);
-                        caseCol = rgb565(85, 34, 10);
+                        coreCol = rgb565(255, 125, 34);
+                        caseCol = rgb565(110, 42, 12);
                         coreW = (zoom >= 13) ? 4 : (zoom >= 9) ? 2 : 1;
                         caseW = (zoom >= 11) ? (coreW + 2) : 0;
                         break;
@@ -2975,10 +2977,34 @@ void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double vi
             uint16_t myCol = (sStat.posSource == POS_SRC_GPS_LIVE)  ? rgb565(48, 209, 88) :
                              (sStat.posSource == POS_SRC_LORA_MESH) ? rgb565(191, 90, 242) :
                                                                       rgb565(10, 132, 255);
-            drawRing(buf, w, h, ux, uy, 11, myCol);
+            // Dynamic heading direction cone when moving
+            float spd = GpsManager::speedKmh();
+            if (spd > 2.0f || (sStat.headingDeg >= 0.0f && spd > 0.5f)) {
+                float rad = (float)sStat.headingDeg * 0.0174533f;
+                int tipX = ux + (int)(sinf(rad) * 18.0f);
+                int tipY = uy - (int)(cosf(rad) * 18.0f);
+                int wing1X = ux + (int)(sinf(rad + 2.5f) * 11.0f);
+                int wing1Y = uy - (int)(cosf(rad + 2.5f) * 11.0f);
+                int wing2X = ux + (int)(sinf(rad - 2.5f) * 11.0f);
+                int wing2Y = uy - (int)(cosf(rad - 2.5f) * 11.0f);
+                drawLine(buf, w, h, tipX, tipY, wing1X, wing1Y, myCol, 2);
+                drawLine(buf, w, h, tipX, tipY, wing2X, wing2Y, myCol, 2);
+                drawLine(buf, w, h, wing1X, wing1Y, wing2X, wing2Y, myCol, 1);
+            }
+            drawRing(buf, w, h, ux, uy, 12, myCol);
             drawFilledCircle(buf, w, h, ux, uy, 5, myCol);
             drawRing(buf, w, h, ux, uy, 6, rgb565(255, 255, 255));
         }
+    }
+
+    // Compass rose / North indicator (top-right)
+    {
+        int cx = w - 20, cy = 20;
+        drawFilledCircle(buf, w, h, cx, cy, 9, rgb565(18, 24, 36));
+        drawRing(buf, w, h, cx, cy, 10, rgb565(55, 70, 95));
+        drawLine(buf, w, h, cx, cy, cx, cy - 6, rgb565(255, 65, 65), 2);
+        drawLine(buf, w, h, cx, cy, cx, cy + 6, rgb565(210, 220, 235), 1);
+        drawMapText(buf, w, h, cx - 2, cy - 14, "N", rgb565(255, 85, 85), rgb565(10, 14, 22), 1);
     }
 
     // 11. scale bar (60 px)

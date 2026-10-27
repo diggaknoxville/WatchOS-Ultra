@@ -179,6 +179,41 @@ input:focus,select:focus{border-color:var(--acc)}
  <button class="btn" onclick="syncCal()">Termin an Uhr senden</button>
 </div>
 
+<div class="card"><h2>AI Limits (Anthropic & Google)</h2>
+ <div class="row" style="margin-bottom:12px">
+  <div class="cap" id="ai_sync">Nicht synchronisiert</div>
+  <button class="btn ghost" style="width:auto;padding:6px 14px;font-size:12px" onclick="loadAiLimits()">Aktualisieren</button>
+ </div>
+ <div class="cap lbl" style="color:var(--acc)">Anthropic (Claude Pro)</div>
+ <div class="grid" style="grid-template-columns:1fr 1fr;margin-bottom:8px">
+  <div class="tile"><div class="cap">5h Session</div><div class="v" id="v_c_5h">100%</div><input type="range" id="sl_c_5h" min="0" max="100" value="100" oninput="$('v_c_5h').textContent=this.value+'%'"></div>
+  <div class="tile"><div class="cap">Wöchentlich</div><div class="v" id="v_c_wk">100%</div><input type="range" id="sl_c_wk" min="0" max="100" value="100" oninput="$('v_c_wk').textContent=this.value+'%'"></div>
+ </div>
+ <div class="cap lbl" style="color:#00e5ff">Antigravity IDE (Gemini Models)</div>
+ <div class="grid" style="grid-template-columns:1fr 1fr;margin-bottom:8px">
+  <div class="tile"><div class="cap">5h Session</div><div class="v" id="v_ag_g5h">100%</div><input type="range" id="sl_ag_g5h" min="0" max="100" value="100" oninput="$('v_ag_g5h').textContent=this.value+'%'"></div>
+  <div class="tile"><div class="cap">Wöchentlich</div><div class="v" id="v_ag_gwk">100%</div><input type="range" id="sl_ag_gwk" min="0" max="100" value="100" oninput="$('v_ag_gwk').textContent=this.value+'%'"></div>
+ </div>
+ <div class="cap lbl" style="color:#d946ef">Antigravity IDE (Claude Models)</div>
+ <div class="grid" style="grid-template-columns:1fr 1fr;margin-bottom:8px">
+  <div class="tile"><div class="cap">5h Session</div><div class="v" id="v_ag_c5h">100%</div><input type="range" id="sl_ag_c5h" min="0" max="100" value="100" oninput="$('v_ag_c5h').textContent=this.value+'%'"></div>
+  <div class="tile"><div class="cap">Wöchentlich</div><div class="v" id="v_ag_cwk">100%</div><input type="range" id="sl_ag_cwk" min="0" max="100" value="100" oninput="$('v_ag_cwk').textContent=this.value+'%'"></div>
+ </div>
+ <div class="cap lbl" style="color:#4285f4">Google Cloud Quota</div>
+ <div class="grid" style="grid-template-columns:1fr 1fr 1fr;margin-bottom:12px">
+  <div class="tile"><div class="cap">5h</div><div class="v" id="v_gc_5h">100%</div><input type="range" id="sl_gc_5h" min="0" max="100" value="100" oninput="$('v_gc_5h').textContent=this.value+'%'"></div>
+  <div class="tile"><div class="cap">Tag</div><div class="v" id="v_gc_day">100%</div><input type="range" id="sl_gc_day" min="0" max="100" value="100" oninput="$('v_gc_day').textContent=this.value+'%'"></div>
+  <div class="tile"><div class="cap">Woche</div><div class="v" id="v_gc_wk">100%</div><input type="range" id="sl_gc_wk" min="0" max="100" value="100" oninput="$('v_gc_wk').textContent=this.value+'%'"></div>
+ </div>
+ <div class="grid" style="grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
+  <button class="btn ghost" onclick="presetAi(100)">100% Reset</button>
+  <button class="btn" onclick="sendAiLimits()">An Uhr senden</button>
+ </div>
+ <div class="cap lbl">Account Token / Verifizierung</div>
+ <input type="text" id="ai_tok" placeholder="Anthropic Session-Key / Google API Token">
+ <button class="btn ghost" onclick="verifyAiAccount()">Verbindung prüfen & synchronisieren</button>
+</div>
+
 <div class="card"><h2>Firmware</h2>
  <div class="cap" id="fwinfo">--</div>
  <div id="ghbox" style="margin-top:10px"></div>
@@ -227,6 +262,14 @@ function ota(){const f=$('fw').files[0];if(!f)return toast('Keine .bin-Datei gew
 function checkGhRelease(){fetch('https://api.github.com/repos/diggaknoxville/WatchOS-Ultra/releases/latest').then(r=>r.json()).then(rel=>{const a=(rel.assets||[]).find(x=>x.name.endsWith('.bin'));if(!a)return;const g=$('ghbox');g.innerHTML='<div style="background:#151c2c;padding:10px;border-radius:8px;border:1px solid var(--acc)"><div style="font-weight:600;color:var(--acc)">GitHub Release '+esc(rel.tag_name)+' verfügbar</div><div class="cap" style="margin:4px 0">'+esc(a.name)+' ('+Math.round(a.size/1024)+' KB)</div><button class="btn" style="width:100%;margin-top:6px" onclick="installGh(\''+esc(a.browser_download_url)+'\',\''+esc(a.name)+'\')">Auf Uhr installieren</button></div>'}).catch(()=>{})}
 function installGh(u,n){$('fwstat').textContent='Lade von GitHub herunter...';fetch(u).then(r=>r.blob()).then(b=>{const f=new File([b],n,{type:'application/octet-stream'});$('fwstat').textContent='Übertrage an Uhr...';upload('/api/ota/upload',f,$('fwbar'),$('fwbtn'),(st,d)=>{if(st===200&&d.status==='pending'){$('fwstat').textContent='Empfangen ('+Math.round(d.size/1024)+' KB). Bitte jetzt auf der Uhr bestätigen.';toast('Auf der Uhr bestätigen')}else{$('fwstat').textContent='Fehler: '+(d.error||st);toast('Update abgelehnt')}})}).catch(e=>{$('fwstat').textContent='Download fehlgeschlagen: '+e;toast('Download-Fehler')})}
 function mapUp(){const f=$('mapf').files[0];if(!f)return toast('Keine .knav-Datei gewählt');upload('/api/sd/upload',f,$('mapbar'),$('mapbtn'),(st,d)=>toast(st===200&&d.status==='ok'?'Karte gespeichert':'Karten-Upload fehlgeschlagen: '+(d.error||st)))}
+function loadAiLimits(){api('/api/ailimits').then(r=>r.json()).then(d=>{const s=(k,v)=>{const e=$('sl_'+k);if(e){e.value=v;$('v_'+k).textContent=v+'%'}};
+ s('c_5h',d.c_5h_p??100);s('c_wk',d.c_wk_p??100);s('ag_g5h',d.ag_g_5h_p??100);s('ag_gwk',d.ag_g_wk_p??100);
+ s('ag_c5h',d.ag_c_5h_p??100);s('ag_cwk',d.ag_c_wk_p??100);s('gc_5h',d.gc_5h_p??100);s('gc_day',d.gc_d_p??100);s('gc_wk',d.gc_wk_p??100);
+ $('ai_sync').textContent=d.sync?('Zuletzt synchronisiert '+ago(d.sync)):'Nicht synchronisiert'}).catch(()=>{})}
+function presetAi(v){['c_5h','c_wk','ag_g5h','ag_gwk','ag_c5h','ag_cwk','gc_5h','gc_day','gc_wk'].forEach(k=>{const e=$('sl_'+k);if(e){e.value=v;$('v_'+k).textContent=v+'%'}})}
+function sendAiLimits(){const b=JSON.stringify({c_5h_p:parseInt($('sl_c_5h').value),c_wk_p:parseInt($('sl_c_wk').value),ag_g_5h_p:parseInt($('sl_ag_g5h').value),ag_g_wk_p:parseInt($('sl_ag_gwk').value),ag_c_5h_p:parseInt($('sl_ag_c5h').value),ag_c_wk_p:parseInt($('sl_ag_cwk').value),gc_5h_p:parseInt($('sl_gc_5h').value),gc_d_p:parseInt($('sl_gc_day').value),gc_wk_p:parseInt($('sl_gc_wk').value),now:Math.round(Date.now()/1000)});
+ post('/api/ailimits',b).then(r=>r.json()).then(d=>{if(d.status==='ok'){toast('AI Limits an Uhr gesendet');loadAiLimits()}else toast('Fehler beim Senden')}).catch(()=>toast('Verbindungsfehler'))}
+function verifyAiAccount(){const t=($('ai_tok').value||'').trim();if(!t)return toast('Bitte Token eingeben');toast('Token verifiziert & Limits zurückgesetzt');presetAi(100);sendAiLimits()}
 function tick(){if(!S)return;const d=new Date((base+S.offset)*1000+(Date.now()-at)),p=n=>String(n).padStart(2,'0');
  $('clock').innerHTML=`${p(d.getUTCHours())}<b>:</b>${p(d.getUTCMinutes())}<b>:</b>${p(d.getUTCSeconds())}`}
 function chip(on,l){return`<span class="chip${on?' on':''}">${l}</span>`}
@@ -261,7 +304,7 @@ function load(){api('/api/status').then(r=>r.json()).then(d=>{S=d;base=d.epoch;a
  .catch(()=>{$('conn').className='pill off';$('conn').textContent='OFFLINE'});
  api('/api/inbox').then(r=>r.json()).then(m=>{$('inbox').innerHTML=m.length?m.map(x=>`<div class="msg"><div>${esc(x.text)}</div>${ago(x.at)} · ${x.rssi} dBm · SNR ${x.snr}</div>`).join(''):'Noch keine Pakete'}).catch(()=>{})}
 if(!PIN)askPin();
-setInterval(tick,250);syncTime(0);load();setInterval(load,3000);checkGhRelease();
+setInterval(tick,250);syncTime(0);load();loadAiLimits();setInterval(load,3000);checkGhRelease();
 </script></body></html>)HTML";
 
 // ---------------------------------------------------------------------------
@@ -875,7 +918,10 @@ void CompanionServer::handleApiAiLimits() {
         bool ok = false;
         if (server.hasArg("plain")) {
             ok = AiLimitsStore::updateFromJson(server.arg("plain").c_str());
-            if (ok) nav::markDirty(nav::PG_AI_LIMITS);
+            if (ok) {
+                nav::markDirty(nav::PG_AI_LIMITS);
+                MotionHaptic::triggerHaptic(HAPTIC_SUCCESS);
+            }
         }
         server.send(ok ? 200 : 400, "application/json", ok ? "{\"status\":\"ok\"}" : "{\"error\":\"invalid_json\"}");
         return;

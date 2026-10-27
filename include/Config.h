@@ -75,6 +75,7 @@ struct SystemSettings {
     char tzPosix[48];           // POSIX TZ rule incl. DST, e.g. "CET-1CEST,M3.5.0,M10.5.0/3"
     uint32_t dailyStepGoal;
     char customTitle[32];
+    bool timeFormat12h;         // false = 24h (default), true = 12h (AM/PM)
     // Energiesparmodus: radios + AOD off, light sleep while the display is off.
     // saverRestore remembers what the mode switched off (bit0 BLE, bit1 LoRa,
     // bit2 AOD) so turning it off restores the previous state.

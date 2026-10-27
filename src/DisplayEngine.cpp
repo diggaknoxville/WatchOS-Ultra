@@ -574,7 +574,9 @@ void DisplayEngine::update(unsigned long now) {
         if (torchOn()) {
             setTorch(false);
         } else if (!wasSleeping && !dialogOpen()) {
-            if (key == 1) {
+            if (pages::closeRingsDetailIfOpen()) {
+                haptic(HAPTIC_TICK);
+            } else if (key == 1) {
                 nav::sideKey(false);
             } else if (key == 2) {
                 nav::sideKey(true);

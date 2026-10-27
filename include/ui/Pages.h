@@ -26,6 +26,7 @@ void buildCalib(lv_obj_t* scr);
 void faceNext();
 void faceSelect(int idx);              // stores the choice and shows a toast
 bool faceShowing();
+bool closeRingsDetailIfOpen();
 const char* faceName(int idx);         // "Modular", "Bauhaus", ...
 const char* faceDescription(int idx);  // one-line German description
 }

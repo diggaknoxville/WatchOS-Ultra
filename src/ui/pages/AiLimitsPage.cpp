@@ -7,6 +7,8 @@
 #include "ui/Navigator.h"
 #include "AiLimitsStore.h"
 #include "BleCompanion.h"
+#include "CompanionServer.h"
+#include "DisplayEngine.h"
 #include <time.h>
 
 using namespace ui;
@@ -30,6 +32,7 @@ static lv_obj_t *sBleDot, *sSyncTxt;
 static lv_obj_t *sModeBtn, *sModeTxt;
 static lv_obj_t *sCards[3], *sEmpty;
 static lv_obj_t *sAgGemCap, *sAgCldCap, *sGcCapPro, *sGcCapFls, *sGcCapDay;
+static lv_obj_t *sStaleBanner, *sStaleTxt;
 
 // Sektion 1: Anthropic
 static lv_obj_t *sAnthRing5h, *sAnthRingWk;
@@ -74,6 +77,8 @@ static void refresh(bool) {
     }
 
     setBgColorIf(sBleDot, ble ? cOk() : cStroke());
+    time_t now = time(nullptr);
+    uint32_t syncAge = (now > (time_t)d.last_sync_time) ? (uint32_t)(now - d.last_sync_time) : 0;
     if (d.last_sync_time) {
         char a[24];
         ago(a, sizeof(a), (time_t)d.last_sync_time);
@@ -82,6 +87,15 @@ static void refresh(bool) {
         snprintf(buf, sizeof(buf), "OFFLINE");
     }
     setText(sSyncTxt, buf);
+
+    bool isStale = (syncAge > 12 * 3600);
+    setHidden(sStaleBanner, !isStale);
+    if (isStale) {
+        char sbuf[64];
+        if (syncAge < 86400) snprintf(sbuf, sizeof(sbuf), "Veraltet (vor %uh) • Tippen fuer Update >", (unsigned)(syncAge / 3600));
+        else snprintf(sbuf, sizeof(sbuf), "Veraltet (vor %ud) • Tippen fuer Update >", (unsigned)(syncAge / 86400));
+        setText(sStaleTxt, sbuf);
+    }
 
     // honest empty state: nothing has ever been received from the companion app
     setHidden(sEmpty, d.has_data);
@@ -368,6 +382,25 @@ void buildAiLimits(lv_obj_t* scr) {
     lv_obj_set_style_bg_color(sArgonBar, COL_ARGON, LV_PART_INDICATOR);
     lv_obj_set_style_bg_opa(sArgonBar, LV_OPA_COVER, LV_PART_INDICATOR);
     lv_obj_set_style_radius(sArgonBar, 3, LV_PART_INDICATOR);
+
+    // Stale reminder banner
+    sStaleBanner = lv_obj_create(p);
+    lv_obj_set_size(sStaleBanner, CW, 34);
+    lv_obj_align(sStaleBanner, LV_ALIGN_BOTTOM_MID, 0, -6);
+    lv_obj_set_style_bg_color(sStaleBanner, lv_color_hex(0x3E2400), 0);
+    lv_obj_set_style_bg_opa(sStaleBanner, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(sStaleBanner, cWarn(), 0);
+    lv_obj_set_style_border_width(sStaleBanner, 1, 0);
+    lv_obj_set_style_radius(sStaleBanner, 17, 0);
+    pressable(sStaleBanner);
+    sStaleTxt = label(sStaleBanner, F.cap, cWarn(), "Update noetig: Tippen fuer Hotspot >");
+    lv_obj_center(sStaleTxt);
+    lv_obj_add_event_cb(sStaleBanner, [](lv_event_t*) {
+        CompanionServer::requestAp(true);
+        DisplayEngine::showToast("WLAN-Hotspot", "Aktiv fuer Handy-Update", 3000, ICO_WIFI);
+        haptic(HAPTIC_CLICK);
+    }, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_flag(sStaleBanner, LV_OBJ_FLAG_HIDDEN);
 
     // Register with navigator
     refresh(true);

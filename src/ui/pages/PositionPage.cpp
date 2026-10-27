@@ -115,6 +115,16 @@ static void redrawCanvas(const NavStatus& st) {
     sViewLat = lat;
     sViewLon = lon;
     NavEngine::renderMap(sMapBuf, MAP_W, MAP_H, lat, lon, sZoom);
+    if (sManualPan) {
+        int cx = MAP_W / 2, cy = MAP_H / 2;
+        uint16_t chCol = (uint16_t)0x07FF; // cyan
+        for (int i = -6; i <= 6; i++) {
+            if (i != 0) {
+                if (cx + i >= 0 && cx + i < MAP_W) sMapBuf[cy * MAP_W + (cx + i)] = chCol;
+                if (cy + i >= 0 && cy + i < MAP_H) sMapBuf[(cy + i) * MAP_W + cx] = chCol;
+            }
+        }
+    }
     lv_obj_invalidate(sMapImg);
     sLastRenderedLat = lat;
     sLastRenderedLon = lon;
@@ -495,7 +505,7 @@ void buildPosition(lv_obj_t* scr) {
 
     lv_obj_t* zIn = hudButton(sMapCard, MAP_W - 44, 8, 36, 36, "+");
     lv_obj_add_event_cb(zIn, [](lv_event_t*) {
-        if (sZoom < 16) sZoom++;
+        if (sZoom < 17) sZoom++;
         sAutoZoom = false;
         sManualInteractMs = millis();
         sMapNeedsRedraw = true;
