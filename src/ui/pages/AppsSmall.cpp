@@ -198,43 +198,48 @@ void buildPower(lv_obj_t* scr) {
     return true;
 }
 
-static lv_obj_t *cnActive, *cnInactive, *cnQr, *cnSsid, *cnPw, *cnPin, *cnBle, *cnStartBtn, *cnStatusPill;
+static lv_obj_t *cnQr, *cnSsid, *cnPw, *cnPin, *cnBleStatus, *cnBlePin, *cnBleToggleBtn, *cnHotspotToggleBtn, *cnStatusPill;
 static char cnPayload[96] = {0};
 
 static void refreshConnect(bool) {
-    char b[80];
+    char b[96];
     bool ap = CompanionServer::isApActive();
     bool want = SettingsStorage::get().wifiApEnabled;
-    setHidden(cnActive, !ap);
-    setHidden(cnInactive, ap);
+    const char* name = CompanionServer::getApName();
+    const char* pw = CompanionServer::getApPassword();
+    const char* pin = CompanionServer::getPortalPin();
+
+    setPill(cnStatusPill, ap ? "HOTSPOT AKTIV" : (want ? "STARTET..." : "HOTSPOT AUS"),
+            ap ? cOk() : (want ? cWarn() : cText2()));
+
+    // Generate/update QR code immediately so it's always ready to scan
+    char payload[96];
+    snprintf(payload, sizeof(payload), "WIFI:T:WPA;S:%s;P:%s;;", name ? name : "WatchOS-Ultra", pw ? pw : "");
+    if (strcmp(payload, cnPayload) != 0) {
+        strncpy(cnPayload, payload, sizeof(cnPayload) - 1);
+        cnPayload[sizeof(cnPayload) - 1] = 0;
+        lv_qrcode_update(cnQr, cnPayload, strlen(cnPayload));
+    }
+
+    setText(cnSsid, name ? name : "WatchOS-Ultra");
+    snprintf(b, sizeof(b), "WLAN-PW:  %s", pw ? pw : "--");
+    setText(cnPw, b);
+    snprintf(b, sizeof(b), "PORTAL-PIN:  %s", (pin && pin[0]) ? pin : "123456");
+    setText(cnPin, b);
+
     if (ap) {
-        setPill(cnStatusPill, "HOTSPOT AKTIV", cOk());
-        const char* name = CompanionServer::getApName();
-        const char* pw = CompanionServer::getApPassword();
-        const char* pin = CompanionServer::getPortalPin();
-        char payload[96];
-        snprintf(payload, sizeof(payload), "WIFI:T:WPA;S:%s;P:%s;;", name ? name : "", pw ? pw : "");
-        if (strcmp(payload, cnPayload) != 0) {
-            strncpy(cnPayload, payload, sizeof(cnPayload) - 1);
-            cnPayload[sizeof(cnPayload) - 1] = 0;
-            lv_qrcode_update(cnQr, cnPayload, strlen(cnPayload));
-        }
-        setText(cnSsid, name ? name : "--");
-        snprintf(b, sizeof(b), "PASSWORT  %s", pw ? pw : "--");
-        setText(cnPw, b);
-        snprintf(b, sizeof(b), "PORTAL-PIN  %s", pin ? pin : "--");
-        setText(cnPin, b);
+        setButtonText(cnHotspotToggleBtn, "Hotspot stoppen");
+        setButtonEnabled(cnHotspotToggleBtn, true);
     } else {
-        setPill(cnStatusPill, want ? "HOTSPOT STARTET" : "HOTSPOT AUS", want ? cWarn() : cText2());
-        setButtonText(cnStartBtn, want ? "Hotspot startet..." : "Hotspot starten");
-        setButtonEnabled(cnStartBtn, !want);
+        setButtonText(cnHotspotToggleBtn, want ? "Hotspot startet..." : "Hotspot einschalten");
+        setButtonEnabled(cnHotspotToggleBtn, !want);
     }
-    if (BleCompanion::isEnabled()) {
-        snprintf(b, sizeof(b), "Bluetooth: %s", BleCompanion::isConnected() ? "Verbunden" : "Bereit zur Kopplung");
-    } else {
-        snprintf(b, sizeof(b), "Bluetooth ist aus");
-    }
-    setText(cnBle, b);
+
+    bool ble = BleCompanion::isEnabled();
+    bool bleConn = BleCompanion::isConnected();
+    snprintf(b, sizeof(b), "Status: %s", ble ? (bleConn ? "Verbunden" : "Bereit zur Kopplung") : "Deaktiviert");
+    setText(cnBleStatus, b);
+    setButtonText(cnBleToggleBtn, ble ? "Bluetooth ausschalten" : "Bluetooth einschalten");
 }
 
 void buildConnect(lv_obj_t* scr) {
@@ -243,58 +248,87 @@ void buildConnect(lv_obj_t* scr) {
     cnStatusPill = pill(p, "HOTSPOT AUS", cText2());
     lv_obj_align(cnStatusPill, LV_ALIGN_TOP_RIGHT, -M_HEAD, 26);
 
-    // --- hotspot running: QR + credentials ---
-    cnActive = box(p, SCR_W, SCR_H - CONTENT_Y);
-    lv_obj_set_pos(cnActive, 0, CONTENT_Y);
-    lv_obj_t* frame = box(cnActive, 196, 196);
-    lv_obj_align(frame, LV_ALIGN_TOP_MID, 0, 0);
-    lv_obj_set_style_radius(frame, 20, 0);
+    lv_obj_t* list = lv_obj_create(p);
+    lv_obj_set_pos(list, 0, CONTENT_Y);
+    lv_obj_set_size(list, SCR_W, SCR_H - CONTENT_Y);
+    lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(list, 0, 0);
+    lv_obj_set_style_radius(list, 0, 0);
+    lv_obj_set_scroll_dir(list, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_hor(list, M, 0);
+    lv_obj_set_style_pad_ver(list, 8, 0);
+    lv_obj_set_style_pad_row(list, 14, 0);
+
+    // --- CARD 1: WLAN / WEB-PORTAL & QR CODE ---
+    lv_obj_t* cWifi = card(list, CW, 376);
+    lv_obj_set_style_radius(cWifi, R_TILE, 0);
+    lv_obj_t* wTitle = caption(cWifi, "WLAN COMPANION & WEB-PORTAL", cOk());
+    lv_obj_align(wTitle, LV_ALIGN_TOP_MID, 0, 10);
+
+    lv_obj_t* frame = box(cWifi, 168, 168);
+    lv_obj_align(frame, LV_ALIGN_TOP_MID, 0, 32);
+    lv_obj_set_style_radius(frame, 14, 0);
     lv_obj_set_style_bg_opa(frame, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(frame, lv_color_white(), 0);
     cnQr = lv_qrcode_create(frame);
-    lv_qrcode_set_size(cnQr, 172);
+    lv_qrcode_set_size(cnQr, 152);
     lv_qrcode_set_dark_color(cnQr, lv_color_black());
     lv_qrcode_set_light_color(cnQr, lv_color_white());
-    lv_qrcode_update(cnQr, "WIFI:T:WPA;S:-;P:-;;", 20);
+    lv_qrcode_update(cnQr, "WIFI:T:WPA;S:WatchOS-Ultra;P:12345678;;", 38);
     lv_obj_center(cnQr);
 
-    cnSsid = label(cnActive, F.body, cText(), "--");
-    lv_obj_align(cnSsid, LV_ALIGN_TOP_MID, 0, 208);
-    cnPw = caption(cnActive, "PASSWORT  --", cText2());
-    lv_obj_align(cnPw, LV_ALIGN_TOP_MID, 0, 242);
-    cnPin = caption(cnActive, "PORTAL-PIN  --", accent());
+    cnSsid = label(cWifi, F.body, cText(), "WatchOS-Ultra");
+    lv_obj_align(cnSsid, LV_ALIGN_TOP_MID, 0, 206);
+    cnPw = caption(cWifi, "WLAN-PW:  --", cText2());
+    lv_obj_align(cnPw, LV_ALIGN_TOP_MID, 0, 230);
+    cnPin = caption(cWifi, "PORTAL-PIN:  --", accent());
     accReg(cnPin, ACC_TEXT);
-    lv_obj_align(cnPin, LV_ALIGN_TOP_MID, 0, 266);
-    lv_obj_t* hint = label(cnActive, F.small, cText3(), "QR scannen, dann 192.168.4.1 öffnen");
-    lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, 296);
+    lv_obj_align(cnPin, LV_ALIGN_TOP_MID, 0, 252);
+    lv_obj_t* hint = caption(cWifi, "QR scannen • Portal: 192.168.4.1", cText3());
+    lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, 274);
 
-    // --- hotspot off: explain + start button ---
-    cnInactive = box(p, SCR_W, SCR_H - CONTENT_Y);
-    lv_obj_set_pos(cnInactive, 0, CONTENT_Y);
-    lv_obj_t* es = emptyState(cnInactive, ICO_WIFI_OFF, "Hotspot ist aus",
-                              "Startet ein WLAN für die Companion-Web-App");
-    lv_obj_align(es, LV_ALIGN_TOP_MID, 0, 8);
-    cnStartBtn = primaryButton(cnInactive, CW, BTN_H, ICO_WIFI, "Hotspot starten");
-    lv_obj_align(cnStartBtn, LV_ALIGN_TOP_MID, 0, 200);
-    lv_obj_add_event_cb(cnStartBtn, [](lv_event_t*) {
+    cnHotspotToggleBtn = primaryButton(cWifi, CW - 24, 44, ICO_WIFI, "Hotspot einschalten");
+    lv_obj_align(cnHotspotToggleBtn, LV_ALIGN_TOP_MID, 0, 308);
+    lv_obj_add_event_cb(cnHotspotToggleBtn, [](lv_event_t*) {
         SystemSettings& s = SettingsStorage::get();
-        s.wifiApEnabled = true;                     // explicit user action
+        bool active = CompanionServer::isApActive();
+        s.wifiApEnabled = !active;
         SettingsStorage::save();
-        CompanionServer::requestAp(true);
+        CompanionServer::requestAp(!active);
         haptic(HAPTIC_CLICK);
-        DisplayEngine::showToast("Hotspot", "Wird gestartet...", 2000, ICO_WIFI);
+        DisplayEngine::showToast("Hotspot", !active ? "Wird gestartet..." : "Beendet", 2000, ICO_WIFI);
         nav::markDirty(nav::PG_CONTROL);
         refreshConnect(true);
     }, LV_EVENT_CLICKED, NULL);
 
-    // --- Bluetooth line (both states) ---
-    cnBle = label(p, F.small, cText2(), "Bluetooth ist aus");
-    lv_obj_set_width(cnBle, CW);
-    lv_obj_set_style_text_align(cnBle, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(cnBle, LV_ALIGN_BOTTOM_MID, 0, -56);
+    // --- CARD 2: BLUETOOTH LOW ENERGY ---
+    lv_obj_t* cBle = card(list, CW, 218);
+    lv_obj_set_style_radius(cBle, R_TILE, 0);
+    lv_obj_t* bTitle = caption(cBle, "BLUETOOTH LOW ENERGY", lv_color_hex(0x0A84FF));
+    lv_obj_align(bTitle, LV_ALIGN_TOP_MID, 0, 10);
 
-    lv_obj_t* btnResetBonds = secondaryButton(p, CW, 38, ICO_REFRESH, "BLE-Kopplungen löschen");
-    lv_obj_align(btnResetBonds, LV_ALIGN_BOTTOM_MID, 0, -12);
+    lv_obj_t* bDev = label(cBle, F.body, cText(), "Gerät: WatchOS Ultra");
+    lv_obj_align(bDev, LV_ALIGN_TOP_MID, 0, 34);
+    cnBlePin = label(cBle, F.title, accent(), "PIN: 123456");
+    accReg(cnBlePin, ACC_TEXT);
+    lv_obj_align(cnBlePin, LV_ALIGN_TOP_MID, 0, 58);
+    cnBleStatus = caption(cBle, "Status: Bereit zur Kopplung", cText2());
+    lv_obj_align(cnBleStatus, LV_ALIGN_TOP_MID, 0, 92);
+
+    cnBleToggleBtn = secondaryButton(cBle, CW - 24, 40, ICO_SMARTPHONE, "Bluetooth umschalten");
+    lv_obj_align(cnBleToggleBtn, LV_ALIGN_TOP_MID, 0, 118);
+    lv_obj_add_event_cb(cnBleToggleBtn, [](lv_event_t*) {
+        bool en = !BleCompanion::isEnabled();
+        BleCompanion::setEnabled(en);
+        haptic(HAPTIC_TICK);
+        DisplayEngine::showToast("Bluetooth", en ? "Aktiviert" : "Deaktiviert", 2000, ICO_SMARTPHONE);
+        refreshConnect(true);
+    }, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t* btnResetBonds = secondaryButton(cBle, CW - 24, 40, ICO_REFRESH, "Kopplungen löschen (Reset)");
+    lv_obj_align(btnResetBonds, LV_ALIGN_TOP_MID, 0, 164);
     lv_obj_add_event_cb(btnResetBonds, [](lv_event_t*) {
         BleCompanion::resetBonds();
         haptic(HAPTIC_SUCCESS);
@@ -302,7 +336,6 @@ void buildConnect(lv_obj_t* scr) {
         refreshConnect(true);
     }, LV_EVENT_CLICKED, NULL);
 
-    setHidden(cnActive, true);
     refreshConnect(true);
 
     nav::PageDef d;
@@ -311,7 +344,6 @@ void buildConnect(lv_obj_t* scr) {
     d.refreshMs = 1000;
     d.ttlMs = 5000;
     d.onShow = [] {
-        // never start the AP from a builder; only if the user has enabled it
         if (SettingsStorage::get().wifiApEnabled && !CompanionServer::isApActive()) CompanionServer::requestAp(true);
     };
     nav::registerPage(nav::PG_APP_CONNECT, d);

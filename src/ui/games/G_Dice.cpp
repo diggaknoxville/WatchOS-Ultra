@@ -36,11 +36,12 @@ void showFace(Die& d, int f) {
     for (int i = 0; i < 9; i++) setHidden(d.pip[i], !FACES[f][i]);
 }
 
-void makeDie(lv_obj_t* area, Die& d, int x, int y, lv_color_t col) {
+void makeDie(lv_obj_t* area, Die& d, int x, int y, lv_color_t col, lv_color_t pipCol) {
+    rect(area, x - 2, y - 2, D + 4, D + 4, lv_color_hex(0x232E42), 16);
     d.body = rect(area, x, y, D, D, col, 14);
     for (int i = 0; i < 9; i++) {
         int cx = x + D / 2 + ((i % 3) - 1) * 22, cy = y + D / 2 + ((i / 3) - 1) * 22;
-        d.pip[i] = disc(area, cx, cy, PIP, lv_color_hex(0x101318));
+        d.pip[i] = disc(area, cx, cy, PIP, pipCol);
     }
     showFace(d, 1);
 }
@@ -53,20 +54,20 @@ void status() {
 
 void build(lv_obj_t* area) {
     const int cx = SCR_W / 2;
-    sYou = text(area, F.cap, cText2(), "DU");
+    sYou = text(area, F.cap, accent(), "DU (SPIELER)");
     lv_obj_set_style_text_letter_space(sYou, 2, 0);
     lv_obj_align(sYou, LV_ALIGN_TOP_MID, 0, 96);
-    makeDie(area, sDie[0], cx - D - 12, 118, lv_color_hex(0xF4F6FA));
-    makeDie(area, sDie[1], cx + 12, 118, lv_color_hex(0xF4F6FA));
+    makeDie(area, sDie[0], cx - D - 12, 118, lv_color_hex(0xF8FAFC), lv_color_hex(0x0F172A));
+    makeDie(area, sDie[1], cx + 12, 118, lv_color_hex(0xF8FAFC), lv_color_hex(0x0F172A));
     sMsg = text(area, F.body, cText(), "");
     lv_obj_set_width(sMsg, CW);
     lv_obj_set_style_text_align(sMsg, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(sMsg, LV_ALIGN_TOP_MID, 0, 214);
-    sWatch = text(area, F.cap, cText2(), "UHR");
+    sWatch = text(area, F.cap, lv_color_hex(0x00E5FF), "WATCH ULTRA");
     lv_obj_set_style_text_letter_space(sWatch, 2, 0);
     lv_obj_align(sWatch, LV_ALIGN_TOP_MID, 0, 262);
-    makeDie(area, sDie[2], cx - D - 12, 284, lv_color_hex(0x9BA4B4));
-    makeDie(area, sDie[3], cx + 12, 284, lv_color_hex(0x9BA4B4));
+    makeDie(area, sDie[2], cx - D - 12, 284, lv_color_hex(0x1E293B), lv_color_hex(0x00E5FF));
+    makeDie(area, sDie[3], cx + 12, 284, lv_color_hex(0x1E293B), lv_color_hex(0x00E5FF));
 }
 
 void start() {

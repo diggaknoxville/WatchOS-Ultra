@@ -26,10 +26,9 @@ constexpr int AREA_W = AREA_X1 - AREA_X0;    // 330
 constexpr int AREA_H = AREA_Y1 - AREA_Y0;    // 368
 
 // Tilt axis mapping (orientation from the BHI260 game rotation vector). The
-// signs make "tilt the watch towards the right / towards you" move things
-// right / down; flip them here if the hardware mounts the sensor mirrored.
-constexpr float TILT_SIGN_X = 1.0f;
-constexpr float TILT_SIGN_Y = 1.0f;
+// signs make lowering an edge roll downhill towards that edge (gravity direction).
+constexpr float TILT_SIGN_X = -1.0f;
+constexpr float TILT_SIGN_Y = -1.0f;
 constexpr float TILT_FULL = 0.34f;           // sin(20 deg): full deflection
 
 enum Swipe : uint8_t { SW_NONE = 0, SW_UP, SW_RIGHT, SW_DOWN, SW_LEFT };

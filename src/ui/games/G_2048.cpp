@@ -19,10 +19,10 @@ bool over;
 
 uint32_t colorFor(uint16_t v) {
     switch (v) {
-        case 2: return 0x2A2F3A; case 4: return 0x3A4252; case 8: return 0xC46A2A;
-        case 16: return 0xD8842E; case 32: return 0xE06A3C; case 64: return 0xE54A2A;
-        case 128: return 0xC9A227; case 256: return 0xD4AD1C; case 512: return 0xE0B70F;
-        case 1024: return 0xEBC000; case 2048: return 0xFFD60A; default: return 0x30D158;
+        case 2: return 0x364156; case 4: return 0x485673; case 8: return 0xD35400;
+        case 16: return 0xE67E22; case 32: return 0xE74C3C; case 64: return 0xC0392B;
+        case 128: return 0xF39C12; case 256: return 0xF1C40F; case 512: return 0x27AE60;
+        case 1024: return 0x8E44AD; case 2048: return 0x2ECC71; default: return 0x00E5FF;
     }
 }
 
@@ -106,10 +106,11 @@ bool canMove() {
 }
 
 void build(lv_obj_t* area) {
-    rect(area, OX - GAP, OY - GAP, N * TS + (N + 1) * GAP, N * TS + (N + 1) * GAP, lv_color_hex(0x0B0E14), 12);
+    rect(area, OX - GAP - 3, OY - GAP - 3, N * TS + (N + 1) * GAP + 6, N * TS + (N + 1) * GAP + 6, lv_color_hex(0x232E42), 16);
+    rect(area, OX - GAP, OY - GAP, N * TS + (N + 1) * GAP, N * TS + (N + 1) * GAP, lv_color_hex(0x0C1019), 12);
     for (int r = 0; r < N; r++)
         for (int c = 0; c < N; c++) {
-            tile[r][c] = rect(area, OX + c * (TS + GAP), OY + r * (TS + GAP), TS, TS, lv_color_hex(0x151922), 8);
+            tile[r][c] = rect(area, OX + c * (TS + GAP), OY + r * (TS + GAP), TS, TS, lv_color_hex(0x192130), 10);
             lbl[r][c] = text(tile[r][c], F.numS, cText(), "");
             lv_obj_center(lbl[r][c]);
         }

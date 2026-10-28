@@ -302,12 +302,14 @@ void buildFolder(lv_obj_t* scr) {
             haptic(HAPTIC_TICK);
             launch((int)(intptr_t)lv_event_get_user_data(e));
         }, LV_EVENT_CLICKED, (void*)(intptr_t)i);
-        lv_obj_t* d = box(t, 62, 62);
+        lv_obj_t* d = box(t, 64, 64);
         lv_obj_remove_flag(d, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_align(d, LV_ALIGN_TOP_MID, 0, 0);
-        lv_obj_set_style_radius(d, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_radius(d, 18, 0);
         lv_obj_set_style_bg_opa(d, LV_OPA_COVER, 0);
         lv_obj_set_style_bg_color(d, lv_color_hex(g.color), 0);
+        lv_obj_set_style_border_width(d, 1, 0);
+        lv_obj_set_style_border_color(d, lv_color_hex(0x3B4A66), 0);
         lv_obj_t* ic = label(d, F.icoM, lv_color_white(), g.icon);
         lv_obj_center(ic);
         lv_obj_t* nm = label(t, F.cap, cText(), g.name);

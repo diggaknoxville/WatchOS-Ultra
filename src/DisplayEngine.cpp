@@ -545,14 +545,20 @@ bool DisplayEngine::init() {
 
     uint32_t tw = millis();
     nav::warmup([](float p) { setBootBar(BOOT_SUBSYS_SHARE + p * (1.0f - BOOT_SUBSYS_SHARE)); });
+    setBootBar(1.0f);
     Serial.printf("[UI] warm-up: all pages rendered in %lu ms\n", (unsigned long)(millis() - tw));
-    nav::bootReveal(nav::PG_FACE);
+
+    // Delete splash overlay before reveal so it cannot linger or overlap behind LVGL
     lv_display_t* dsp = lv_display_get_default();
     lv_display_enable_invalidation(dsp, false);
-    lv_obj_delete(sSplash);                     // glass already shows the face
-    sSplash = nullptr;
-    sBootBar = nullptr;
+    if (sSplash) {
+        lv_obj_delete(sSplash);
+        sSplash = nullptr;
+        sBootBar = nullptr;
+    }
     lv_display_enable_invalidation(dsp, true);
+
+    nav::bootReveal(nav::PG_FACE);
 
     lv_display_add_event_cb(dsp, perfRenderEvent, LV_EVENT_RENDER_START, NULL);
     lv_display_add_event_cb(dsp, perfRenderEvent, LV_EVENT_RENDER_READY, NULL);

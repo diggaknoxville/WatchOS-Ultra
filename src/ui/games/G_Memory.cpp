@@ -25,15 +25,16 @@ bool over;
 
 void show(int i) {
     bool vis = up[i] || done[i];
-    tint(card_[i], done[i] ? lv_color_hex(0x173A24) : (vis ? cSurf2() : cSurf()));
+    tint(card_[i], done[i] ? lv_color_hex(0x0E3A20) : (vis ? lv_color_hex(0x243248) : lv_color_hex(0x161E2E)));
+    lv_obj_set_style_border_color(card_[i], done[i] ? lv_color_hex(0x2ECC71) : (vis ? accent() : lv_color_hex(0x2B3A52)), 0);
     setHidden(icon_[i], !vis);
 }
 
 void build(lv_obj_t* area) {
     for (int i = 0; i < 16; i++) {
-        card_[i] = rect(area, OX + (i % N) * (CS + GAP), OY + (i / N) * (CS + GAP), CS, CS, cSurf(), 12);
-        lv_obj_set_style_border_width(card_[i], 1, 0);
-        lv_obj_set_style_border_color(card_[i], cStroke(), 0);
+        card_[i] = rect(area, OX + (i % N) * (CS + GAP), OY + (i / N) * (CS + GAP), CS, CS, lv_color_hex(0x161E2E), 12);
+        lv_obj_set_style_border_width(card_[i], 2, 0);
+        lv_obj_set_style_border_color(card_[i], lv_color_hex(0x2B3A52), 0);
         icon_[i] = text(card_[i], F.icoM, cText(), "");
         lv_obj_center(icon_[i]);
     }

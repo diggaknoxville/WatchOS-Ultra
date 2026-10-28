@@ -39,13 +39,14 @@ void newGap(int i) {
 }
 
 void build(lv_obj_t* area) {
-    lv_color_t pc = lv_color_hex(0x30D158);
+    rect(area, AREA_X0 - 4, SKY0, AREA_W + 8, GROUND - SKY0 + 8, lv_color_hex(0x0A1326), 10);
+    lv_color_t pc = lv_color_hex(0x2ECC71);
     for (int i = 0; i < NP; i++) {
-        sTop[i] = rect(area, 0, SKY0, PW, 10, pc, 4);
-        sBot[i] = rect(area, 0, GROUND, PW, 10, pc, 4);
+        sTop[i] = rect(area, 0, SKY0, PW, 10, pc, 6);
+        sBot[i] = rect(area, 0, GROUND, PW, 10, pc, 6);
     }
-    sGround = rect(area, AREA_X0, GROUND, AREA_W, 3, cStroke());
-    sBird = rect(area, BX, 0, BW, BH, lv_color_hex(0xFFD60A), 8);
+    sGround = rect(area, AREA_X0 - 4, GROUND, AREA_W + 8, 4, lv_color_hex(0x27AE60));
+    sBird = rect(area, BX, 0, BW, BH, lv_color_hex(0xFFD60A), 10);
 }
 
 void start() {

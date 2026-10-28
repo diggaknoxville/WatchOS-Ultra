@@ -45,11 +45,12 @@ void placeFood() {
 }
 
 void build(lv_obj_t* area) {
-    rect(area, OX - 2, OY - 2, COLS * CS + 4, ROWS * CS + 4, lv_color_hex(0x0B0E14), 6);
+    rect(area, OX - 4, OY - 4, COLS * CS + 8, ROWS * CS + 8, lv_color_hex(0x222E42), 10);
+    rect(area, OX - 2, OY - 2, COLS * CS + 4, ROWS * CS + 4, lv_color_hex(0x090D14), 8);
     for (int i = 0; i < MAXLEN; i++) {
-        seg[i] = rect(area, 0, 0, CS - 2, CS - 2, i == 0 ? cText() : accent(), 5);
+        seg[i] = rect(area, 0, 0, CS - 2, CS - 2, i == 0 ? lv_color_hex(0x69F0AE) : lv_color_hex(0x00C853), 6);
     }
-    sFood = rect(area, 0, 0, CS - 6, CS - 6, cCrit(), LV_RADIUS_CIRCLE);
+    sFood = rect(area, 0, 0, CS - 4, CS - 4, lv_color_hex(0xFF1744), LV_RADIUS_CIRCLE);
 }
 
 void start() {

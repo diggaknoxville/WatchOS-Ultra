@@ -12,7 +12,7 @@ const int OX = AREA_X0 + (AREA_W - (BRK_COLS * (BRK_W + BRK_GAP) - BRK_GAP)) / 2
 const int OY = 92;
 const int PW = 72, PH = 10, PY = AREA_Y1 - 22;
 const int BALL = 12;
-const uint32_t ROWCOL[BRK_ROWS] = {0xFF453A, 0xFF9F0A, 0xFFD60A, 0x30D158, 0x64D2FF};
+const uint32_t ROWCOL[BRK_ROWS] = {0xFF2A6D, 0xFF7700, 0xFFEA00, 0x05FFA1, 0x00F0FF};
 
 lv_obj_t* sBrick[BRK_ROWS][BRK_COLS];
 lv_obj_t* sPaddle;
@@ -46,12 +46,14 @@ void serve() {
 }
 
 void build(lv_obj_t* area) {
-    rect(area, AREA_X0, AREA_Y0 + 6, AREA_W, 2, cStroke());
+    rect(area, AREA_X0 - 4, AREA_Y0 + 2, AREA_W + 8, 2, lv_color_hex(0x00F0FF));
+    rect(area, AREA_X0 - 4, AREA_Y0 + 2, 2, AREA_H, lv_color_hex(0x1B2538));
+    rect(area, AREA_X1 + 2, AREA_Y0 + 2, 2, AREA_H, lv_color_hex(0x1B2538));
     for (int r = 0; r < BRK_ROWS; r++)
         for (int c = 0; c < BRK_COLS; c++)
             sBrick[r][c] = rect(area, OX + c * (BRK_W + BRK_GAP), OY + r * (BRK_H + BRK_GAP), BRK_W, BRK_H, lv_color_hex(ROWCOL[r]), 4);
-    sPaddle = rect(area, 0, PY, PW, PH, cText(), 5);
-    sBall = disc(area, 0, 0, BALL, accent());
+    sPaddle = rect(area, 0, PY, PW, PH, lv_color_hex(0xFFFFFF), 5);
+    sBall = disc(area, 0, 0, BALL, lv_color_hex(0xFFFFFF));
 }
 
 void start() {

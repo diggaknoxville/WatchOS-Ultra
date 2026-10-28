@@ -244,9 +244,15 @@ void buildControl(lv_obj_t* scr) {
     sInfoLbl = caption(sInfoCard, "", cText2());
     lv_obj_set_pos(sInfoLbl, 50, 44);
 
-    lv_obj_t* appBtn = secondaryButton(sWrapToggles, CW, 48, ICO_APPS, "Alle Apps");
+    // Navigation buttons: Apps + Einstellungen
+    const int subBtnW = (CW - 10) / 2;
+    lv_obj_t* appBtn = secondaryButton(sWrapToggles, subBtnW, 46, ICO_APPS, "Apps");
     lv_obj_set_pos(appBtn, M, mediaY + 92);
     lv_obj_add_event_cb(appBtn, [](lv_event_t*) { haptic(HAPTIC_TICK); nav::go(nav::PG_LAUNCHER); }, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t* setBtn = primaryButton(sWrapToggles, subBtnW, 46, ICO_SETTINGS, "Optionen");
+    lv_obj_set_pos(setBtn, M + subBtnW + 10, mediaY + 92);
+    lv_obj_add_event_cb(setBtn, [](lv_event_t*) { haptic(HAPTIC_TICK); nav::openApp(nav::PG_APP_SETTINGS); }, LV_EVENT_CLICKED, NULL);
 
     // ===================================================== tab 1: SYSTEM
     sWrapSystem = box(p, SCR_W, SCR_H - GRID_Y);
@@ -322,8 +328,12 @@ void buildControl(lv_obj_t* scr) {
         refresh(true);
     }, nullptr);
 
-    lv_obj_t* pwrBtn = secondaryButton(sWrapSystem, CW, 48, ICO_POWER_SETTINGS_NEW, "Energie / Neustart");
-    lv_obj_set_pos(pwrBtn, M, 280);
+    lv_obj_t* setBtn2 = primaryButton(sWrapSystem, subBtnW, 46, ICO_SETTINGS, "Optionen");
+    lv_obj_set_pos(setBtn2, M, 282);
+    lv_obj_add_event_cb(setBtn2, [](lv_event_t*) { haptic(HAPTIC_TICK); nav::openApp(nav::PG_APP_SETTINGS); }, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t* pwrBtn = secondaryButton(sWrapSystem, subBtnW, 46, ICO_POWER_SETTINGS_NEW, "Energie");
+    lv_obj_set_pos(pwrBtn, M + subBtnW + 10, 282);
     lv_obj_add_event_cb(pwrBtn, [](lv_event_t*) { haptic(HAPTIC_TICK); nav::openApp(nav::PG_APP_POWER); }, LV_EVENT_CLICKED, NULL);
 
     // bottom grabber

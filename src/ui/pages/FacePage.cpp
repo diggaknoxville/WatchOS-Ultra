@@ -46,25 +46,25 @@ static int sShown = -1;
 
 static const char* FACE_NAMES[FACE_COUNT] = {
     "Modular", "Chronometer", "Minimal", "Wayfinder Ultra",
-    "Tourbillon", "Casio Vintage", "Bauhaus", "Cyberpunk",
-    "Wortuhr", "Neon Horizon", "Pilot Flieger", "Diver Pro",
-    "Radar Tactical", "Lifetime"
+    "Chrono Master GT", "Casio Vintage", "Bauhaus", "Cyberpunk HUD",
+    "Wortuhr", "Solar Orbit", "Pilot Flieger", "Diver Pro",
+    "Radar Tactical", "Lifetime 52"
 };
 static const char* FACE_DESC[FACE_COUNT] = {
     "Digitale Zeit mit Schritten, Akku und Tag",
     "Analoges Chronometer mit Sekundenzeiger",
     "Grosse Ziffern, sonst nichts",
-    "Kompass, Koordinaten und Kurs vom Sensor",
-    "Skelettiertes Werk mit laufender Unruh",
-    "Retro-LCD im Stil der 80er",
+    "Mitdrehender Kompass, Koordinaten & Kurs",
+    "Sport-Chronograph mit 3 Hilfszifferblättern",
+    "Retro-LCD mit 7-Segment, Schritten & Kompass",
     "Reduziertes Bauhaus-Zifferblatt",
-    "Terminal-HUD mit echten Systemdaten",
+    "Sci-Fi HUD mit Telemetrie & Systemdaten",
     "Die Zeit in Worten, auf Deutsch",
-    "Synthwave-Sonnenuntergang mit Datum",
+    "Astronomie mit Sonnen- und Erdbogen",
     "Fliegeruhr nach B-Uhr-Vorbild",
     "Taucheruhr mit Leuchtmarken",
     "Sonar-Scope, Punkte sind LoRa-Knoten",
-    "Fortschritt von Jahr, Monat, Woche, Tag"
+    "52-Wochen-Jahresraster & Lebensfortschritt"
 };
 
 const char* faceName(int idx) {
@@ -201,6 +201,12 @@ bool closeRingsDetailIfOpen() {
     return closed;
 }
 
+bool isRingsDetailOpen() {
+    return (sStepsDetailModal && !lv_obj_has_flag(sStepsDetailModal, LV_OBJ_FLAG_HIDDEN)) ||
+           (sBatteryDetailModal && !lv_obj_has_flag(sBatteryDetailModal, LV_OBJ_FLAG_HIDDEN)) ||
+           (sDayDetailModal && !lv_obj_has_flag(sDayDetailModal, LV_OBJ_FLAG_HIDDEN));
+}
+
 static void openStepsDetail() {
     closeRingsDetailIfOpen();
     if (sStepsDetailModal) {
@@ -236,17 +242,17 @@ static lv_obj_t *nDate, *nHH, *nMM, *nBat;
 // 3: Ultra Wayfinder
 static lv_obj_t *wHH, *wMM, *wSec, *wDate, *wCoord, *wAlt, *wHeading;
 static lv_obj_t *wRingSteps, *wStepsTxt, *wRingBat, *wBatTxt;
+static lv_obj_t *wLblN, *wLblO, *wLblS, *wLblW, *wCompassPointer;
 
-// 4: Skeleton Tourbillon
-static lv_obj_t *tDial, *tDate, *tPowerArc, *tPowerTxt;
+// 4: Chrono Master GT
+static lv_obj_t *tDial, *tDate, *tPowerTxt;
 static lv_obj_t *tTourbArm1, *tTourbArm2;
-static lv_point_precise_t tArmPts[2][2];
 static AnalogHands tHands;
-static const int T_SZ = 376, TB_SZ = 110;
+static const int T_SZ = 376;
 
 // 5: Casio
 static lv_obj_t *kDayBoxes[7], *kDayLabels[7], *kDate, *kBarDots[10];
-static lv_obj_t *kHH, *kMM, *kSS, *kBat;
+static lv_obj_t *kHH, *kMM, *kSS, *kBat, *kSteps, *kHeading;
 
 // 6: Bauhaus
 static lv_obj_t *bDial, *bDate;
@@ -255,14 +261,27 @@ static AnalogHands bHands;
 static const int B_SZ = 380;
 
 // 7: Cyberpunk
-static lv_obj_t *yHeader, *yHero, *ySec, *yStatus, *yDiag, *yBat;
+static lv_obj_t *yHeader, *yHero, *ySec, *yStatus, *yDiag, *yBat, *yNav, *yBio;
 
 // 8: WordClock
-static lv_obj_t *wcWords[21];
+enum WcWordId : uint8_t {
+    WC_ES = 0, WC_IST, WC_FUENF_M,
+    WC_ZEHN_M, WC_ZWANZIG,
+    WC_DREI_M, WC_VIERTEL,
+    WC_VOR, WC_NACH,
+    WC_HALB, WC_ELF, WC_FUENF_H,
+    WC_EINS, WC_ZWEI,
+    WC_DREI_H, WC_VIER,
+    WC_SECHS, WC_ACHT,
+    WC_SIEBEN, WC_NEUN,
+    WC_ZEHN_H, WC_ZWOELF, WC_UHR,
+    WC_COUNT
+};
+static lv_obj_t *wcWords[WC_COUNT];
 static lv_obj_t *wcDots[4];
 
-// 9: Neon Horizon
-static lv_obj_t *nhHH, *nhMM, *nhSec, *nhDate, *nhBat;
+// 9: Solar Orbit
+static lv_obj_t *nhHH, *nhMM, *nhSec, *nhDate, *nhBat, *soSunArc;
 
 // 10: Pilot Flieger
 static lv_obj_t *pfDial, *pfDate;
@@ -281,6 +300,7 @@ static const int RT_SZ = 370;
 
 // 13: Lifetime
 static lv_obj_t *ltBars[4], *ltPct[4], *ltTime, *ltDate;
+static lv_obj_t *ltDots[52], *ltStats;
 
 static void longPress(lv_event_t*) {
     faceNext();
@@ -289,6 +309,8 @@ static void longPress(lv_event_t*) {
 
 static lv_obj_t* faceRoot() {
     lv_obj_t* f = box(sRoot, SCR_W, SCR_H);
+    lv_obj_set_style_bg_color(f, cBg(), 0);
+    lv_obj_set_style_bg_opa(f, LV_OPA_COVER, 0);
     lv_obj_add_flag(f, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(f, longPress, LV_EVENT_LONG_PRESSED, NULL);
     return f;
@@ -443,12 +465,12 @@ static void buildChrono(lv_obj_t* f) {
 static void buildMinimal(lv_obj_t* f) {
     nDate = caption(f, "", cText2());
     lv_obj_set_style_text_letter_space(nDate, 4, 0);
-    lv_obj_align(nDate, LV_ALIGN_TOP_MID, 0, 30);
+    lv_obj_align(nDate, LV_ALIGN_TOP_MID, 0, 26);
     nHH = label(f, F.giant, cText(), "00");
-    lv_obj_align(nHH, LV_ALIGN_TOP_MID, 0, 52);
+    lv_obj_align(nHH, LV_ALIGN_TOP_MID, 0, 46);
     nMM = label(f, F.giant, accent(), "00");
     accReg(nMM, ACC_TEXT);
-    lv_obj_align(nMM, LV_ALIGN_TOP_MID, 0, 254);
+    lv_obj_align(nMM, LV_ALIGN_TOP_MID, 0, 236);
     nBat = caption(f, "", cText3());
     lv_obj_align(nBat, LV_ALIGN_BOTTOM_MID, 0, -22);
 }
@@ -465,14 +487,17 @@ static void buildUltraWayfinder(lv_obj_t* f) {
     lv_obj_set_style_border_width(ringBox, 2, 0);
     lv_obj_set_style_border_color(ringBox, cStroke(), 0);
 
-    lv_obj_t* lblN = label(ringBox, F.title, COL_ULTRA, "N");
-    lv_obj_align(lblN, LV_ALIGN_TOP_MID, 0, 6);
-    lv_obj_t* lblE = label(ringBox, F.title, cText2(), "O");
-    lv_obj_align(lblE, LV_ALIGN_RIGHT_MID, -8, 0);
-    lv_obj_t* lblS = label(ringBox, F.title, cText2(), "S");
-    lv_obj_align(lblS, LV_ALIGN_BOTTOM_MID, 0, -6);
-    lv_obj_t* lblW = label(ringBox, F.title, cText2(), "W");
-    lv_obj_align(lblW, LV_ALIGN_LEFT_MID, 8, 0);
+    wCompassPointer = label(ringBox, F.title, COL_ULTRA, "^");
+    lv_obj_align(wCompassPointer, LV_ALIGN_TOP_MID, 0, 4);
+
+    wLblN = label(ringBox, F.title, COL_ULTRA, "N");
+    lv_obj_set_pos(wLblN, 183, 10);
+    wLblO = label(ringBox, F.title, cText2(), "O");
+    lv_obj_set_pos(wLblO, 350, 183);
+    wLblS = label(ringBox, F.title, cText2(), "S");
+    lv_obj_set_pos(wLblS, 183, 350);
+    wLblW = label(ringBox, F.title, cText2(), "W");
+    lv_obj_set_pos(wLblW, 16, 183);
 
     wCoord = caption(f, "KEIN FIX", cText2());
     lv_obj_align(wCoord, LV_ALIGN_TOP_MID, 0, 52);
@@ -520,87 +545,102 @@ static void buildUltraWayfinder(lv_obj_t* f) {
 }
 
 // ============================================================================
-// 4: SKELETON TOURBILLON
+// 4: CHRONO MASTER GT (replacing Tourbillon)
 // ============================================================================
 static void buildSkeletonTourbillon(lv_obj_t* f) {
-    const lv_color_t GOLD = lv_color_hex(0xDAA520);
+    const lv_color_t RED_C  = lv_color_hex(0xFF3B30);
+    const lv_color_t BEZEL  = lv_color_hex(0x1B2433);
+    const lv_color_t DIAL_C = lv_color_hex(0x0A0E17);
+
     tDial = box(f, T_SZ, T_SZ);
     lv_obj_align(tDial, LV_ALIGN_TOP_MID, 0, 24);
     lv_obj_set_style_radius(tDial, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(tDial, lv_color_hex(0x0A0D14), 0);
+    lv_obj_set_style_bg_color(tDial, DIAL_C, 0);
     lv_obj_set_style_bg_opa(tDial, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(tDial, 2, 0);
-    lv_obj_set_style_border_color(tDial, lv_color_hex(0x2A3245), 0);
+    lv_obj_set_style_border_width(tDial, 3, 0);
+    lv_obj_set_style_border_color(tDial, BEZEL, 0);
 
-    lv_obj_t* brand = caption(tDial, "WATCHOS ULTRA", GOLD);
-    lv_obj_align(brand, LV_ALIGN_TOP_MID, 0, 48);
-    lv_obj_t* sub = caption(tDial, "TOURBILLON", cText3());
-    lv_obj_align(sub, LV_ALIGN_TOP_MID, 0, 72);
+    for (int i = 0; i < 60; i++) {
+        if (i % 5 == 0) {
+            float a = (i * 6.0f - 90.0f) * (float)M_PI / 180.0f;
+            float c = cosf(a), s = sinf(a);
+            lv_obj_t* pip = box(tDial, 4, 8);
+            lv_obj_set_style_bg_color(pip, (i % 15 == 0) ? RED_C : cText2(), 0);
+            lv_obj_set_style_bg_opa(pip, LV_OPA_COVER, 0);
+            lv_obj_set_pos(pip, (int)(T_SZ / 2 + c * 168.0f - 2), (int)(T_SZ / 2 + s * 168.0f - 4));
+        }
+    }
 
-    // battery as "power reserve" at 9 o'clock (honest: percent, not hours)
-    tPowerArc = lv_arc_create(tDial);
-    lv_obj_set_size(tPowerArc, 82, 82);
-    lv_obj_set_pos(tPowerArc, 26, 140);
-    lv_arc_set_rotation(tPowerArc, 135);
-    lv_arc_set_bg_angles(tPowerArc, 0, 180);
-    lv_arc_set_range(tPowerArc, 0, 100);
-    lv_obj_set_style_arc_width(tPowerArc, 4, LV_PART_MAIN);
-    lv_obj_set_style_arc_color(tPowerArc, cStroke(), LV_PART_MAIN);
-    lv_obj_set_style_arc_width(tPowerArc, 4, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_color(tPowerArc, GOLD, LV_PART_INDICATOR);
-    lv_obj_remove_style(tPowerArc, NULL, LV_PART_KNOB);
-    lv_obj_remove_flag(tPowerArc, LV_OBJ_FLAG_CLICKABLE);
-    tPowerTxt = label(tDial, F.cap, GOLD, "--%");
-    lv_obj_set_pos(tPowerTxt, 50, 172);
+    lv_obj_t* brand = caption(tDial, "CHRONO MASTER", cText());
+    lv_obj_set_style_text_letter_space(brand, 2, 0);
+    lv_obj_align(brand, LV_ALIGN_TOP_MID, 0, 42);
+    lv_obj_t* sub = caption(tDial, "AUTOMATIC • 100M", RED_C);
+    lv_obj_align(sub, LV_ALIGN_TOP_MID, 0, 64);
 
-    dateWindow(tDial, T_SZ - 76, 166, 48, 30, &tDate);
+    // Left Sub-Dial (9h): BATTERY
+    lv_obj_t* subL = box(tDial, 84, 84);
+    lv_obj_set_pos(subL, 26, T_SZ / 2 - 42);
+    lv_obj_set_style_radius(subL, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(subL, lv_color_hex(0x060910), 0);
+    lv_obj_set_style_bg_opa(subL, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(subL, 1, 0);
+    lv_obj_set_style_border_color(subL, BEZEL, 0);
+    lv_obj_t* lblL = caption(subL, "AKKU", cText3());
+    lv_obj_align(lblL, LV_ALIGN_TOP_MID, 0, 10);
+    tPowerTxt = label(subL, F.numS, cOk(), "0%");
+    lv_obj_align(tPowerTxt, LV_ALIGN_CENTER, 0, 10);
 
-    const int TB_X = (T_SZ - TB_SZ) / 2, TB_Y = 230;
-    lv_obj_t* tbWell = box(tDial, TB_SZ, TB_SZ);
-    lv_obj_set_pos(tbWell, TB_X, TB_Y);
-    lv_obj_set_style_radius(tbWell, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(tbWell, lv_color_hex(0x020305), 0);
-    lv_obj_set_style_bg_opa(tbWell, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(tbWell, 2, 0);
-    lv_obj_set_style_border_color(tbWell, GOLD, 0);
+    // Right Sub-Dial (3h): STEPS
+    lv_obj_t* subR = box(tDial, 84, 84);
+    lv_obj_set_pos(subR, T_SZ - 26 - 84, T_SZ / 2 - 42);
+    lv_obj_set_style_radius(subR, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(subR, lv_color_hex(0x060910), 0);
+    lv_obj_set_style_bg_opa(subR, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(subR, 1, 0);
+    lv_obj_set_style_border_color(subR, BEZEL, 0);
+    lv_obj_t* lblR = caption(subR, "SCHRITTE", cText3());
+    lv_obj_align(lblR, LV_ALIGN_TOP_MID, 0, 10);
+    tTourbArm1 = label(subR, F.numS, accent(), "0");
+    lv_obj_align(tTourbArm1, LV_ALIGN_CENTER, 0, 10);
 
-    lv_obj_t* bridge = box(tbWell, TB_SZ - 16, 4);
-    lv_obj_center(bridge);
-    lv_obj_set_style_bg_color(bridge, lv_color_hex(0x7A8599), 0);
-    lv_obj_set_style_bg_opa(bridge, LV_OPA_COVER, 0);
+    // Bottom Sub-Dial (6h): SECONDS & DATE
+    lv_obj_t* subB = box(tDial, 96, 96);
+    lv_obj_align(subB, LV_ALIGN_BOTTOM_MID, 0, -28);
+    lv_obj_set_style_radius(subB, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(subB, lv_color_hex(0x060910), 0);
+    lv_obj_set_style_bg_opa(subB, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(subB, 1, 0);
+    lv_obj_set_style_border_color(subB, BEZEL, 0);
+    dateWindow(subB, 24, 14, 48, 26, &tDate);
+    tTourbArm2 = label(subB, F.title, RED_C, "00");
+    lv_obj_align(tTourbArm2, LV_ALIGN_BOTTOM_MID, 0, -12);
 
-    tTourbArm1 = makeHandLine(tbWell, 3, GOLD, tArmPts[0], TB_SZ / 2, TB_SZ / 2);
-    tTourbArm2 = makeHandLine(tbWell, 3, GOLD, tArmPts[1], TB_SZ / 2, TB_SZ / 2);
-
-    buildHands(tHands, tDial, T_SZ / 2, T_SZ / 2, 8, 5, 2, cText(), cText(), GOLD);
-    centreCap(tDial, 18, GOLD);
-
-    lv_obj_t* swiss = caption(f, "AUTOMATIK • TOURBILLON", cText3());
-    lv_obj_align(swiss, LV_ALIGN_BOTTOM_MID, 0, -26);
+    buildHands(tHands, tDial, T_SZ / 2, T_SZ / 2, 8, 5, 2, cText(), cText(), RED_C);
+    centreCap(tDial, 16, BEZEL);
 }
 
 // ============================================================================
-// 5: CASIO
+// 5: CASIO VINTAGE
 // ============================================================================
 static void buildCasio(lv_obj_t* f) {
     const lv_color_t LCD_BG  = lv_color_hex(0x9EAC8D);
     const lv_color_t LCD_INK = lv_color_hex(0x111611);
-    const lv_color_t LCD_DIM = lv_color_hex(0x8D9B7C);
+    const lv_color_t LCD_DIM = lv_color_hex(0x829171);
 
-    lv_obj_t* cCase = card(f, CW, 420);
-    lv_obj_align(cCase, LV_ALIGN_TOP_MID, 0, 30);
-    lv_obj_set_style_bg_color(cCase, lv_color_hex(0x15181C), 0);
+    lv_obj_t* cCase = card(f, CW, 430);
+    lv_obj_align(cCase, LV_ALIGN_TOP_MID, 0, 24);
+    lv_obj_set_style_bg_color(cCase, lv_color_hex(0x14181F), 0);
     lv_obj_set_style_border_width(cCase, 2, 0);
-    lv_obj_set_style_border_color(cCase, lv_color_hex(0x1E56A0), 0);
+    lv_obj_set_style_border_color(cCase, lv_color_hex(0x235594), 0);
 
     lv_obj_t* casio = label(cCase, F.title, cText(), "CASIO");
-    lv_obj_set_pos(casio, 20, 12);
+    lv_obj_set_pos(casio, 20, 10);
     lv_obj_t* illum = label(cCase, F.small, lv_color_hex(0xF5A623), "ILLUMINATOR");
-    lv_obj_align(illum, LV_ALIGN_TOP_RIGHT, -20, 14);
+    lv_obj_align(illum, LV_ALIGN_TOP_RIGHT, -20, 12);
 
-    lv_obj_t* lcd = box(cCase, CW - 36, 300);
-    lv_obj_align(lcd, LV_ALIGN_TOP_MID, 0, 52);
-    lv_obj_set_style_radius(lcd, 16, 0);
+    lv_obj_t* lcd = box(cCase, CW - 32, 330);
+    lv_obj_align(lcd, LV_ALIGN_TOP_MID, 0, 44);
+    lv_obj_set_style_radius(lcd, 12, 0);
     lv_obj_set_style_bg_color(lcd, LCD_BG, 0);
     lv_obj_set_style_bg_opa(lcd, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(lcd, 2, 0);
@@ -608,8 +648,8 @@ static void buildCasio(lv_obj_t* f) {
 
     static const char* dNames[7] = {"MO", "DI", "MI", "DO", "FR", "SA", "SO"};
     for (int i = 0; i < 7; i++) {
-        kDayBoxes[i] = box(lcd, 28, 20);
-        lv_obj_set_pos(kDayBoxes[i], 16 + i * 38, 14);
+        kDayBoxes[i] = box(lcd, 36, 22);
+        lv_obj_set_pos(kDayBoxes[i], 12 + i * 46, 12);
         lv_obj_set_style_radius(kDayBoxes[i], 4, 0);
         lv_obj_set_style_bg_opa(kDayBoxes[i], LV_OPA_COVER, 0);
         lv_obj_set_style_bg_color(kDayBoxes[i], LCD_BG, 0);
@@ -617,37 +657,49 @@ static void buildCasio(lv_obj_t* f) {
         lv_obj_center(kDayLabels[i]);
     }
 
-    lv_obj_t* k24h = card(lcd, 36, 22);                 // every face is 24 h: static badge
-    lv_obj_set_pos(k24h, 20, 48);
+    lv_obj_t* k24h = card(lcd, 36, 20);
+    lv_obj_set_pos(k24h, 16, 46);
     lv_obj_set_style_bg_color(k24h, LCD_INK, 0);
     lv_obj_t* l24 = label(k24h, F.cap, LCD_BG, "24H");
     lv_obj_center(l24);
 
+    lv_obj_t* kAlm = label(lcd, F.cap, LCD_INK, "ALM • SIG");
+    lv_obj_set_pos(kAlm, 62, 48);
+
     kDate = label(lcd, F.title, LCD_INK, "--.--");
-    lv_obj_align(kDate, LV_ALIGN_TOP_RIGHT, -24, 48);
+    lv_obj_align(kDate, LV_ALIGN_TOP_RIGHT, -16, 44);
 
     for (int g = 0; g < 10; g++) {
-        kBarDots[g] = box(lcd, 6, 6);
-        lv_obj_set_pos(kBarDots[g], 16 + g * 10, 80);
-        lv_obj_set_style_radius(kBarDots[g], 2, 0);
+        kBarDots[g] = box(lcd, 8, 5);
+        lv_obj_set_pos(kBarDots[g], 16 + g * 12, 74);
+        lv_obj_set_style_radius(kBarDots[g], 1, 0);
         lv_obj_set_style_bg_opa(kBarDots[g], LV_OPA_COVER, 0);
         lv_obj_set_style_bg_color(kBarDots[g], LCD_DIM, 0);
     }
 
-    lv_obj_t* tRow = box(lcd, CW - 60, 100);
-    lv_obj_align(tRow, LV_ALIGN_TOP_MID, 0, 115);
+    lv_obj_t* tRow = box(lcd, CW - 44, 96);
+    lv_obj_align(tRow, LV_ALIGN_TOP_MID, 0, 88);
     lv_obj_set_flex_flow(tRow, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(tRow, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     kHH = label(tRow, F.hero, LCD_INK, "00");
     label(tRow, F.hero, LCD_INK, ":");
     kMM = label(tRow, F.hero, LCD_INK, "00");
-    kSS = label(tRow, F.numS, LCD_INK, "00");
-    lv_obj_set_style_pad_left(kSS, 8, 0);
+    kSS = label(tRow, F.title, LCD_INK, "00");
+    lv_obj_set_style_pad_left(kSS, 6, 0);
 
-    lv_obj_t* wr = label(cCase, F.small, lv_color_hex(0xE53935), "WATER RESIST");
-    lv_obj_set_pos(wr, 20, 375);
-    kBat = label(cCase, F.small, cText2(), "AKKU --%");
-    lv_obj_align(kBat, LV_ALIGN_TOP_RIGHT, -20, 375);
+    lv_obj_t* teleRow = box(lcd, CW - 50, 44);
+    lv_obj_align(teleRow, LV_ALIGN_BOTTOM_MID, 0, -14);
+    lv_obj_set_flex_flow(teleRow, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(teleRow, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    kSteps = label(teleRow, F.small, LCD_INK, "STP 0");
+    kHeading = label(teleRow, F.small, LCD_INK, "DIR N 000°");
+    kBat = label(teleRow, F.small, LCD_INK, "BAT 00%");
+
+    lv_obj_t* wr = label(cCase, F.small, lv_color_hex(0xE53935), "WATER 20BAR RESIST");
+    lv_obj_set_pos(wr, 20, 390);
+    lv_obj_t* chro = label(cCase, F.small, lv_color_hex(0xF5A623), "ALARM CHRONO");
+    lv_obj_align(chro, LV_ALIGN_TOP_RIGHT, -20, 390);
 }
 
 // ============================================================================
@@ -692,41 +744,48 @@ static void buildBauhaus(lv_obj_t* f) {
 }
 
 // ============================================================================
-// 7: CYBERPUNK
+// 7: CYBERPUNK HUD
 // ============================================================================
 static void buildCyberpunk(lv_obj_t* f) {
     const lv_color_t CYBER_GREEN = lv_color_hex(0x00FF66);
-    const lv_color_t CYBER_CYAN  = lv_color_hex(0x00E5FF);
+    const lv_color_t CYBER_CYAN  = lv_color_hex(0x00F0FF);
+    const lv_color_t CYBER_YEL   = lv_color_hex(0xFCEE0A);
 
     lv_obj_t* pan = card(f, CW, 450);
     lv_obj_align(pan, LV_ALIGN_TOP_MID, 0, 24);
+    lv_obj_set_style_bg_color(pan, lv_color_hex(0x0A0F17), 0);
+    lv_obj_set_style_border_width(pan, 1, 0);
+    lv_obj_set_style_border_color(pan, CYBER_CYAN, 0);
 
-    lv_obj_t* bTL = label(pan, F.title, CYBER_CYAN, "+"); lv_obj_set_pos(bTL, 24, 14);
-    lv_obj_t* bTR = label(pan, F.title, CYBER_CYAN, "+"); lv_obj_align(bTR, LV_ALIGN_TOP_RIGHT, -24, 14);
-    lv_obj_t* bBL = label(pan, F.title, CYBER_CYAN, "+"); lv_obj_align(bBL, LV_ALIGN_BOTTOM_LEFT, 24, -14);
-    lv_obj_t* bBR = label(pan, F.title, CYBER_CYAN, "+"); lv_obj_align(bBR, LV_ALIGN_BOTTOM_RIGHT, -24, -14);
+    lv_obj_t* bTL = label(pan, F.title, CYBER_CYAN, "+"); lv_obj_set_pos(bTL, 16, 10);
+    lv_obj_t* bTR = label(pan, F.title, CYBER_CYAN, "+"); lv_obj_align(bTR, LV_ALIGN_TOP_RIGHT, -16, 10);
+    lv_obj_t* bBL = label(pan, F.title, CYBER_CYAN, "+"); lv_obj_align(bBL, LV_ALIGN_BOTTOM_LEFT, 16, -10);
+    lv_obj_t* bBR = label(pan, F.title, CYBER_CYAN, "+"); lv_obj_align(bBR, LV_ALIGN_BOTTOM_RIGHT, -16, -10);
 
-    yHeader = label(pan, F.small, CYBER_GREEN, "// SYSTEM HUD • UHRZEIT");
-    lv_obj_set_pos(yHeader, 24, 22);
+    yHeader = label(pan, F.small, CYBER_GREEN, "// SYSTEM HUD • V2.4 ONLINE");
+    lv_obj_set_pos(yHeader, 36, 14);
 
-    lv_obj_t* timeRow = box(pan, CW - 32, 90);
-    lv_obj_align(timeRow, LV_ALIGN_TOP_MID, 0, 75);
+    lv_obj_t* timeRow = box(pan, CW - 40, 84);
+    lv_obj_align(timeRow, LV_ALIGN_TOP_MID, 0, 48);
     lv_obj_set_flex_flow(timeRow, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(timeRow, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    label(timeRow, F.hero, CYBER_CYAN, "[ ");
-    yHero = label(timeRow, F.hero, cText(), "00:00");
-    ySec = label(timeRow, F.title, CYBER_GREEN, ":00");
-    label(timeRow, F.hero, CYBER_CYAN, " ]");
+    yHero = label(timeRow, F.hero, CYBER_CYAN, "00:00");
+    ySec = label(timeRow, F.title, CYBER_YEL, ":00");
+    lv_obj_set_style_pad_left(ySec, 6, 0);
 
-    yStatus = label(pan, F.body, CYBER_GREEN, "HEAP: -- KB • PSRAM: -- KB");
-    lv_obj_set_pos(yStatus, 24, 210);
-    yDiag = label(pan, F.body, CYBER_CYAN, "STEPS: 0 • MESH: AUS");
-    lv_obj_set_pos(yDiag, 24, 250);
-    yBat = label(pan, F.body, cText(), "PWR: --%");
-    lv_obj_set_pos(yBat, 24, 290);
+    lv_obj_t* telBox = box(pan, CW - 32, 230);
+    lv_obj_align(telBox, LV_ALIGN_TOP_MID, 0, 140);
+    lv_obj_set_flex_flow(telBox, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(telBox, 8, 0);
 
-    lv_obj_t* termBot = caption(pan, "// ESP32-S3 • 2 CORES • TERMINAL READY", cText3());
-    lv_obj_align(termBot, LV_ALIGN_BOTTOM_MID, 0, -16);
+    yStatus = label(telBox, F.small, CYBER_GREEN, "[CPU] ESP32-S3 • 240MHz • 8MB PSRAM");
+    yBat = label(telBox, F.small, CYBER_YEL, "[PWR] BAT 00% • 4.12V • NORMAL");
+    yDiag = label(telBox, F.small, CYBER_CYAN, "[BIO] 0 STEPS • 0 KCAL");
+    yNav = label(telBox, F.small, cText(), "[NAV] KURS: 000° N • IMU OK");
+    yBio = label(telBox, F.small, lv_color_hex(0xFF0055), "[NET] LORA MESH: CH868 • ONLINE");
+
+    lv_obj_t* termBot = caption(pan, "> ALL SYSTEMS OPERATIONAL _", CYBER_GREEN);
+    lv_obj_align(termBot, LV_ALIGN_BOTTOM_MID, 0, -14);
 }
 
 // ============================================================================
@@ -735,87 +794,136 @@ static void buildCyberpunk(lv_obj_t* f) {
 static void buildWordClock(lv_obj_t* f) {
     lv_obj_t* pan = card(f, CW, 450);
     lv_obj_align(pan, LV_ALIGN_TOP_MID, 0, 24);
+    lv_obj_set_style_bg_color(pan, lv_color_hex(0x0C1019), 0);
 
-    const int Y_BASE = 24, Y_STEP = 54;
+    const int Y0 = 22, DY = 38;
     auto addW = [&](int idx, const char* txt, int x, int y) {
-        wcWords[idx] = label(pan, F.title, cStroke(), txt);
+        wcWords[idx] = label(pan, F.title, lv_color_hex(0x222A38), txt);
         lv_obj_set_pos(wcWords[idx], x, y);
     };
-    addW(0, "ES", 20, Y_BASE);
-    addW(1, "IST", 78, Y_BASE);
-    addW(2, "FÜNF", 240, Y_BASE);
-    addW(3, "ZEHN", 20, Y_BASE + Y_STEP);
-    addW(4, "ZWANZIG", 160, Y_BASE + Y_STEP);
-    addW(5, "VIERTEL", 20, Y_BASE + Y_STEP * 2);
-    addW(6, "VOR", 190, Y_BASE + Y_STEP * 2);
-    addW(7, "NACH", 258, Y_BASE + Y_STEP * 2);
-    addW(8, "HALB", 20, Y_BASE + Y_STEP * 3);
-    addW(9, "ZWÖLF", 130, Y_BASE + Y_STEP * 3);
-    addW(10, "ZWEI", 248, Y_BASE + Y_STEP * 3);
-    addW(11, "EINS", 20, Y_BASE + Y_STEP * 4);       // becomes "EIN" at one o'clock sharp
-    addW(12, "DREI", 134, Y_BASE + Y_STEP * 4);
-    addW(13, "VIER", 248, Y_BASE + Y_STEP * 4);
-    addW(14, "SECHS", 20, Y_BASE + Y_STEP * 5);
-    addW(15, "ACHT", 140, Y_BASE + Y_STEP * 5);
-    addW(16, "SIEBEN", 232, Y_BASE + Y_STEP * 5);
-    addW(17, "NEUN", 20, Y_BASE + Y_STEP * 6);
-    addW(18, "ZEHN", 120, Y_BASE + Y_STEP * 6);
-    addW(19, "ELF", 200, Y_BASE + Y_STEP * 6);
-    addW(20, "UHR", 268, Y_BASE + Y_STEP * 6);
 
-    wcDots[0] = box(pan, 8, 8); lv_obj_set_pos(wcDots[0], 28, 18);
-    wcDots[1] = box(pan, 8, 8); lv_obj_align(wcDots[1], LV_ALIGN_TOP_RIGHT, -28, 18);
-    wcDots[2] = box(pan, 8, 8); lv_obj_align(wcDots[2], LV_ALIGN_BOTTOM_RIGHT, -28, -18);
-    wcDots[3] = box(pan, 8, 8); lv_obj_align(wcDots[3], LV_ALIGN_BOTTOM_LEFT, 28, -18);
+    // Row 0: ES IST FÜNF
+    addW(WC_ES, "ES", 28, Y0 + 0 * DY);
+    addW(WC_IST, "IST", 88, Y0 + 0 * DY);
+    addW(WC_FUENF_M, "FÜNF", 240, Y0 + 0 * DY);
+
+    // Row 1: ZEHN ZWANZIG
+    addW(WC_ZEHN_M, "ZEHN", 28, Y0 + 1 * DY);
+    addW(WC_ZWANZIG, "ZWANZIG", 176, Y0 + 1 * DY);
+
+    // Row 2: DREI VIERTEL
+    addW(WC_DREI_M, "DREI", 28, Y0 + 2 * DY);
+    addW(WC_VIERTEL, "VIERTEL", 176, Y0 + 2 * DY);
+
+    // Row 3: VOR NACH
+    addW(WC_VOR, "VOR", 54, Y0 + 3 * DY);
+    addW(WC_NACH, "NACH", 210, Y0 + 3 * DY);
+
+    // Row 4: HALB ELF FÜNF
+    addW(WC_HALB, "HALB", 28, Y0 + 4 * DY);
+    addW(WC_ELF, "ELF", 154, Y0 + 4 * DY);
+    addW(WC_FUENF_H, "FÜNF", 240, Y0 + 4 * DY);
+
+    // Row 5: EINS ZWEI
+    addW(WC_EINS, "EINS", 28, Y0 + 5 * DY);
+    addW(WC_ZWEI, "ZWEI", 230, Y0 + 5 * DY);
+
+    // Row 6: DREI VIER
+    addW(WC_DREI_H, "DREI", 28, Y0 + 6 * DY);
+    addW(WC_VIER, "VIER", 236, Y0 + 6 * DY);
+
+    // Row 7: SECHS ACHT
+    addW(WC_SECHS, "SECHS", 28, Y0 + 7 * DY);
+    addW(WC_ACHT, "ACHT", 226, Y0 + 7 * DY);
+
+    // Row 8: SIEBEN NEUN
+    addW(WC_SIEBEN, "SIEBEN", 28, Y0 + 8 * DY);
+    addW(WC_NEUN, "NEUN", 232, Y0 + 8 * DY);
+
+    // Row 9: ZEHN ZWÖLF UHR
+    addW(WC_ZEHN_H, "ZEHN", 28, Y0 + 9 * DY);
+    addW(WC_ZWOELF, "ZWÖLF", 146, Y0 + 9 * DY);
+    addW(WC_UHR, "UHR", 262, Y0 + 9 * DY);
+
+    // 4 Minute Dots in corners
+    wcDots[0] = box(pan, 8, 8); lv_obj_set_pos(wcDots[0], 14, 12);
+    wcDots[1] = box(pan, 8, 8); lv_obj_align(wcDots[1], LV_ALIGN_TOP_RIGHT, -14, 12);
+    wcDots[2] = box(pan, 8, 8); lv_obj_align(wcDots[2], LV_ALIGN_BOTTOM_RIGHT, -14, -12);
+    wcDots[3] = box(pan, 8, 8); lv_obj_align(wcDots[3], LV_ALIGN_BOTTOM_LEFT, 14, -12);
     for (int i = 0; i < 4; i++) {
         lv_obj_set_style_radius(wcDots[i], 4, 0);
         lv_obj_set_style_bg_opa(wcDots[i], LV_OPA_COVER, 0);
-        lv_obj_set_style_bg_color(wcDots[i], cStroke(), 0);
+        lv_obj_set_style_bg_color(wcDots[i], lv_color_hex(0x222A38), 0);
     }
 }
 
 // ============================================================================
-// 9: NEON HORIZON
+// 9: SOLAR ORBIT (replacing Neon Horizon)
 // ============================================================================
 static void buildNeonHorizon(lv_obj_t* f) {
-    const lv_color_t SYNTH_MAG = lv_color_hex(0xFF2BD6);
-    const lv_color_t SYNTH_CYAN = lv_color_hex(0x00E5FF);
-    const lv_color_t SYNTH_YEL = lv_color_hex(0xFFDD00);
+    const lv_color_t DEEP_SKY = lv_color_hex(0x060B19);
+    const lv_color_t HORIZON_GLOW = lv_color_hex(0x1B3566);
+    const lv_color_t SUN_C = lv_color_hex(0xFFD60A);
 
-    lv_obj_t* sun = box(f, 160, 160);
-    lv_obj_align(sun, LV_ALIGN_TOP_MID, 0, 70);
-    lv_obj_set_style_radius(sun, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(sun, SYNTH_MAG, 0);
-    lv_obj_set_style_bg_opa(sun, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(sun, 3, 0);
-    lv_obj_set_style_border_color(sun, SYNTH_YEL, 0);
+    lv_obj_t* sky = box(f, CW, 450);
+    lv_obj_align(sky, LV_ALIGN_TOP_MID, 0, 24);
+    lv_obj_set_style_radius(sky, 20, 0);
+    lv_obj_set_style_bg_color(sky, DEEP_SKY, 0);
+    lv_obj_set_style_bg_opa(sky, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(sky, 1, 0);
+    lv_obj_set_style_border_color(sky, HORIZON_GLOW, 0);
 
-    lv_obj_t* hLine = box(f, SCR_W, 3);
-    lv_obj_set_pos(hLine, 0, 230);
-    lv_obj_set_style_bg_color(hLine, SYNTH_CYAN, 0);
-    lv_obj_set_style_bg_opa(hLine, LV_OPA_COVER, 0);
-
-    lv_obj_t* tRow = box(f, SCR_W, 90);
-    lv_obj_align(tRow, LV_ALIGN_TOP_MID, 0, 110);
-    lv_obj_set_flex_flow(tRow, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(tRow, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    nhHH = label(tRow, F.hero, cText(), "00");
-    label(tRow, F.hero, SYNTH_CYAN, ":");
-    nhMM = label(tRow, F.hero, cText(), "00");
-    nhSec = label(tRow, F.title, SYNTH_YEL, "00");
-    lv_obj_set_style_pad_left(nhSec, 8, 0);
-
-    for (int y = 250; y < 460; y += 32) {
-        lv_obj_t* gl = box(f, SCR_W, 1);
-        lv_obj_set_pos(gl, 0, y);
-        lv_obj_set_style_bg_color(gl, SYNTH_MAG, 0);
-        lv_obj_set_style_bg_opa(gl, LV_OPA_COVER, 0);
+    static const int STARS_X[12] = {24, 60, 110, 160, 210, 280, 320, 45, 90, 260, 310, 180};
+    static const int STARS_Y[12] = {30, 65, 40, 85, 35, 70, 45, 120, 150, 140, 115, 160};
+    for (int i = 0; i < 12; i++) {
+        lv_obj_t* star = box(sky, 2, 2);
+        lv_obj_set_pos(star, STARS_X[i], STARS_Y[i]);
+        lv_obj_set_style_bg_color(star, (i % 3 == 0) ? SUN_C : cText2(), 0);
+        lv_obj_set_style_bg_opa(star, LV_OPA_COVER, 0);
     }
 
-    nhDate = label(f, F.title, SYNTH_CYAN, "");
-    lv_obj_align(nhDate, LV_ALIGN_BOTTOM_MID, 0, -40);
-    nhBat = caption(f, "", cText2());
-    lv_obj_align(nhBat, LV_ALIGN_BOTTOM_MID, 0, -16);
+    soSunArc = lv_arc_create(sky);
+    lv_obj_set_size(soSunArc, 310, 310);
+    lv_obj_align(soSunArc, LV_ALIGN_TOP_MID, 0, 24);
+    lv_arc_set_rotation(soSunArc, 180);
+    lv_arc_set_bg_angles(soSunArc, 0, 180);
+    lv_arc_set_range(soSunArc, 0, 100);
+    lv_obj_set_style_arc_width(soSunArc, 2, LV_PART_MAIN);
+    lv_obj_set_style_arc_color(soSunArc, HORIZON_GLOW, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(soSunArc, 2, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(soSunArc, SUN_C, LV_PART_INDICATOR);
+    lv_obj_remove_style(soSunArc, NULL, LV_PART_KNOB);
+    lv_obj_remove_flag(soSunArc, LV_OBJ_FLAG_CLICKABLE);
+
+    nhBat = box(sky, 16, 16);
+    lv_obj_set_style_radius(nhBat, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(nhBat, SUN_C, 0);
+    lv_obj_set_style_bg_opa(nhBat, LV_OPA_COVER, 0);
+    lv_obj_set_pos(nhBat, 24, 180);
+
+    nhDate = caption(sky, "", SUN_C);
+    lv_obj_align(nhDate, LV_ALIGN_TOP_MID, 0, 188);
+
+    lv_obj_t* tBox = box(sky, CW - 40, 80);
+    lv_obj_align(tBox, LV_ALIGN_TOP_MID, 0, 218);
+    lv_obj_set_flex_flow(tBox, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(tBox, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    nhHH = label(tBox, F.hero, cText(), "00");
+    label(tBox, F.hero, SUN_C, ":");
+    nhMM = label(tBox, F.hero, cText(), "00");
+    nhSec = label(tBox, F.title, SUN_C, "00");
+    lv_obj_set_style_pad_left(nhSec, 6, 0);
+
+    lv_obj_t* horizon = box(sky, 360, 180);
+    lv_obj_align(horizon, LV_ALIGN_BOTTOM_MID, 0, 80);
+    lv_obj_set_style_radius(horizon, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(horizon, lv_color_hex(0x0A1B3B), 0);
+    lv_obj_set_style_bg_opa(horizon, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(horizon, 2, 0);
+    lv_obj_set_style_border_color(horizon, lv_color_hex(0x00E5FF), 0);
+
+    lv_obj_t* btmLine = caption(sky, "SOLAR ORBIT • ERDBOGEN", cText2());
+    lv_obj_align(btmLine, LV_ALIGN_BOTTOM_MID, 0, -16);
 }
 
 // ============================================================================
@@ -967,33 +1075,50 @@ static void buildRadarTactical(lv_obj_t* f) {
 // ============================================================================
 static void buildLifetime(lv_obj_t* f) {
     ltTime = label(f, F.numL, cText(), "00:00");
-    lv_obj_align(ltTime, LV_ALIGN_TOP_MID, 0, 28);
+    lv_obj_align(ltTime, LV_ALIGN_TOP_MID, 0, 22);
     ltDate = caption(f, "", accent());
     accReg(ltDate, ACC_TEXT);
-    lv_obj_align(ltDate, LV_ALIGN_TOP_MID, 0, 92);
+    lv_obj_align(ltDate, LV_ALIGN_TOP_MID, 0, 82);
 
-    static const char* labels[4] = {"JAHR", "MONAT", "WOCHE", "TAG"};
-    static const lv_color_t colors[4] = {
-        lv_color_hex(0xF5A623), lv_color_hex(0x00E5FF), lv_color_hex(0xBF5AF2), lv_color_hex(0x76FF03)
+    // 52-Week Visual Dot Matrix (4 rows of 13 dots)
+    lv_obj_t* dotBox = box(f, CW, 78);
+    lv_obj_align(dotBox, LV_ALIGN_TOP_MID, 0, 110);
+    const int DW = 18, DH = 12, DGX = 8, DGY = 6;
+    for (int i = 0; i < 52; i++) {
+        int row = i / 13;
+        int col = i % 13;
+        ltDots[i] = box(dotBox, DW, DH);
+        lv_obj_set_pos(ltDots[i], 24 + col * (DW + DGX), row * (DH + DGY));
+        lv_obj_set_style_radius(ltDots[i], 3, 0);
+        lv_obj_set_style_bg_color(ltDots[i], lv_color_hex(0x222A38), 0);
+        lv_obj_set_style_bg_opa(ltDots[i], LV_OPA_COVER, 0);
+    }
+
+    ltStats = caption(f, "WOCHE -- / 52  •  VERBLIEBEN: --", cText2());
+    lv_obj_align(ltStats, LV_ALIGN_TOP_MID, 0, 198);
+
+    static const char* labels[3] = {"JAHR", "MONAT", "TAG"};
+    static const lv_color_t colors[3] = {
+        lv_color_hex(0xF5A623), lv_color_hex(0x00E5FF), lv_color_hex(0x76FF03)
     };
-    const int Y_START = 128, STEP = 86;
-    for (int i = 0; i < 4; i++) {
-        lv_obj_t* c = card(f, CW, 74);
+    const int Y_START = 228, STEP = 70;
+    for (int i = 0; i < 3; i++) {
+        lv_obj_t* c = card(f, CW, 60);
         lv_obj_set_pos(c, M, Y_START + i * STEP);
         lv_obj_t* cap = caption(c, labels[i], cText2());
-        lv_obj_set_pos(cap, 16, 12);
+        lv_obj_set_pos(cap, 16, 8);
         ltPct[i] = label(c, F.small, colors[i], "0%");
-        lv_obj_align(ltPct[i], LV_ALIGN_TOP_RIGHT, -16, 10);
+        lv_obj_align(ltPct[i], LV_ALIGN_TOP_RIGHT, -16, 8);
         ltBars[i] = lv_bar_create(c);
-        lv_obj_set_size(ltBars[i], CW - 32, 8);
-        lv_obj_align(ltBars[i], LV_ALIGN_BOTTOM_MID, 0, -14);
+        lv_obj_set_size(ltBars[i], CW - 32, 6);
+        lv_obj_align(ltBars[i], LV_ALIGN_BOTTOM_MID, 0, -10);
         lv_bar_set_range(ltBars[i], 0, 100);
         lv_obj_set_style_bg_color(ltBars[i], cStroke(), LV_PART_MAIN);
         lv_obj_set_style_bg_opa(ltBars[i], LV_OPA_COVER, LV_PART_MAIN);
-        lv_obj_set_style_radius(ltBars[i], 4, LV_PART_MAIN);
+        lv_obj_set_style_radius(ltBars[i], 3, LV_PART_MAIN);
         lv_obj_set_style_bg_color(ltBars[i], colors[i], LV_PART_INDICATOR);
         lv_obj_set_style_bg_opa(ltBars[i], LV_OPA_COVER, LV_PART_INDICATOR);
-        lv_obj_set_style_radius(ltBars[i], 4, LV_PART_INDICATOR);
+        lv_obj_set_style_radius(ltBars[i], 3, LV_PART_INDICATOR);
     }
 }
 
@@ -1299,6 +1424,7 @@ static void showFace(int idx) {
     if (idx == sShown) return;
     for (int i = 0; i < FACE_COUNT; i++) setHidden(sFaces[i], i != idx);
     sShown = idx;
+    if (sRoot) lv_obj_invalidate(sRoot);
     nav::markDirty(nav::PG_FACE);
 }
 
@@ -1447,6 +1573,7 @@ static void refresh(bool force) {
             snprintf(b, sizeof(b), "%s %02d. %s", WD_DE_S[ti.tm_wday % 7], ti.tm_mday, MO_DE_S[ti.tm_mon % 12]);
             setText(wDate, b);
 
+            float hd = MotionHaptic::getHeadingDeg();
             if (secTick) {
                 bool fix = GpsManager::hasFix();
                 bool last = GpsManager::hasLastFix();
@@ -1470,7 +1597,6 @@ static void refresh(bool force) {
                     snprintf(b, sizeof(b), "HÖHE --");
                 }
                 setText(wAlt, b);
-                float hd = MotionHaptic::getHeadingDeg();
                 if (MotionHaptic::isSensorOnline()) {
                     snprintf(b, sizeof(b), "KURS %03d° %s", ((int)lroundf(hd)) % 360, cardinalDe(hd));
                 } else {
@@ -1478,6 +1604,17 @@ static void refresh(bool force) {
                 }
                 setText(wHeading, b);
             }
+
+            // Dynamic live rotating compass ring (N, O, S, W)
+            const float CR = 170.0f, CCX = 193.0f, CCY = 193.0f;
+            float aN = (0.0f - hd) * (float)M_PI / 180.0f;
+            float aO = (90.0f - hd) * (float)M_PI / 180.0f;
+            float aS = (180.0f - hd) * (float)M_PI / 180.0f;
+            float aW = (270.0f - hd) * (float)M_PI / 180.0f;
+            lv_obj_set_pos(wLblN, (int)lroundf(CCX + CR * sinf(aN) - 10), (int)lroundf(CCY - CR * cosf(aN) - 12));
+            lv_obj_set_pos(wLblO, (int)lroundf(CCX + CR * sinf(aO) - 10), (int)lroundf(CCY - CR * cosf(aO) - 12));
+            lv_obj_set_pos(wLblS, (int)lroundf(CCX + CR * sinf(aS) - 10), (int)lroundf(CCY - CR * cosf(aS) - 12));
+            lv_obj_set_pos(wLblW, (int)lroundf(CCX + CR * sinf(aW) - 10), (int)lroundf(CCY - CR * cosf(aW) - 12));
 
             uint32_t steps = MotionHaptic::getStepsToday();
             uint32_t goal = SettingsStorage::get().dailyStepGoal ? SettingsStorage::get().dailyStepGoal : 1;
@@ -1489,13 +1626,13 @@ static void refresh(bool force) {
         }
 
         case FACE_SKELETON_TOURBILLON: {
-            updateHands(tHands, hr, min, sec, 96, 16, 142, 18, 154, 26);
-            // balance wheel: continuous oscillation driven by millis(), no phase jump per second
-            float oscDeg = sinf((float)(millis() % 100000UL) * 0.008f) * 140.0f;
-            updateLineHand(tTourbArm1, tArmPts[0], TB_SZ / 2, TB_SZ / 2, oscDeg, 38, 38);
-            updateLineHand(tTourbArm2, tArmPts[1], TB_SZ / 2, TB_SZ / 2, oscDeg + 90.0f, 38, 38);
-            if (lv_arc_get_value(tPowerArc) != bat) lv_arc_set_value(tPowerArc, bat);
+            updateHands(tHands, hr, min, sec, 96, 16, 144, 18, 158, 26);
             snprintf(b, sizeof(b), "%d%%", bat); setText(tPowerTxt, b);
+            uint32_t st = MotionHaptic::getStepsToday();
+            if (st >= 1000) snprintf(b, sizeof(b), "%.1fk", st / 1000.0f);
+            else snprintf(b, sizeof(b), "%lu", (unsigned long)st);
+            setText(tTourbArm1, b);
+            snprintf(b, sizeof(b), "%02d", ti.tm_sec); setText(tTourbArm2, b);
             snprintf(b, sizeof(b), "%02d", ti.tm_mday); setText(tDate, b);
             break;
         }
@@ -1505,16 +1642,25 @@ static void refresh(bool force) {
             for (int i = 0; i < 7; i++) {
                 bool active = (i == dIdx);
                 setBgColorIf(kDayBoxes[i], active ? lv_color_hex(0x111611) : lv_color_hex(0x9EAC8D));
-                setTextColorIf(kDayLabels[i], active ? lv_color_hex(0x9EAC8D) : lv_color_hex(0x8D9B7C));
+                setTextColorIf(kDayLabels[i], active ? lv_color_hex(0x9EAC8D) : lv_color_hex(0x829171));
             }
             snprintf(b, sizeof(b), "%02d.%02d.", ti.tm_mday, ti.tm_mon + 1); setText(kDate, b);
             for (int g = 0; g < 10; g++) {
-                setBgColorIf(kBarDots[g], (g <= (ti.tm_sec % 10)) ? lv_color_hex(0x111611) : lv_color_hex(0x8D9B7C));
+                setBgColorIf(kBarDots[g], (g <= (ti.tm_sec % 10)) ? lv_color_hex(0x111611) : lv_color_hex(0x829171));
             }
             snprintf(b, sizeof(b), "%02d", formatHour(ti.tm_hour)); setText(kHH, b);
             snprintf(b, sizeof(b), "%02d", ti.tm_min);  setText(kMM, b);
             snprintf(b, sizeof(b), "%02d", ti.tm_sec);  setText(kSS, b);
-            snprintf(b, sizeof(b), "AKKU %d%%%s", bat, chg ? " LÄDT" : ""); setText(kBat, b);
+
+            uint32_t st = MotionHaptic::getStepsToday();
+            snprintf(b, sizeof(b), "STP %lu", (unsigned long)st); setText(kSteps, b);
+
+            float hd = MotionHaptic::getHeadingDeg();
+            if (MotionHaptic::isSensorOnline()) snprintf(b, sizeof(b), "%s %03d°", cardinalDe(hd), ((int)lroundf(hd)) % 360);
+            else snprintf(b, sizeof(b), "DIR --");
+            setText(kHeading, b);
+
+            snprintf(b, sizeof(b), "BAT %d%%%s", bat, chg ? "+" : ""); setText(kBat, b);
             break;
         }
 
@@ -1525,24 +1671,24 @@ static void refresh(bool force) {
         }
 
         case FACE_CYBERPUNK: {
-            snprintf(b, sizeof(b), "// WATCHOS %s %s", OS_VERSION, (ti.tm_sec % 2) ? "_" : " ");
+            snprintf(b, sizeof(b), "// CORP_NET: ONLINE • SEC: MAX %s", (ti.tm_sec % 2) ? "_" : " ");
             setText(yHeader, b);
             snprintf(b, sizeof(b), "%02d:%02d", formatHour(ti.tm_hour), ti.tm_min); setText(yHero, b);
             snprintf(b, sizeof(b), ":%02d", ti.tm_sec); setText(ySec, b);
             if (secTick) {
-                snprintf(b, sizeof(b), "HEAP: %u KB • PSRAM: %u KB",
-                         (unsigned)(ESP.getFreeHeap() / 1024), (unsigned)(ESP.getFreePsram() / 1024));
+                snprintf(b, sizeof(b), "[CPU] ESP32-S3 • 240M • FREE %uK", (unsigned)(ESP.getFreeHeap() / 1024));
                 setText(yStatus, b);
-                uint32_t steps = MotionHaptic::getStepsToday();
-                if (RadioLoRa::isEnabled()) {
-                    snprintf(b, sizeof(b), "STEPS: %lu • MESH: %u PEERS", (unsigned long)steps,
-                             (unsigned)RadioLoRa::getPeerCount());
-                } else {
-                    snprintf(b, sizeof(b), "STEPS: %lu • MESH: AUS", (unsigned long)steps);
-                }
-                setText(yDiag, b);
-                snprintf(b, sizeof(b), "PWR: %d%% %s • %.2f V", bat, chg ? "LÄDT" : "AKKU", PowerManager::getBatteryVoltage());
+                snprintf(b, sizeof(b), "[PWR] BAT %d%%%s • %.2fV • NORMAL", bat, chg ? " [LADEN]" : "", PowerManager::getBatteryVoltage());
                 setText(yBat, b);
+                uint32_t steps = MotionHaptic::getStepsToday();
+                snprintf(b, sizeof(b), "[BIO] %lu SCHRITTE • %.0f KCAL", (unsigned long)steps, steps * 0.04f);
+                setText(yDiag, b);
+                float hd = MotionHaptic::getHeadingDeg();
+                if (MotionHaptic::isSensorOnline()) snprintf(b, sizeof(b), "[NAV] KURS %03d° %s • IMU OK", ((int)lroundf(hd)) % 360, cardinalDe(hd));
+                else snprintf(b, sizeof(b), "[NAV] KURS -- • IMU WAIT");
+                setText(yNav, b);
+                snprintf(b, sizeof(b), "[NET] %s • BLE %s", RadioLoRa::isEnabled() ? "LORA ON" : "LORA OFF", BleCompanion::isConnected() ? "VERBUNDEN" : "BEREIT");
+                setText(yBio, b);
             }
             break;
         }
@@ -1555,32 +1701,50 @@ static void refresh(bool force) {
             int mBlock = m / 5;
             int minMod = m % 5;
             for (int i = 0; i < 4; i++) {
-                setBgColorIf(wcDots[i], (minMod >= (i + 1)) ? lv_color_hex(0x00E5FF) : cStroke());
+                setBgColorIf(wcDots[i], (minMod >= (i + 1)) ? lv_color_hex(0x00E5FF) : lv_color_hex(0x222A38));
             }
-            auto setW = [](int idx, bool on) { setTextColorIf(wcWords[idx], on ? cText() : cStroke()); };
-            setW(0, true);  // ES
-            setW(1, true);  // IST
-            setW(2, mBlock == 1 || mBlock == 5 || mBlock == 7 || mBlock == 11); // FÜNF
-            setW(3, mBlock == 2 || mBlock == 10);                               // ZEHN (min)
-            setW(4, mBlock == 4 || mBlock == 8);                                // ZWANZIG
-            setW(5, mBlock == 3 || mBlock == 9);                                // VIERTEL
-            setW(6, mBlock == 5 || mBlock == 8 || mBlock == 9 || mBlock == 10 || mBlock == 11); // VOR
-            setW(7, mBlock == 1 || mBlock == 2 || mBlock == 3 || mBlock == 4 || mBlock == 7);  // NACH
-            setW(8, mBlock >= 5 && mBlock <= 7);                               // HALB
-            setW(9, dispH == 12);
-            setW(10, dispH == 2);
-            // "ES IST EIN UHR" (sharp), otherwise "EINS" ("FÜNF NACH EINS", "HALB EINS")
-            setText(wcWords[11], (dispH == 1 && mBlock == 0) ? "EIN" : "EINS");
-            setW(11, dispH == 1);
-            setW(12, dispH == 3);
-            setW(13, dispH == 4);
-            setW(14, dispH == 6);
-            setW(15, dispH == 8);
-            setW(16, dispH == 7);
-            setW(17, dispH == 9);
-            setW(18, dispH == 10);
-            setW(19, dispH == 11);
-            setW(20, mBlock == 0);                                             // UHR
+
+            auto setW = [](int idx, bool on) {
+                setTextColorIf(wcWords[idx], on ? lv_color_hex(0xFFFFFF) : lv_color_hex(0x222A38));
+            };
+
+            for (int i = 0; i < WC_COUNT; i++) setW(i, false);
+
+            setW(WC_ES, true);
+            setW(WC_IST, true);
+
+            switch (mBlock) {
+                case 0: setW(WC_UHR, true); break;                                   // :00
+                case 1: setW(WC_FUENF_M, true); setW(WC_NACH, true); break;         // :05
+                case 2: setW(WC_ZEHN_M, true); setW(WC_NACH, true); break;          // :10
+                case 3: setW(WC_VIERTEL, true); setW(WC_NACH, true); break;         // :15
+                case 4: setW(WC_ZEHN_M, true); setW(WC_VOR, true); setW(WC_HALB, true); break; // :20
+                case 5: setW(WC_FUENF_M, true); setW(WC_VOR, true); setW(WC_HALB, true); break; // :25
+                case 6: setW(WC_HALB, true); break;                                 // :30
+                case 7: setW(WC_FUENF_M, true); setW(WC_NACH, true); setW(WC_HALB, true); break;// :35
+                case 8: setW(WC_ZEHN_M, true); setW(WC_NACH, true); setW(WC_HALB, true); break; // :40
+                case 9: setW(WC_VIERTEL, true); setW(WC_VOR, true); break;          // :45
+                case 10: setW(WC_ZEHN_M, true); setW(WC_VOR, true); break;         // :50
+                case 11: setW(WC_FUENF_M, true); setW(WC_VOR, true); break;         // :55
+            }
+
+            switch (dispH) {
+                case 1:
+                    setText(wcWords[WC_EINS], (mBlock == 0) ? "EIN" : "EINS");
+                    setW(WC_EINS, true);
+                    break;
+                case 2: setW(WC_ZWEI, true); break;
+                case 3: setW(WC_DREI_H, true); break;
+                case 4: setW(WC_VIER, true); break;
+                case 5: setW(WC_FUENF_H, true); break;
+                case 6: setW(WC_SECHS, true); break;
+                case 7: setW(WC_SIEBEN, true); break;
+                case 8: setW(WC_ACHT, true); break;
+                case 9: setW(WC_NEUN, true); break;
+                case 10: setW(WC_ZEHN_H, true); break;
+                case 11: setW(WC_ELF, true); break;
+                case 12: setW(WC_ZWOELF, true); break;
+            }
             break;
         }
 
@@ -1588,11 +1752,19 @@ static void refresh(bool force) {
             snprintf(b, sizeof(b), "%02d", formatHour(ti.tm_hour)); setText(nhHH, b);
             snprintf(b, sizeof(b), "%02d", ti.tm_min);  setText(nhMM, b);
             snprintf(b, sizeof(b), "%02d", ti.tm_sec);  setText(nhSec, b);
-            snprintf(b, sizeof(b), "%s %02d. %s %d", WD_DE_S[ti.tm_wday % 7], ti.tm_mday, MO_DE_S[ti.tm_mon % 12],
-                     ti.tm_year + 1900);
+            snprintf(b, sizeof(b), "%s %02d. %s", WD_DE_S[ti.tm_wday % 7], ti.tm_mday, MO_DE_S[ti.tm_mon % 12]);
             setText(nhDate, b);
-            snprintf(b, sizeof(b), "AKKU %d%%%s", bat, chg ? " • LÄDT" : "");
-            setText(nhBat, b);
+
+            // Sun trajectory arc: 6:00 (0%) to 18:00 (100%)
+            float daySec = ti.tm_hour * 3600.0f + ti.tm_min * 60.0f + ti.tm_sec;
+            float sunPct = (daySec - 21600.0f) / 43200.0f;
+            if (sunPct < 0.0f) sunPct = 0.0f;
+            if (sunPct > 1.0f) sunPct = 1.0f;
+            lv_arc_set_value(soSunArc, (int)(sunPct * 100));
+            float sunAngle = (1.0f - sunPct) * (float)M_PI;
+            float sunX = (CW / 2.0f) + 155.0f * cosf(sunAngle);
+            float sunY = 179.0f - 155.0f * sinf(sunAngle);
+            lv_obj_set_pos(nhBat, (int)sunX - 8, (int)sunY - 8);
             break;
         }
 
@@ -1613,7 +1785,6 @@ static void refresh(bool force) {
             snprintf(b, sizeof(b), "SCAN // AZIMUT %03d°", (int)(sec * 6.0f) % 360);
             setText(rtHeading, b);
             if (secTick) {
-                // blips: real LoRa peers with a position, relative to our own position
                 static LoraPeerNode peers[3];
                 uint8_t np = RadioLoRa::isEnabled() ? RadioLoRa::getPeers(peers, 3) : 0;
                 bool haveRef = false;
@@ -1631,8 +1802,8 @@ static void refresh(bool force) {
                         double dy = (peers[i].lat - myLat) * 111.32;
                         double dx = (peers[i].lon - myLon) * 111.32 * cos(myLat * M_PI / 180.0);
                         double km = sqrt(dx * dx + dy * dy);
-                        double brg = atan2(dx, dy);                            // 0 = north, clockwise
-                        float r = 30.0f + 45.0f * log10f(1.0f + (float)km);    // log scale, 1 km ~ 44 px
+                        double brg = atan2(dx, dy);
+                        float r = 30.0f + 45.0f * log10f(1.0f + (float)km);
                         if (r > 170.0f) r = 170.0f;
                         int px = RT_SZ / 2 + (int)lroundf(sinf((float)brg) * r) - 4;
                         int py = RT_SZ / 2 - (int)lroundf(cosf((float)brg) * r) - 4;
@@ -1654,17 +1825,25 @@ static void refresh(bool force) {
             snprintf(b, sizeof(b), "%s, %02d. %s", WD_DE_L[ti.tm_wday % 7], ti.tm_mday, MO_DE_L[ti.tm_mon % 12]);
             setText(ltDate, b);
             if (secTick) {
+                int curWk = ti.tm_yday / 7;
+                if (curWk >= 52) curWk = 51;
+                for (int i = 0; i < 52; i++) {
+                    if (i < curWk) setBgColorIf(ltDots[i], accent());
+                    else if (i == curWk) setBgColorIf(ltDots[i], lv_color_hex(0xFFFFFF));
+                    else setBgColorIf(ltDots[i], lv_color_hex(0x222A38));
+                }
+                snprintf(b, sizeof(b), "WOCHE %d / 52  •  VERBLIEBEN: %d WOCHEN", curWk + 1, 52 - (curWk + 1));
+                setText(ltStats, b);
+
                 long secOfDay = ti.tm_hour * 3600L + ti.tm_min * 60L + ti.tm_sec;
                 int year = ti.tm_year + 1900;
                 long daysInYear = ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)) ? 366 : 365;
                 long dim = daysInMonth(year, ti.tm_mon);
-                long wdayMon = (ti.tm_wday + 6) % 7;
-                int pct[4];
+                int pct[3];
                 pct[0] = (int)((ti.tm_yday * 86400L + secOfDay) * 100 / (daysInYear * 86400L));
                 pct[1] = (int)(((ti.tm_mday - 1) * 86400L + secOfDay) * 100 / (dim * 86400L));
-                pct[2] = (int)((wdayMon * 86400L + secOfDay) * 100 / (7L * 86400L));
-                pct[3] = (int)(secOfDay * 100 / 86400L);
-                for (int i = 0; i < 4; i++) {
+                pct[2] = (int)(secOfDay * 100 / 86400L);
+                for (int i = 0; i < 3; i++) {
                     setBar(ltBars[i], pct[i]);
                     snprintf(b, sizeof(b), "%d%%", pct[i]); setText(ltPct[i], b);
                 }

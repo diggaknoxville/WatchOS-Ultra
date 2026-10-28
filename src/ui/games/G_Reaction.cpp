@@ -23,7 +23,9 @@ void status() {
 }
 
 void build(lv_obj_t* area) {
-    sDisc = disc(area, CX, CY, 220, cSurf2());
+    disc(area, CX, CY, 246, lv_color_hex(0x1E293B));
+    disc(area, CX, CY, 240, lv_color_hex(0x0A0D14));
+    sDisc = disc(area, CX, CY, 218, cSurf2());
     sWord = text(area, F.title, cText(), "TIPPEN");
     lv_obj_set_style_text_letter_space(sWord, 3, 0);
     lv_obj_align(sWord, LV_ALIGN_CENTER, 0, CY - SCR_H / 2);
@@ -37,7 +39,7 @@ void arm(uint32_t now) {
     phase = P_WAIT;
     phaseAt = now;
     waitMs = 1200 + rnd(2600);
-    tint(sDisc, cCrit());
+    tint(sDisc, lv_color_hex(0xFF1744));
     setText(sWord, "WARTEN");
 }
 
@@ -67,8 +69,8 @@ void tick(uint32_t, const Input& in) {
             } else if (now - phaseAt >= waitMs) {
                 phase = P_GO;
                 goAt = now;
-                tint(sDisc, cOk());
-                setText(sWord, "JETZT");
+                tint(sDisc, lv_color_hex(0x00E676));
+                setText(sWord, "JETZT!");
             }
             break;
         case P_GO:

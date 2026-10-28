@@ -33,12 +33,18 @@ void shapeRing(float r) {
 }
 
 void build(lv_obj_t* area) {
+    disc(area, CX, CY, 240, lv_color_hex(0x161E2E));
+    disc(area, CX, CY, 236, lv_color_hex(0x0A0D14));
+    disc(area, CX, CY, 160, lv_color_hex(0x1C273B));
+    disc(area, CX, CY, 156, lv_color_hex(0x0A0D14));
+    disc(area, CX, CY, 80, lv_color_hex(0x223049));
+    disc(area, CX, CY, 76, lv_color_hex(0x0A0D14));
+
     sRing = disc(area, CX, CY, (int)(2 * R_START), accent());
     sRingIn = disc(area, CX, CY, (int)(2 * R_START) - 8, cBg());
-    // crosshair
-    rect(area, CX - 1, CY - 14, 2, 28, cStroke());
-    rect(area, CX - 14, CY - 1, 28, 2, cStroke());
-    sBall = disc(area, CX, CY, BALL, cText());
+    rect(area, CX - 1, CY - 22, 2, 44, lv_color_hex(0x00E5FF));
+    rect(area, CX - 22, CY - 1, 44, 2, lv_color_hex(0x00E5FF));
+    sBall = disc(area, CX, CY, BALL, lv_color_hex(0xFFFFFF));
     sTime = text(area, F.numS, cText2(), "0,0 s");
     lv_obj_align(sTime, LV_ALIGN_TOP_MID, 0, AREA_Y1 - 2);
 }

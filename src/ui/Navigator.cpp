@@ -1,4 +1,5 @@
 #include "ui/Navigator.h"
+#include "ui/Pages.h"
 #include "ui/UiKit.h"
 #include "Compositor.h"
 #include "KronosDisplay.h"
@@ -805,7 +806,10 @@ static Gesture classify(bool horizontal, int dx, int dy, int x0, int y0, int* di
                 if (neighbour(sCur, *dir) == PG_COUNT) *dir = 0;   // rubber band
                 return G_PAGE;
             }
-            if (sCur == PG_FACE) return dy > 0 ? G_SHEET_TOP_OPEN : G_SHEET_BOT_OPEN;
+            if (sCur == PG_FACE) {
+                if (pages::isRingsDetailOpen()) return G_NONE;
+                return dy > 0 ? G_SHEET_TOP_OPEN : G_SHEET_BOT_OPEN;
+            }
             // Allow pulling down Quick Menu (PG_CONTROL) from the top of EVERY screen!
             if (dy > 0) {
                 int maxTopY = (sCur == PG_POSITION || sCur == PG_LAUNCHER) ? 72 : 160;
@@ -1021,11 +1025,15 @@ void warmup(void (*progress)(float)) {
 
 void bootReveal(PageId initial) {
     sBusy = true;
-    prepareGlass();                                       // the splash
+    prepareGlass();                                       // the splash from sMirror
     ensureSurface(initial);
+    refreshPage(initial, true);                           // update complications with live time/bat
+    Compositor::render(sPages[initial].root, sSurf[initial]); // render pristine initial page
+    sDirty[initial] = false;
+
     // cross-fade through black: the splash fades out, then the page fades in.
     // Nothing of the page is visible before it is complete.
-    const float OUT_S = 0.18f, IN_S = 0.26f;
+    const float OUT_S = 0.14f, IN_S = 0.20f;
     uint32_t t0 = micros();
     for (;;) {
         float t = (micros() - t0) / 1e6f;
@@ -1042,6 +1050,7 @@ void bootReveal(PageId initial) {
     }
     Layer L = {&sSurf[initial], 0, 0, 256};
     Compositor::present(&L, 1, true);
+    Compositor::setMirror(sSurf[initial]);
     sMode = modeFor(initial);
     if (sMode == M_CAROUSEL) sBase = initial;
     sDepth = 0;

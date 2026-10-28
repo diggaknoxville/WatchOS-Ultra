@@ -62,16 +62,18 @@ void showWalls() {
 }
 
 void build(lv_obj_t* area) {
-    lv_color_t wc = lv_color_hex(0x3A4252);
-    rect(area, OX - WT, OY - WT, COLS * CS + 2 * WT, ROWS * CS + 2 * WT, lv_color_hex(0x0B0E14), 6);
+    lv_color_t wc = lv_color_hex(0x00D0FF);
+    rect(area, OX - WT - 2, OY - WT - 2, COLS * CS + 2 * WT + 4, ROWS * CS + 2 * WT + 4, lv_color_hex(0x253248), 10);
+    rect(area, OX - WT, OY - WT, COLS * CS + 2 * WT, ROWS * CS + 2 * WT, lv_color_hex(0x0A0E18), 8);
     for (int r = 0; r < ROWS; r++)
         for (int c = 0; c <= COLS; c++)
-            objV[r][c] = rect(area, OX + c * CS - WT / 2, OY + r * CS - WT / 2, WT, CS + WT, wc);
+            objV[r][c] = rect(area, OX + c * CS - WT / 2, OY + r * CS - WT / 2, WT, CS + WT, wc, 1);
     for (int r = 0; r <= ROWS; r++)
         for (int c = 0; c < COLS; c++)
-            objH[r][c] = rect(area, OX + c * CS - WT / 2, OY + r * CS - WT / 2, CS + WT, WT, wc);
-    sGoal = disc(area, OX + (COLS - 1) * CS + CS / 2, OY + (ROWS - 1) * CS + CS / 2, 20, cOk());
-    sBall = disc(area, 0, 0, BALL, accent());
+            objH[r][c] = rect(area, OX + c * CS - WT / 2, OY + r * CS - WT / 2, CS + WT, WT, wc, 1);
+    disc(area, OX + (COLS - 1) * CS + CS / 2, OY + (ROWS - 1) * CS + CS / 2, 26, lv_color_hex(0x0A361C));
+    sGoal = disc(area, OX + (COLS - 1) * CS + CS / 2, OY + (ROWS - 1) * CS + CS / 2, 18, lv_color_hex(0x30D158));
+    sBall = disc(area, 0, 0, BALL, lv_color_hex(0xFFD60A));
 }
 
 void start() {

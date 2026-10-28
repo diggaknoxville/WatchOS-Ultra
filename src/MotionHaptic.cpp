@@ -431,7 +431,7 @@ void MotionHaptic::getAccel(float &ax, float &ay, float &az) {
 void MotionHaptic::getEuler(float &roll, float &pitch, float &yaw) {
     roll = sRawRoll - sRollZero;
     pitch = sRawPitch - sPitchZero;
-    float h = fmodf((sRawYaw - sYawZero) + 360.0f, 360.0f);
+    float h = fmodf((sYawZero - sRawYaw) + 360.0f, 360.0f);
     if (h < 0) h += 360.0f;
     yaw = h;
 }

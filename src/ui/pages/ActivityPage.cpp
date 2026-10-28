@@ -129,7 +129,6 @@ static void refresh(bool) {
     for (int i = 0; i < 7; i++) if (hist[i] > peak) peak = hist[i];
     int gy = BAR_BASE - (int)((uint64_t)goal * BAR_MAX / peak);
     if (lv_obj_get_y(aGoalLine) != gy) lv_obj_set_y(aGoalLine, gy);
-
     static const char* D1[] = {"S", "M", "D", "M", "D", "F", "S"};
     for (int i = 0; i < 7; i++) {
         int h = (int)((uint64_t)hist[i] * BAR_MAX / peak);
@@ -141,7 +140,7 @@ static void refresh(bool) {
         setText(aDays[i], D1[(lt.tm_wday + 1 + i) % 7]);
     }
     if (aSevenDaySummLbl) {
-        snprintf(b, sizeof(b), "~ 7-Tage: %lu · Zielquote: %d%%", (unsigned long)avgSteps, goalMetDays * 100 / 7);
+        snprintf(b, sizeof(b), "Ø 7-Tage: %lu · Zielquote: %d%%", (unsigned long)avgSteps, goalMetDays * 100 / 7);
         setText(aSevenDaySummLbl, b);
     }
 }
@@ -205,7 +204,7 @@ void buildActivity(lv_obj_t* scr) {
         lv_obj_set_style_text_align(aDays[i], LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_pos(aDays[i], x, 134);
     }
-    aSevenDaySummLbl = caption(cd, "~ 7-Tage: -- · Zielquote: --%", accent());
+    aSevenDaySummLbl = caption(cd, "Ø 7-Tage: -- · Zielquote: --%", accent());
     accReg(aSevenDaySummLbl, ACC_TEXT);
     lv_obj_set_pos(aSevenDaySummLbl, 20, 156);
 
@@ -224,9 +223,9 @@ void buildActivity(lv_obj_t* scr) {
     lv_obj_t* hcap1 = caption(hc1, "7-TAGE-DURCHSCHNITT", accent());
     accReg(hcap1, ACC_TEXT);
     lv_obj_set_pos(hcap1, 16, 12);
-    aHistAvgStepsLbl = label(hc1, F.title, cText(), "~ -- Schritte / Tag");
+    aHistAvgStepsLbl = label(hc1, F.title, cText(), "Ø -- Schritte / Tag");
     lv_obj_set_pos(aHistAvgStepsLbl, 16, 36);
-    aHistAvgMetaLbl = caption(hc1, "~ -- km · ~ -- kcal täglich", cText2());
+    aHistAvgMetaLbl = caption(hc1, "Ø -- km · Ø -- kcal täglich", cText2());
     lv_obj_set_pos(aHistAvgMetaLbl, 16, 70);
 
     // Card 2: Spitzenleistungen & Zielquote
@@ -246,7 +245,7 @@ void buildActivity(lv_obj_t* scr) {
     lv_obj_set_pos(hc3, M, 240);
     lv_obj_t* hcap3 = caption(hc3, "KADENZ & TREND", cText3());
     lv_obj_set_pos(hcap3, 16, 12);
-    aHistCadenceLbl = label(hc3, F.body, cText(), "Kadenz: ~ -- SPM");
+    aHistCadenceLbl = label(hc3, F.body, cText(), "Kadenz: Ø -- SPM");
     lv_obj_set_pos(aHistCadenceLbl, 16, 34);
     aHistTrendLbl = caption(hc3, "Trend: +14% Zuwachs zur Vorwoche", cOk());
     lv_obj_set_pos(aHistTrendLbl, 16, 62);

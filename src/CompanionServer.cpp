@@ -382,6 +382,8 @@ void CompanionServer::startAp() {
     WiFi.persistent(false);
     WiFi.disconnect(true);
     WiFi.mode(WIFI_AP);
+    // Cap TX power immediately to ~8.5 dBm before beacons start transmitting to prevent USB EMI glitches
+    WiFi.setTxPower(WIFI_POWER_8_5dBm);
     IPAddress IP(192, 168, 4, 1);
     WiFi.softAPConfig(IP, IP, IPAddress(255, 255, 255, 0));
     bool ok = WiFi.softAP(apName, apPassword, 1, 0, 4);
@@ -390,7 +392,7 @@ void CompanionServer::startAp() {
         ok = WiFi.softAP(apName, apPassword, 1, 0, 4);
     }
     if (ok) {
-        WiFi.setTxPower(WIFI_POWER_11dBm);
+        WiFi.setTxPower(WIFI_POWER_8_5dBm);
         dnsServer.start(53, "*", IP);
         server.begin();
         apRunning = true;
