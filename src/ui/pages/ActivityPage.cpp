@@ -100,9 +100,11 @@ static void refresh(bool) {
         setText(aHistGoalQuoteLbl, b);
 
         uint16_t spm = MotionHaptic::getLearnedCadenceSpm();
-        snprintf(b, sizeof(b), "Kadenz: ~ %u SPM (Gehen) · Max %u SPM", (unsigned)(spm > 20 ? spm - 8 : 108), (unsigned)(spm ? spm + 24 : 138));
+        if (spm) snprintf(b, sizeof(b), "Kadenz beim Gehen: %u SPM (gelernt)", (unsigned)spm);
+        else snprintf(b, sizeof(b), "Kadenz: noch nicht gelernt");
         setText(aHistCadenceLbl, b);
-        snprintf(b, sizeof(b), "Trend: +14%% Aktivitätszuwachs vs. Vorwoche");
+        // only seven days are stored: a week-over-week trend would be invented
+        snprintf(b, sizeof(b), "Trend: Vorwoche wird nicht gespeichert");
         setText(aHistTrendLbl, b);
         return;
     }
@@ -245,9 +247,9 @@ void buildActivity(lv_obj_t* scr) {
     lv_obj_set_pos(hc3, M, 240);
     lv_obj_t* hcap3 = caption(hc3, "KADENZ & TREND", cText3());
     lv_obj_set_pos(hcap3, 16, 12);
-    aHistCadenceLbl = label(hc3, F.body, cText(), "Kadenz: Ø -- SPM");
+    aHistCadenceLbl = label(hc3, F.body, cText(), "Kadenz: --");
     lv_obj_set_pos(aHistCadenceLbl, 16, 34);
-    aHistTrendLbl = caption(hc3, "Trend: +14% Zuwachs zur Vorwoche", cOk());
+    aHistTrendLbl = caption(hc3, "", cText2());
     lv_obj_set_pos(aHistTrendLbl, 16, 62);
 
     // ---- view 1: bubble level & compass ----

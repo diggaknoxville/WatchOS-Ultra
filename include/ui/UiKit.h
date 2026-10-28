@@ -34,7 +34,8 @@ constexpr int R_CARD = 24;             // card corner radius
 constexpr int R_TILE = 16;             // smaller tiles / rows
 constexpr int CONTENT_Y = 82;          // first content row below the title
 constexpr int PILL_H = 28;
-constexpr int BTN_H = 52;
+constexpr int BTN_H = 56;              // list rows / buttons: 28 pt, the HIG minimum control size
+constexpr int HIT_MIN = 56;            // every clickable gets at least this hit region (invisible)
 
 // ---- colour tokens (true black: AMOLED pixels off) -------------------------
 inline lv_color_t cBg()     { return lv_color_hex(0x000000); }
@@ -43,7 +44,7 @@ inline lv_color_t cSurf2()  { return lv_color_hex(0x181C25); }
 inline lv_color_t cStroke() { return lv_color_hex(0x252A35); }
 inline lv_color_t cText()   { return lv_color_hex(0xF4F6FA); }
 inline lv_color_t cText2()  { return lv_color_hex(0x9BA4B4); }
-inline lv_color_t cText3()  { return lv_color_hex(0x5A6270); }
+inline lv_color_t cText3()  { return lv_color_hex(0x7C8594); }   // 5.6:1 on black, 4.6:1 on cSurf2
 inline lv_color_t cOk()     { return lv_color_hex(0x30D158); }
 inline lv_color_t cWarn()   { return lv_color_hex(0xFF9F0A); }
 inline lv_color_t cCrit()   { return lv_color_hex(0xFF453A); }
@@ -81,7 +82,11 @@ lv_obj_t* iconText(lv_obj_t* btn, const char* icon, const char* text, lv_color_t
 
 // ---- reusable components ---------------------------------------------------
 // Press feedback for any clickable object (dims while pressed, cheap: no layer).
+// Also grows the hit region of small fixed-size objects to HIT_MIN (see hitArea).
 void pressable(lv_obj_t* o);
+// Invisible hit region: objects with a fixed size below minPx get an extended
+// click area so they meet the 28 pt minimum without changing their look.
+void hitArea(lv_obj_t* o, int minPx = HIT_MIN);
 
 // Status chip: tinted background (30 %) + caption in the same colour.
 // Child 0 of the returned object is the label.
@@ -122,6 +127,7 @@ lv_obj_t* tabBar(lv_obj_t* parent, int x, int y, int w, const char* const* names
 void setTabActive(lv_obj_t* bar, int active);
 
 // Modal confirm dialog on lv_layer_top(). Only one dialog at a time.
+// cancelText nullptr or "" = informational dialog with a single centred button.
 typedef void (*ConfirmCb)(bool ok, void* user);
 void confirmDialog(const char* title, const char* msg, const char* okText, const char* cancelText,
                    ConfirmCb cb, void* user = nullptr, bool danger = false);

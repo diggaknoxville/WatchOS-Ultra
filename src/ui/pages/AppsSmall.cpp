@@ -41,9 +41,9 @@ static void swRefresh(bool) {
     setText(swTime, b);
     snprintf(b, sizeof(b), ".%02lu", (unsigned long)((e % 1000) / 10));
     setText(swCs, b);
-    setButtonText(swStart, swRun ? "STOPP" : (e ? "WEITER" : "START"));
+    setButtonText(swStart, swRun ? "Stopp" : (e ? "Weiter" : "Start"));
     setBgColorIf(swStart, swRun ? cCrit() : cOk());
-    setButtonText(swLap, swRun ? "RUNDE" : "RESET");
+    setButtonText(swLap, swRun ? "Runde" : "Löschen");
     for (int i = 0; i < 4; i++) {
         bool has = i < swLapN;
         setHidden(swLaps[i], !has);
@@ -72,7 +72,7 @@ void buildStopwatch(lv_obj_t* scr) {
     }
 
     const int bw = (CW - 14) / 2;
-    swLap = secondaryButton(p, bw, 76, nullptr, "RESET");
+    swLap = secondaryButton(p, bw, 76, nullptr, "Löschen");
     lv_obj_set_pos(swLap, M, 386);
     lv_obj_add_event_cb(swLap, [](lv_event_t*) {
         if (swRun) {
@@ -86,7 +86,7 @@ void buildStopwatch(lv_obj_t* scr) {
         haptic(HAPTIC_TICK);
     }, LV_EVENT_CLICKED, NULL);
 
-    swStart = primaryButton(p, bw, 76, nullptr, "START");
+    swStart = primaryButton(p, bw, 76, nullptr, "Start");
     lv_obj_set_pos(swStart, M + bw + 14, 386);
     lv_obj_set_style_bg_color(swStart, cOk(), 0);
     lv_obj_add_event_cb(swStart, [](lv_event_t*) {
@@ -161,7 +161,7 @@ void buildPower(lv_obj_t* scr) {
                       "Neustart", "Abbrechen", onRestartConfirm, nullptr, false);
     }, LV_EVENT_CLICKED, NULL);
 
-    lv_obj_t* off = dangerButton(p, CW, 64, ICO_POWER_SETTINGS_NEW, "Ausschalten (halten)");
+    lv_obj_t* off = dangerButton(p, CW, 64, ICO_POWER_SETTINGS_NEW, "Ausschalten");
     lv_obj_set_pos(off, M, 342);
     lv_obj_add_event_cb(off, [](lv_event_t*) {
         SettingsStorage::flushNow();
@@ -172,9 +172,9 @@ void buildPower(lv_obj_t* scr) {
         }
     }, LV_EVENT_LONG_PRESSED, NULL);
 
-    lv_obj_t* hint = caption(p, "SEITENTASTE = ZURÜCK", cText3());
+    lv_obj_t* hint = caption(p, "AUSSCHALTEN: TASTE GEDRÜCKT HALTEN", cText3());
     lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -62);
-    lv_obj_t* hint2 = caption(p, "VON UNTEN NACH OBEN WISCHEN = ZURÜCK", cText3());
+    lv_obj_t* hint2 = caption(p, "SEITENTASTE ODER WISCH VON UNTEN: ZURÜCK", cText3());
     lv_obj_align(hint2, LV_ALIGN_BOTTOM_MID, 0, -(nav::HOME_EDGE / 2 - 8));   // inside the home edge zone
     lv_obj_t* grab = box(p, 40, 5);
     lv_obj_set_style_radius(grab, 3, 0);
@@ -298,37 +298,34 @@ void buildConnect(lv_obj_t* scr) {
         SettingsStorage::save();
         CompanionServer::requestAp(!active);
         haptic(HAPTIC_CLICK);
-        DisplayEngine::showToast("Hotspot", !active ? "Wird gestartet..." : "Beendet", 2000, ICO_WIFI);
         nav::markDirty(nav::PG_CONTROL);
         refreshConnect(true);
     }, LV_EVENT_CLICKED, NULL);
 
     // --- CARD 2: BLUETOOTH LOW ENERGY ---
-    lv_obj_t* cBle = card(list, CW, 218);
+    lv_obj_t* cBle = card(list, CW, 226);
     lv_obj_set_style_radius(cBle, R_TILE, 0);
     lv_obj_t* bTitle = caption(cBle, "BLUETOOTH LOW ENERGY", lv_color_hex(0x0A84FF));
     lv_obj_align(bTitle, LV_ALIGN_TOP_MID, 0, 10);
 
     lv_obj_t* bDev = label(cBle, F.body, cText(), "Gerät: WatchOS Ultra");
     lv_obj_align(bDev, LV_ALIGN_TOP_MID, 0, 34);
-    cnBlePin = label(cBle, F.title, accent(), "PIN: 123456");
-    accReg(cnBlePin, ACC_TEXT);
-    lv_obj_align(cnBlePin, LV_ALIGN_TOP_MID, 0, 58);
+    cnBlePin = caption(cBle, "KOPPLUNG OHNE PIN (JUST WORKS)", cText2());   // what the stack really does
+    lv_obj_align(cnBlePin, LV_ALIGN_TOP_MID, 0, 64);
     cnBleStatus = caption(cBle, "Status: Bereit zur Kopplung", cText2());
     lv_obj_align(cnBleStatus, LV_ALIGN_TOP_MID, 0, 92);
 
-    cnBleToggleBtn = secondaryButton(cBle, CW - 24, 40, ICO_SMARTPHONE, "Bluetooth umschalten");
-    lv_obj_align(cnBleToggleBtn, LV_ALIGN_TOP_MID, 0, 118);
+    cnBleToggleBtn = secondaryButton(cBle, CW - 24, 44, ICO_SMARTPHONE, "Bluetooth umschalten");
+    lv_obj_align(cnBleToggleBtn, LV_ALIGN_TOP_MID, 0, 116);
     lv_obj_add_event_cb(cnBleToggleBtn, [](lv_event_t*) {
         bool en = !BleCompanion::isEnabled();
         BleCompanion::setEnabled(en);
         haptic(HAPTIC_TICK);
-        DisplayEngine::showToast("Bluetooth", en ? "Aktiviert" : "Deaktiviert", 2000, ICO_SMARTPHONE);
         refreshConnect(true);
     }, LV_EVENT_CLICKED, NULL);
 
-    lv_obj_t* btnResetBonds = secondaryButton(cBle, CW - 24, 40, ICO_REFRESH, "Kopplungen löschen (Reset)");
-    lv_obj_align(btnResetBonds, LV_ALIGN_TOP_MID, 0, 164);
+    lv_obj_t* btnResetBonds = secondaryButton(cBle, CW - 24, 44, ICO_DELETE, "Kopplungen löschen");
+    lv_obj_align(btnResetBonds, LV_ALIGN_TOP_MID, 0, 168);
     lv_obj_add_event_cb(btnResetBonds, [](lv_event_t*) {
         BleCompanion::resetBonds();
         haptic(HAPTIC_SUCCESS);
@@ -754,14 +751,14 @@ void buildSettings(lv_obj_t* scr) {
 
     // ---- ANZEIGE ----
     sectionHeader(list, -1, "ANZEIGE");
-    lv_obj_t* cc = card(list, CW, 92);
+    lv_obj_t* cc = card(list, CW, 98);
     lv_obj_set_style_radius(cc, R_TILE, 0);
     lv_obj_t* cl = caption(cc, "AKZENTFARBE", cText2());
     lv_obj_set_pos(cl, 18, 12);
     const int dotSpacing = (CW - 36) / 6;
     for (int i = 0; i < 6; i++) {
-        lv_obj_t* dot = box(cc, 40, 40);
-        lv_obj_set_pos(dot, 22 + i * dotSpacing, 38);
+        lv_obj_t* dot = box(cc, 44, 44);
+        lv_obj_set_pos(dot, 20 + i * dotSpacing, 40);
         lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
         lv_obj_set_style_bg_color(dot, colorFrom565(ACCENT_PALETTE[i]), 0);
@@ -838,7 +835,7 @@ void buildSettings(lv_obj_t* scr) {
         haptic(HAPTIC_TICK);
         char msg[120];
         snprintf(msg, sizeof(msg), "%s\nVersion %s, Build %s\nLilyGO T-Watch Ultra (ESP32-S3)", OS_NAME, OS_VERSION, OS_BUILD);
-        confirmDialog("Über", msg, "OK", "Schliessen", nullptr, nullptr, false);
+        confirmDialog("Über", msg, "OK", nullptr, nullptr, nullptr, false);
     });
     lv_obj_t* pw = valueRow(list, -1, ICO_POWER_SETTINGS_NEW, "Energie / Neustart", "", [](lv_event_t*) {
         haptic(HAPTIC_TICK);

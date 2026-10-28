@@ -12,8 +12,8 @@
 
 // System Constants
 #define OS_NAME             "WatchOS Ultra"
-#define OS_VERSION          "1.2.0"
-#define OS_BUILD            "2026.10b"
+#define OS_VERSION          "1.4.1"
+#define OS_BUILD            "2026.10c"
 #define AP_SSID_PREFIX      "WATCHOS-ULTRA"
 #define HTTP_PORT           80
 // The WiFi AP password is per-device (CompanionServer::getApPassword()).

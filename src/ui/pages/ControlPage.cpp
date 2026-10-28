@@ -32,8 +32,8 @@ static lv_obj_t *sMediaCard, *sMediaTitle, *sMediaArtist, *sMediaPlay;
 static lv_obj_t *sInfoCard, *sInfoLbl;
 
 static const int TILE_W = (CW - 10) / 2;
-static const int TILE_H = 64;
-static const int GRID_Y = CONTENT_Y + 40;
+static const int TILE_H = 62;
+static const int GRID_Y = CONTENT_Y + 48;          // 40 px tab bar + 8
 
 // ---- tile: icon + label, accent when on ------------------------------------
 static lv_obj_t* makeTile(lv_obj_t* parent, int x, int y, int w, int h, const char* icon, const char* text,
@@ -178,13 +178,13 @@ void buildControl(lv_obj_t* scr) {
     static const char* icons[CT_N] = {ICO_WIFI, ICO_SMARTPHONE, ICO_SATELLITE_ALT, ICO_PODCASTS, ICO_DO_NOT_DISTURB_ON, ICO_FLASHLIGHT_ON};
     static const char* names[CT_N] = {"Hotspot", "Bluetooth", "GPS", "LoRa Mesh", "Nicht stören", "Taschenlampe"};
     for (int i = 0; i < CT_N; i++) {
-        sTiles[i] = makeTile(sWrapToggles, M + (i % 2) * (TILE_W + 10), (i / 2) * (TILE_H + 10), TILE_W, TILE_H,
+        sTiles[i] = makeTile(sWrapToggles, M + (i % 2) * (TILE_W + 10), (i / 2) * (TILE_H + 8), TILE_W, TILE_H,
                              icons[i], names[i], onToggle, (void*)(intptr_t)i);
     }
-    const int mediaY = 3 * (TILE_H + 10) + 2;          // 224
+    const int mediaY = 3 * (TILE_H + 8) + 2;           // 212: media / status card ends at 442 px
 
     // media remote card (conditional)
-    sMediaCard = card(sWrapToggles, CW, 84);
+    sMediaCard = card(sWrapToggles, CW, 100);
     lv_obj_set_style_radius(sMediaCard, R_TILE, 0);
     lv_obj_set_pos(sMediaCard, M, mediaY);
     sMediaTitle = label(sMediaCard, F.small, cText(), "");
@@ -195,7 +195,7 @@ void buildControl(lv_obj_t* scr) {
     lv_obj_set_pos(sMediaArtist, 16, 30);
     lv_obj_set_width(sMediaArtist, CW - 32);
     lv_label_set_long_mode(sMediaArtist, LV_LABEL_LONG_DOT);
-    const int by = 46, bs = 32;
+    const int by = 48, bs = 44;                        // 22 pt, 10 px apart
     lv_obj_t* prev = iconButton(sMediaCard, bs, ICO_CHEVRON_LEFT, cSurf2(), cText());
     lv_obj_set_pos(prev, 16, by);
     lv_obj_add_event_cb(prev, [](lv_event_t*) { BleCompanion::sendMediaCommand("CMD:MEDIA:PREV"); haptic(HAPTIC_TICK); }, LV_EVENT_CLICKED, NULL);
@@ -231,7 +231,7 @@ void buildControl(lv_obj_t* scr) {
     }, LV_EVENT_CLICKED, NULL);
 
     // status card when nothing plays (tap -> media remote)
-    sInfoCard = card(sWrapToggles, CW, 84);
+    sInfoCard = card(sWrapToggles, CW, 100);
     lv_obj_set_style_radius(sInfoCard, R_TILE, 0);
     lv_obj_set_pos(sInfoCard, M, mediaY);
     pressable(sInfoCard);
@@ -242,17 +242,12 @@ void buildControl(lv_obj_t* scr) {
     lv_obj_t* qiTitle = label(sInfoCard, F.small, cText(), "Status · Tippen für Medien");
     lv_obj_set_pos(qiTitle, 50, 14);
     sInfoLbl = caption(sInfoCard, "", cText2());
-    lv_obj_set_pos(sInfoLbl, 50, 44);
-
-    // Navigation buttons: Apps + Einstellungen
+    lv_obj_set_pos(sInfoLbl, 50, 48);
+    lv_obj_set_width(sInfoLbl, CW - 66);
+    lv_label_set_long_mode(sInfoLbl, LV_LABEL_LONG_WRAP);
+    // (no Apps / Optionen buttons here: the launcher is one swipe from the face,
+    //  Optionen and Energie live on the SYSTEM tab; the row ran into the home edge)
     const int subBtnW = (CW - 10) / 2;
-    lv_obj_t* appBtn = secondaryButton(sWrapToggles, subBtnW, 46, ICO_APPS, "Apps");
-    lv_obj_set_pos(appBtn, M, mediaY + 92);
-    lv_obj_add_event_cb(appBtn, [](lv_event_t*) { haptic(HAPTIC_TICK); nav::go(nav::PG_LAUNCHER); }, LV_EVENT_CLICKED, NULL);
-
-    lv_obj_t* setBtn = primaryButton(sWrapToggles, subBtnW, 46, ICO_SETTINGS, "Optionen");
-    lv_obj_set_pos(setBtn, M + subBtnW + 10, mediaY + 92);
-    lv_obj_add_event_cb(setBtn, [](lv_event_t*) { haptic(HAPTIC_TICK); nav::openApp(nav::PG_APP_SETTINGS); }, LV_EVENT_CLICKED, NULL);
 
     // ===================================================== tab 1: SYSTEM
     sWrapSystem = box(p, SCR_W, SCR_H - GRID_Y);
@@ -291,7 +286,7 @@ void buildControl(lv_obj_t* scr) {
     }, LV_EVENT_VALUE_CHANGED, NULL);
     lv_obj_add_event_cb(sSlider, [](lv_event_t*) { SettingsStorage::save(); haptic(HAPTIC_TICK); }, LV_EVENT_RELEASED, NULL);
 
-    sTimeoutRow = valueRow(sWrapSystem, 88, ICO_TIMER, "Bildschirm-Timeout", "--", [](lv_event_t*) {
+    sTimeoutRow = valueRow(sWrapSystem, 86, ICO_TIMER, "Bildschirm-Timeout", "--", [](lv_event_t*) {
         SystemSettings& s = SettingsStorage::get();
         int n = sizeof(TIMEOUT_STEPS) / sizeof(TIMEOUT_STEPS[0]);
         int nx = 0;
@@ -303,7 +298,7 @@ void buildControl(lv_obj_t* scr) {
         refresh(true);
     });
 
-    sAodTile = makeTile(sWrapSystem, M, 152, CW, 56, ICO_WATCH, "Always-On-Display", [](lv_event_t*) {
+    sAodTile = makeTile(sWrapSystem, M, 148, CW, 56, ICO_WATCH, "Always-On-Display", [](lv_event_t*) {
         SystemSettings& s = SettingsStorage::get();
         s.aodEnabled = !s.aodEnabled;
         SettingsStorage::save();
@@ -311,7 +306,7 @@ void buildControl(lv_obj_t* scr) {
         haptic(HAPTIC_TICK);
         refresh(true);
     }, nullptr);
-    sWristTile = makeTile(sWrapSystem, M, 216, TILE_W, 56, ICO_VISIBILITY, "Handgelenk", [](lv_event_t*) {
+    sWristTile = makeTile(sWrapSystem, M, 208, TILE_W, 56, ICO_VISIBILITY, "Handgelenk", [](lv_event_t*) {
         SystemSettings& s = SettingsStorage::get();
         s.wristWakeEnabled = !s.wristWakeEnabled;
         SettingsStorage::save();
@@ -319,7 +314,7 @@ void buildControl(lv_obj_t* scr) {
         haptic(HAPTIC_TICK);
         refresh(true);
     }, nullptr);
-    sHapticTile = makeTile(sWrapSystem, M + TILE_W + 10, 216, TILE_W, 56, ICO_VIBRATION, "Haptik", [](lv_event_t*) {
+    sHapticTile = makeTile(sWrapSystem, M + TILE_W + 10, 208, TILE_W, 56, ICO_VIBRATION, "Haptik", [](lv_event_t*) {
         SystemSettings& s = SettingsStorage::get();
         s.hapticEnabled = !s.hapticEnabled;
         SettingsStorage::save();
@@ -329,11 +324,11 @@ void buildControl(lv_obj_t* scr) {
     }, nullptr);
 
     lv_obj_t* setBtn2 = primaryButton(sWrapSystem, subBtnW, 46, ICO_SETTINGS, "Optionen");
-    lv_obj_set_pos(setBtn2, M, 282);
+    lv_obj_set_pos(setBtn2, M, 270);
     lv_obj_add_event_cb(setBtn2, [](lv_event_t*) { haptic(HAPTIC_TICK); nav::openApp(nav::PG_APP_SETTINGS); }, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t* pwrBtn = secondaryButton(sWrapSystem, subBtnW, 46, ICO_POWER_SETTINGS_NEW, "Energie");
-    lv_obj_set_pos(pwrBtn, M + subBtnW + 10, 282);
+    lv_obj_set_pos(pwrBtn, M + subBtnW + 10, 270);
     lv_obj_add_event_cb(pwrBtn, [](lv_event_t*) { haptic(HAPTIC_TICK); nav::openApp(nav::PG_APP_POWER); }, LV_EVENT_CLICKED, NULL);
 
     // bottom grabber

@@ -76,10 +76,10 @@ void buildNotifications(lv_obj_t* scr) {
 
     title(p, "MITTEILUNGEN");
     nCount = caption(p, "", cText3());
-    lv_obj_set_pos(nCount, M, CONTENT_Y);
+    lv_obj_set_pos(nCount, M, CONTENT_Y + 4);
 
-    nRead = secondaryButton(p, 110, 32, ICO_CHECK, "Gelesen");
-    lv_obj_align(nRead, LV_ALIGN_TOP_RIGHT, -M_HEAD, 26);
+    nRead = secondaryButton(p, 120, 44, ICO_CHECK, "Gelesen");
+    lv_obj_align(nRead, LV_ALIGN_TOP_RIGHT, -M_HEAD, 20);
     lv_obj_add_event_cb(nRead, [](lv_event_t*) {
         NotificationStore::markAllRead();
         haptic(HAPTIC_TICK);
@@ -87,8 +87,8 @@ void buildNotifications(lv_obj_t* scr) {
         rebuild();
     }, LV_EVENT_CLICKED, NULL);
 
-    nClear = secondaryButton(p, 90, 30, ICO_DELETE, "Leeren");
-    lv_obj_align(nClear, LV_ALIGN_TOP_RIGHT, -M, CONTENT_Y - 6);
+    nClear = secondaryButton(p, 104, 44, ICO_DELETE, "Leeren");
+    lv_obj_align(nClear, LV_ALIGN_TOP_RIGHT, -M, CONTENT_Y - 8);
     lv_obj_add_event_cb(nClear, [](lv_event_t*) {
         NotificationStore::clear();
         haptic(HAPTIC_TICK);
@@ -96,8 +96,8 @@ void buildNotifications(lv_obj_t* scr) {
         rebuild();
     }, LV_EVENT_CLICKED, NULL);
 
-    nList = box(p, SCR_W, SCR_H - (CONTENT_Y + 32));
-    lv_obj_set_pos(nList, 0, CONTENT_Y + 32);
+    nList = box(p, SCR_W, SCR_H - (CONTENT_Y + 44));
+    lv_obj_set_pos(nList, 0, CONTENT_Y + 44);
     lv_obj_add_flag(nList, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(nList, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(nList, LV_SCROLLBAR_MODE_OFF);
