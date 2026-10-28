@@ -291,7 +291,16 @@ void buildConnect(lv_obj_t* scr) {
     cnBle = label(p, F.small, cText2(), "Bluetooth ist aus");
     lv_obj_set_width(cnBle, CW);
     lv_obj_set_style_text_align(cnBle, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(cnBle, LV_ALIGN_BOTTOM_MID, 0, -40);
+    lv_obj_align(cnBle, LV_ALIGN_BOTTOM_MID, 0, -56);
+
+    lv_obj_t* btnResetBonds = secondaryButton(p, CW, 38, ICO_REFRESH, "BLE-Kopplungen löschen");
+    lv_obj_align(btnResetBonds, LV_ALIGN_BOTTOM_MID, 0, -12);
+    lv_obj_add_event_cb(btnResetBonds, [](lv_event_t*) {
+        BleCompanion::resetBonds();
+        haptic(HAPTIC_SUCCESS);
+        DisplayEngine::showToast("Bluetooth", "Kopplungen im Speicher gelöscht", 2500, ICO_SMARTPHONE);
+        refreshConnect(true);
+    }, LV_EVENT_CLICKED, NULL);
 
     setHidden(cnActive, true);
     refreshConnect(true);

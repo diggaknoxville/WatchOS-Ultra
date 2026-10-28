@@ -36,6 +36,7 @@ public:
     static void setEnabled(bool en);
     static bool isEnabled();
     static uint32_t getPasskey();            // 6-digit pairing passkey for the UI
+    static void resetBonds();                // delete all saved smartphone pairings from NVS
 
     // Trigger update notification to client
     static void notifyStatus();

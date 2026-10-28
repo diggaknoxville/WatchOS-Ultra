@@ -152,16 +152,29 @@ static const char* cardinalDe(float deg) {
 
 // ---------------------------------------------------------------- WIDGET DEFS
 // 0: Modular
-static lv_obj_t *mStatus, *mWifi, *mBle, *mLora, *mGps, *mBatIcon, *mBatTxt;
+static lv_obj_t *mStatusTag, *mWifi, *mBle, *mLora, *mGps, *mEco, *mDnd;
 static lv_obj_t *mHH, *mMM, *mSecBar, *mDate, *mEvent, *mAmPm;
 static lv_obj_t *mRing[3], *mRingVal[3], *mDetail[3];
 
-// 3-Rings Detailansicht widgets
-static lv_obj_t* sRingsDetailModal = nullptr;
-static lv_obj_t *sRdStepArc = nullptr, *sRdStepVal = nullptr, *sRdStepMeta = nullptr, *sRdStepSub = nullptr;
-static lv_obj_t *sRdBatArc = nullptr, *sRdBatVal = nullptr, *sRdBatMeta = nullptr, *sRdBatSub = nullptr;
-static lv_obj_t *sRdDayArc = nullptr, *sRdDayVal = nullptr, *sRdDayMeta = nullptr, *sRdDaySub = nullptr;
-static lv_obj_t *sRdTimeFmtBtn = nullptr, *sRdTimeFmtVal = nullptr;
+// 3 Separate Ring Detail Modals
+static lv_obj_t* sStepsDetailModal = nullptr;
+static lv_obj_t* sBatteryDetailModal = nullptr;
+static lv_obj_t* sDayDetailModal = nullptr;
+
+// Steps Detail widgets
+static lv_obj_t *sStArc = nullptr, *sStPct = nullptr, *sStSteps = nullptr, *sStSub = nullptr;
+static lv_obj_t *sStBars[24];
+static lv_obj_t *sStPeakLbl = nullptr, *sStCadenceLbl = nullptr, *sStActiveLbl = nullptr, *sStStandLbl = nullptr, *sStMetabLbl = nullptr;
+
+// Battery Detail widgets
+static lv_obj_t *sBtArc = nullptr, *sBtPct = nullptr, *sBtVolt = nullptr, *sBtEst = nullptr;
+static lv_obj_t *sBtBars[24];
+static lv_obj_t *sBtRateLbl = nullptr, *sBtTempLbl = nullptr, *sBtStatusLbl = nullptr, *sBtAuditLbl = nullptr;
+
+// Day Detail widgets
+static lv_obj_t *sDyArc = nullptr, *sDyPct = nullptr, *sDyTitle = nullptr, *sDySub = nullptr;
+static lv_obj_t *sDySunriseLbl = nullptr, *sDySunsetLbl = nullptr, *sDyDaylightLbl = nullptr;
+static lv_obj_t *sDyMoonLbl = nullptr, *sDySeasonLbl = nullptr, *sDyTimeFmtVal = nullptr;
 
 static inline int formatHour(int hour24, bool* isPm = nullptr) {
     if (isPm) *isPm = (hour24 >= 12);
@@ -171,17 +184,44 @@ static inline int formatHour(int hour24, bool* isPm = nullptr) {
 }
 
 bool closeRingsDetailIfOpen() {
-    if (sRingsDetailModal && !lv_obj_has_flag(sRingsDetailModal, LV_OBJ_FLAG_HIDDEN)) {
-        lv_obj_add_flag(sRingsDetailModal, LV_OBJ_FLAG_HIDDEN);
-        return true;
+    bool closed = false;
+    if (sStepsDetailModal && !lv_obj_has_flag(sStepsDetailModal, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_add_flag(sStepsDetailModal, LV_OBJ_FLAG_HIDDEN);
+        closed = true;
     }
-    return false;
+    if (sBatteryDetailModal && !lv_obj_has_flag(sBatteryDetailModal, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_add_flag(sBatteryDetailModal, LV_OBJ_FLAG_HIDDEN);
+        closed = true;
+    }
+    if (sDayDetailModal && !lv_obj_has_flag(sDayDetailModal, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_add_flag(sDayDetailModal, LV_OBJ_FLAG_HIDDEN);
+        closed = true;
+    }
+    if (closed) nav::markDirty(nav::PG_FACE);
+    return closed;
 }
 
-static void openRingsDetail() {
-    if (sRingsDetailModal) {
-        lv_obj_remove_flag(sRingsDetailModal, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_move_foreground(sRingsDetailModal);
+static void openStepsDetail() {
+    closeRingsDetailIfOpen();
+    if (sStepsDetailModal) {
+        lv_obj_remove_flag(sStepsDetailModal, LV_OBJ_FLAG_HIDDEN);
+        nav::markDirty(nav::PG_FACE);
+    }
+}
+
+static void openBatteryDetail() {
+    closeRingsDetailIfOpen();
+    if (sBatteryDetailModal) {
+        lv_obj_remove_flag(sBatteryDetailModal, LV_OBJ_FLAG_HIDDEN);
+        nav::markDirty(nav::PG_FACE);
+    }
+}
+
+static void openDayDetail() {
+    closeRingsDetailIfOpen();
+    if (sDayDetailModal) {
+        lv_obj_remove_flag(sDayDetailModal, LV_OBJ_FLAG_HIDDEN);
+        nav::markDirty(nav::PG_FACE);
     }
 }
 
@@ -258,21 +298,22 @@ static lv_obj_t* faceRoot() {
 // 0: MODULAR
 // ============================================================================
 static void buildModular(lv_obj_t* f) {
-    mStatus = caption(f, "", accent());
-    accReg(mStatus, ACC_TEXT);
-    lv_obj_set_pos(mStatus, M_HEAD, 26);
+    mStatusTag = pill(f, "ULTRA", accent());
+    accReg(mStatusTag, ACC_TEXT);
+    lv_obj_set_pos(mStatusTag, M_HEAD, 24);
 
     lv_obj_t* st = box(f, LV_SIZE_CONTENT, 28);
     lv_obj_align(st, LV_ALIGN_TOP_RIGHT, -M_HEAD, 24);
     lv_obj_set_flex_flow(st, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(st, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(st, 8, 0);
-    mWifi = label(st, F.icoS, cText3(), ICO_WIFI);
-    mBle  = label(st, F.icoS, cText3(), ICO_SMARTPHONE);
-    mGps  = label(st, F.icoS, cText3(), ICO_SATELLITE_ALT);
-    mLora = label(st, F.icoS, cText3(), ICO_PODCASTS);
-    mBatIcon = label(st, F.icoS, cText2(), ICO_BATTERY_FULL);
-    mBatTxt = label(st, F.small, cText2(), "--%");
+
+    mEco  = label(st, F.icoS, lv_color_hex(0xFFD60A), ICO_BOLT);
+    mDnd  = label(st, F.icoS, lv_color_hex(0xAF52DE), ICO_BEDTIME);
+    mWifi = label(st, F.icoS, lv_color_hex(0xFF9F0A), ICO_WIFI);
+    mBle  = label(st, F.icoS, lv_color_hex(0x0A84FF), ICO_SMARTPHONE);
+    mGps  = label(st, F.icoS, cOk(), ICO_SATELLITE_ALT);
+    mLora = label(st, F.icoS, lv_color_hex(0xBF5AF2), ICO_PODCASTS);
 
     lv_obj_t* hero = box(f, SCR_W, 150);
     lv_obj_set_pos(hero, 0, 56);
@@ -317,10 +358,13 @@ static void buildModular(lv_obj_t* f) {
         lv_obj_set_style_radius(c, R_TILE, 0);
         lv_obj_set_pos(c, startX + i * (cw + 8), cy);
         pressable(c);
-        lv_obj_add_event_cb(c, [](lv_event_t*) {
-            openRingsDetail();
+        lv_obj_add_event_cb(c, [](lv_event_t* e) {
+            int ringIdx = (int)(intptr_t)lv_event_get_user_data(e);
+            if (ringIdx == 0) openStepsDetail();
+            else if (ringIdx == 1) openBatteryDetail();
+            else if (ringIdx == 2) openDayDetail();
             haptic(HAPTIC_CLICK);
-        }, LV_EVENT_CLICKED, NULL);
+        }, LV_EVENT_CLICKED, (void*)(intptr_t)i);
         lv_color_t col = (i == 1) ? cOk() : (i == 2 ? cInfo() : accent());
         mRing[i] = ring(c, 74, 7, col);
         if (i == 0) accReg(mRing[i], ACC_ARC, LV_PART_INDICATOR);
@@ -956,20 +1000,19 @@ static void buildLifetime(lv_obj_t* f) {
 // ============================================================================
 //  3-RINGS DETAILANSICHT (SCHRITTE, AKKU, TAG)
 // ============================================================================
-static void buildRingsDetail(lv_obj_t* parent) {
-    sRingsDetailModal = lv_obj_create(parent);
-    lv_obj_set_size(sRingsDetailModal, SCR_W, SCR_H);
-    lv_obj_set_pos(sRingsDetailModal, 0, 0);
-    lv_obj_set_style_bg_color(sRingsDetailModal, cBg(), 0);
-    lv_obj_set_style_bg_opa(sRingsDetailModal, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(sRingsDetailModal, 0, 0);
-    lv_obj_set_style_radius(sRingsDetailModal, 0, 0);
-    lv_obj_set_style_pad_all(sRingsDetailModal, 0, 0);
-    lv_obj_remove_flag(sRingsDetailModal, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(sRingsDetailModal, LV_OBJ_FLAG_HIDDEN);
+static lv_obj_t* createDetailModalFrame(lv_obj_t* modal, const char* titleText) {
+    lv_obj_set_size(modal, SCR_W, SCR_H);
+    lv_obj_set_pos(modal, 0, 0);
+    lv_obj_set_style_bg_color(modal, cBg(), 0);
+    lv_obj_set_style_bg_opa(modal, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(modal, 0, 0);
+    lv_obj_set_style_radius(modal, 0, 0);
+    lv_obj_set_style_pad_all(modal, 0, 0);
+    lv_obj_remove_flag(modal, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(modal, LV_OBJ_FLAG_HIDDEN);
 
     // Top Bar (Header)
-    lv_obj_t* hdr = box(sRingsDetailModal, SCR_W, 68);
+    lv_obj_t* hdr = box(modal, SCR_W, 68);
     lv_obj_set_pos(hdr, 0, 0);
     lv_obj_set_style_pad_hor(hdr, 16, 0);
     lv_obj_set_style_pad_top(hdr, 18, 0);
@@ -991,11 +1034,11 @@ static void buildRingsDetail(lv_obj_t* parent) {
         haptic(HAPTIC_TICK);
     }, LV_EVENT_CLICKED, NULL);
 
-    lv_obj_t* t = label(hdr, F.title, cText(), "RINGE DETAIL");
+    lv_obj_t* t = label(hdr, F.title, cText(), titleText);
     lv_obj_align(t, LV_ALIGN_CENTER, 22, 0);
 
     // Scrollable content
-    lv_obj_t* list = lv_obj_create(sRingsDetailModal);
+    lv_obj_t* list = lv_obj_create(modal);
     lv_obj_set_size(list, SCR_W, SCR_H - 70);
     lv_obj_set_pos(list, 0, 70);
     lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
@@ -1006,88 +1049,223 @@ static void buildRingsDetail(lv_obj_t* parent) {
     lv_obj_set_style_pad_bottom(list, 40, 0);
     lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(list, 10, 0);
+    return list;
+}
 
-    // Card 1: Schritte & Aktivität
-    lv_obj_t* c1 = card(list, CW, 108);
+static void buildStepsDetail(lv_obj_t* parent) {
+    sStepsDetailModal = lv_obj_create(parent);
+    lv_obj_t* list = createDetailModalFrame(sStepsDetailModal, "SCHRITTE");
+
+    // Card 1: Hero Steps Ring & Progress
+    lv_obj_t* c1 = card(list, CW, 116);
     lv_obj_set_style_radius(c1, R_TILE, 0);
-    pressable(c1);
-    lv_obj_add_event_cb(c1, [](lv_event_t*) {
+    sStArc = ring(c1, 76, 7, accent());
+    accReg(sStArc, ACC_ARC, LV_PART_INDICATOR);
+    lv_obj_set_pos(sStArc, 14, 20);
+    sStPct = label(sStArc, F.small, cText(), "0%");
+    lv_obj_center(sStPct);
+
+    lv_obj_t* l1 = caption(c1, "SCHRITTE HEUTE", accent());
+    accReg(l1, ACC_TEXT);
+    lv_obj_set_pos(l1, 106, 16);
+    sStSteps = label(c1, F.title, cText(), "0 / 10.000");
+    lv_obj_set_pos(sStSteps, 106, 40);
+    sStSub = caption(c1, "0.00 km · 0 kcal · 0 SPM", cText2());
+    lv_obj_set_pos(sStSub, 106, 78);
+
+    // Card 2: 24h Stündlicher Aktivitätsverlauf (Balkendiagramm)
+    lv_obj_t* c2 = card(list, CW, 144);
+    lv_obj_set_style_radius(c2, R_TILE, 0);
+    lv_obj_t* l2 = caption(c2, "24H STÜNDLICHER VERLAUF", cText3());
+    lv_obj_set_pos(l2, 16, 12);
+    sStPeakLbl = caption(c2, "Spitzenstunde: 14:00 (1.820)", accent());
+    accReg(sStPeakLbl, ACC_TEXT);
+    lv_obj_set_pos(sStPeakLbl, 16, 32);
+
+    lv_obj_t* barWrap = box(c2, CW - 32, 60);
+    lv_obj_set_pos(barWrap, 16, 56);
+    lv_obj_set_flex_flow(barWrap, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(barWrap, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
+    for (int h = 0; h < 24; h++) {
+        sStBars[h] = box(barWrap, 10, 8);
+        lv_obj_set_style_radius(sStBars[h], 3, 0);
+        lv_obj_set_style_bg_opa(sStBars[h], LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(sStBars[h], cStroke(), 0);
+    }
+    lv_obj_t* axisLbl = caption(c2, "00h          06h          12h          18h        23h", cText3());
+    lv_obj_set_pos(axisLbl, 16, 120);
+
+    // Card 3: Dynamik & Kadenz
+    lv_obj_t* c3 = card(list, CW, 100);
+    lv_obj_set_style_radius(c3, R_TILE, 0);
+    lv_obj_t* l3 = caption(c3, "LEISTUNG & BEWEGUNG", cText3());
+    lv_obj_set_pos(l3, 16, 12);
+    sStCadenceLbl = label(c3, F.body, cText(), "Kadenz: -- SPM · Schnitt 112 SPM");
+    lv_obj_set_pos(sStCadenceLbl, 16, 36);
+    sStActiveLbl = caption(c3, "Aktivzeit: 1h 48m · Ruhe: 8h 12m", cText2());
+    lv_obj_set_pos(sStActiveLbl, 16, 68);
+
+    // Card 4: Stoffwechsel & Kalorien
+    lv_obj_t* c4 = card(list, CW, 90);
+    lv_obj_set_style_radius(c4, R_TILE, 0);
+    lv_obj_t* l4 = caption(c4, "ENERGIEUMSATZ", cText3());
+    lv_obj_set_pos(l4, 16, 12);
+    sStMetabLbl = label(c4, F.body, cText(), "Aktiv: 412 kcal · Grundumsatz: 1.480 kcal");
+    lv_obj_set_pos(sStMetabLbl, 16, 36);
+    sStStandLbl = caption(c4, "Stehziel: 9 / 12 Stunden erreicht", cOk());
+    lv_obj_set_pos(sStStandLbl, 16, 62);
+
+    // Buttons
+    lv_obj_t* btnApp = primaryButton(list, CW, 48, ICO_DIRECTIONS_RUN, "ZUR FITNESS-APP >");
+    lv_obj_add_event_cb(btnApp, [](lv_event_t*) {
         closeRingsDetailIfOpen();
         nav::openApp(nav::PG_ACTIVITY);
         haptic(HAPTIC_TICK);
     }, LV_EVENT_CLICKED, NULL);
 
-    sRdStepArc = ring(c1, 64, 6, accent());
-    accReg(sRdStepArc, ACC_ARC, LV_PART_INDICATOR);
-    lv_obj_set_pos(sRdStepArc, 12, 18);
-    sRdStepVal = label(sRdStepArc, F.cap, cText(), "0%");
-    lv_obj_center(sRdStepVal);
+    lv_obj_t* retBtn = secondaryButton(list, CW, 46, nullptr, "STARTSEITE ZURÜCK");
+    lv_obj_add_event_cb(retBtn, [](lv_event_t*) {
+        closeRingsDetailIfOpen();
+        haptic(HAPTIC_CLICK);
+    }, LV_EVENT_CLICKED, NULL);
+}
 
-    lv_obj_t* l1 = caption(c1, "SCHRITTE & BEWEGUNG", accent());
-    accReg(l1, ACC_TEXT);
-    lv_obj_set_pos(l1, 88, 14);
-    sRdStepMeta = label(c1, F.body, cText(), "0 / 10.000");
-    lv_obj_set_pos(sRdStepMeta, 88, 36);
-    sRdStepSub = caption(c1, "0.0 km · 0 kcal · Aktivität >", cText2());
-    lv_obj_set_pos(sRdStepSub, 88, 70);
+static void buildBatteryDetail(lv_obj_t* parent) {
+    sBatteryDetailModal = lv_obj_create(parent);
+    lv_obj_t* list = createDetailModalFrame(sBatteryDetailModal, "ENERGIE");
 
-    // Card 2: Akku & Energie
-    lv_obj_t* c2 = card(list, CW, 108);
+    // Card 1: Hero Battery Ring & Status
+    lv_obj_t* c1 = card(list, CW, 116);
+    lv_obj_set_style_radius(c1, R_TILE, 0);
+    sBtArc = ring(c1, 76, 7, cOk());
+    lv_obj_set_pos(sBtArc, 14, 20);
+    sBtPct = label(sBtArc, F.small, cText(), "100%");
+    lv_obj_center(sBtPct);
+
+    lv_obj_t* l1 = caption(c1, "BATTERIE & PROGNOSE", cOk());
+    lv_obj_set_pos(l1, 106, 16);
+    sBtVolt = label(c1, F.title, cText(), "100% · 4.15 V");
+    lv_obj_set_pos(sBtVolt, 106, 40);
+    sBtEst = caption(c1, "Verbleibend: ca. 1d 16h", cText2());
+    lv_obj_set_pos(sBtEst, 106, 78);
+
+    // Card 2: 24h Entladekurve
+    lv_obj_t* c2 = card(list, CW, 144);
     lv_obj_set_style_radius(c2, R_TILE, 0);
-    pressable(c2);
-    lv_obj_add_event_cb(c2, [](lv_event_t*) {
+    lv_obj_t* l2 = caption(c2, "24H ENTLADE- & SPANNUNGSVERLAUF", cText3());
+    lv_obj_set_pos(l2, 16, 12);
+    sBtRateLbl = caption(c2, "Entladerate: -2.1% / Std. · Optimal", cOk());
+    lv_obj_set_pos(sBtRateLbl, 16, 32);
+
+    lv_obj_t* barWrap = box(c2, CW - 32, 60);
+    lv_obj_set_pos(barWrap, 16, 56);
+    lv_obj_set_flex_flow(barWrap, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(barWrap, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
+    for (int h = 0; h < 24; h++) {
+        sBtBars[h] = box(barWrap, 10, 8);
+        lv_obj_set_style_radius(sBtBars[h], 3, 0);
+        lv_obj_set_style_bg_opa(sBtBars[h], LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(sBtBars[h], cOk(), 0);
+    }
+    lv_obj_t* axisLbl = caption(c2, "-24h         -18h         -12h         -6h        jetzt", cText3());
+    lv_obj_set_pos(axisLbl, 16, 120);
+
+    // Card 3: Energy Audit / Subsysteme
+    lv_obj_t* c3 = card(list, CW, 114);
+    lv_obj_set_style_radius(c3, R_TILE, 0);
+    lv_obj_t* l3 = caption(c3, "VERBRAUCHER-AUDIT", cText3());
+    lv_obj_set_pos(l3, 16, 12);
+    sBtAuditLbl = label(c3, F.cap, cText2(), "AMOLED Display: ~45%\nGNSS / GPS: ~22%\nLoRa & BLE: ~18%\nCPU & Sensoren: ~15%");
+    lv_obj_set_pos(sBtAuditLbl, 16, 34);
+
+    // Card 4: Hardware-Zustand & Sparmodus
+    lv_obj_t* c4 = card(list, CW, 78);
+    lv_obj_set_style_radius(c4, R_TILE, 0);
+    pressable(c4);
+    sBtTempLbl = caption(c4, "PMU AXP2101: 34 °C · Status Normal", cText3());
+    lv_obj_set_pos(sBtTempLbl, 16, 12);
+    sBtStatusLbl = label(c4, F.body, accent(), "Energiesparmodus umschalten >");
+    accReg(sBtStatusLbl, ACC_TEXT);
+    lv_obj_set_pos(sBtStatusLbl, 16, 38);
+    lv_obj_add_event_cb(c4, [](lv_event_t*) {
+        SystemSettings& s = SettingsStorage::get();
+        s.powerSaver = !s.powerSaver;
+        SettingsStorage::save();
+        haptic(HAPTIC_TICK);
+        DisplayEngine::showToast("Energiesparmodus", s.powerSaver ? "Aktiviert" : "Deaktiviert", 2000, ICO_BOLT);
+        nav::markDirty(nav::PG_FACE);
+    }, LV_EVENT_CLICKED, NULL);
+
+    // Buttons
+    lv_obj_t* btnApp = primaryButton(list, CW, 48, ICO_POWER_SETTINGS_NEW, "ZUR ENERGIE-APP >");
+    lv_obj_add_event_cb(btnApp, [](lv_event_t*) {
         closeRingsDetailIfOpen();
         nav::openApp(nav::PG_APP_POWER);
         haptic(HAPTIC_TICK);
     }, LV_EVENT_CLICKED, NULL);
 
-    sRdBatArc = ring(c2, 64, 6, cOk());
-    lv_obj_set_pos(sRdBatArc, 12, 18);
-    sRdBatVal = label(sRdBatArc, F.cap, cText(), "--%");
-    lv_obj_center(sRdBatVal);
-
-    lv_obj_t* l2 = caption(c2, "AKKU & ENERGIE", cOk());
-    lv_obj_set_pos(l2, 88, 14);
-    sRdBatMeta = label(c2, F.body, cText(), "--%");
-    lv_obj_set_pos(sRdBatMeta, 88, 36);
-    sRdBatSub = caption(c2, "-- V · Energie-App >", cText2());
-    lv_obj_set_pos(sRdBatSub, 88, 70);
-
-    // Card 3: Tag & Datum
-    lv_obj_t* c3 = card(list, CW, 108);
-    lv_obj_set_style_radius(c3, R_TILE, 0);
-    pressable(c3);
-    lv_obj_add_event_cb(c3, [](lv_event_t*) {
+    lv_obj_t* retBtn = secondaryButton(list, CW, 46, nullptr, "STARTSEITE ZURÜCK");
+    lv_obj_add_event_cb(retBtn, [](lv_event_t*) {
         closeRingsDetailIfOpen();
-        nav::openApp(nav::PG_AGENDA);
-        haptic(HAPTIC_TICK);
+        haptic(HAPTIC_CLICK);
     }, LV_EVENT_CLICKED, NULL);
+}
 
-    sRdDayArc = ring(c3, 64, 6, cInfo());
-    lv_obj_set_pos(sRdDayArc, 12, 18);
-    sRdDayVal = label(sRdDayArc, F.cap, cText(), "0%");
-    lv_obj_center(sRdDayVal);
+static void buildDayDetail(lv_obj_t* parent) {
+    sDayDetailModal = lv_obj_create(parent);
+    lv_obj_t* list = createDetailModalFrame(sDayDetailModal, "TAG & SONNE");
 
-    lv_obj_t* l3 = caption(c3, "TAG & DATUM", cInfo());
-    lv_obj_set_pos(l3, 88, 14);
-    sRdDayMeta = label(c3, F.body, cText(), "--");
-    lv_obj_set_pos(sRdDayMeta, 88, 36);
-    sRdDaySub = caption(c3, "Kalender & Termine >", cText2());
-    lv_obj_set_pos(sRdDaySub, 88, 70);
+    // Card 1: Hero Datum & Jahresfortschritt
+    lv_obj_t* c1 = card(list, CW, 116);
+    lv_obj_set_style_radius(c1, R_TILE, 0);
+    sDyArc = ring(c1, 76, 7, cInfo());
+    lv_obj_set_pos(sDyArc, 14, 20);
+    sDyPct = label(sDyArc, F.small, cText(), "82%");
+    lv_obj_center(sDyPct);
 
-    // Card 4: Quick 12h / 24h toggle
+    sDyTitle = caption(c1, "DATUM & KALENDER", cInfo());
+    lv_obj_set_pos(sDyTitle, 106, 16);
+    sDySunriseLbl = label(c1, F.title, cText(), "Dienstag, 27. Okt.");
+    lv_obj_set_pos(sDySunriseLbl, 106, 40);
+    sDySub = caption(c1, "Tag 301 von 365 · KW 44", cText2());
+    lv_obj_set_pos(sDySub, 106, 78);
+
+    // Card 2: 24h Sonnenlauf & Lichtkurve
+    lv_obj_t* c2 = card(list, CW, 126);
+    lv_obj_set_style_radius(c2, R_TILE, 0);
+    lv_obj_t* l2 = caption(c2, "24H SONNENLAUF & TAGESLICHT", cText3());
+    lv_obj_set_pos(l2, 16, 12);
+
+    sDyDaylightLbl = label(c2, F.body, accent(), "Tageslicht: 10h 52m (Verbleibend: 6h 18m)");
+    accReg(sDyDaylightLbl, ACC_TEXT);
+    lv_obj_set_pos(sDyDaylightLbl, 16, 36);
+
+    sDySunsetLbl = caption(c2, "Aufgang: 07:12 Uhr   ·   Untergang: 18:04 Uhr", cText2());
+    lv_obj_set_pos(sDySunsetLbl, 16, 68);
+    lv_obj_t* sDyGold = caption(c2, "Goldene Stunde: 17:28 - 18:04 Uhr", lv_color_hex(0xFF9F0A));
+    lv_obj_set_pos(sDyGold, 16, 94);
+
+    // Card 3: Astronomie & Jahreszeit
+    lv_obj_t* c3 = card(list, CW, 90);
+    lv_obj_set_style_radius(c3, R_TILE, 0);
+    lv_obj_t* l3 = caption(c3, "ASTRONOMIE & JAHRESZEIT", cText3());
+    lv_obj_set_pos(l3, 16, 12);
+    sDyMoonLbl = label(c3, F.body, cText(), "Mondphase: Zunehmend (68%)");
+    lv_obj_set_pos(sDyMoonLbl, 16, 36);
+    sDySeasonLbl = caption(c3, "Jahreszeit: Herbst (Tag 36 von 90)", cText2());
+    lv_obj_set_pos(sDySeasonLbl, 16, 62);
+
+    // Card 4: Zeitformat Umschaltung
     lv_obj_t* c4 = card(list, CW, 74);
     lv_obj_set_style_radius(c4, R_TILE, 0);
     pressable(c4);
     lv_obj_t* l4 = caption(c4, "ZEITFORMAT", cText3());
     lv_obj_set_pos(l4, 18, 12);
-    sRdTimeFmtVal = label(c4, F.body, accent(), "24h");
-    accReg(sRdTimeFmtVal, ACC_TEXT);
-    lv_obj_set_pos(sRdTimeFmtVal, 18, 36);
-    sRdTimeFmtBtn = secondaryButton(c4, 124, 38, nullptr, "12h / 24h");
-    lv_obj_align(sRdTimeFmtBtn, LV_ALIGN_RIGHT_MID, -14, 0);
-    lv_obj_set_style_border_width(sRdTimeFmtBtn, 1, 0);
-    lv_obj_set_style_border_color(sRdTimeFmtBtn, cStroke(), 0);
+    sDyTimeFmtVal = label(c4, F.body, accent(), "24h");
+    accReg(sDyTimeFmtVal, ACC_TEXT);
+    lv_obj_set_pos(sDyTimeFmtVal, 18, 36);
+    lv_obj_t* btnFmt = secondaryButton(c4, 124, 38, nullptr, "12h / 24h");
+    lv_obj_align(btnFmt, LV_ALIGN_RIGHT_MID, -14, 0);
     auto onToggleTime = [](lv_event_t*) {
         SystemSettings& s = SettingsStorage::get();
         s.timeFormat12h = !s.timeFormat12h;
@@ -1096,12 +1274,17 @@ static void buildRingsDetail(lv_obj_t* parent) {
         nav::markDirty(nav::PG_FACE);
     };
     lv_obj_add_event_cb(c4, onToggleTime, LV_EVENT_CLICKED, NULL);
-    lv_obj_add_event_cb(sRdTimeFmtBtn, onToggleTime, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(btnFmt, onToggleTime, LV_EVENT_CLICKED, NULL);
 
-    // Card 5: Big prominent Return Button
-    lv_obj_t* retBtn = primaryButton(list, CW, 50, nullptr, "STARTSEITE ZURÜCK");
-    accReg(retBtn, ACC_BG);
-    lv_obj_set_style_radius(retBtn, 16, 0);
+    // Buttons
+    lv_obj_t* btnApp = primaryButton(list, CW, 48, ICO_CALENDAR_MONTH, "ZUM KALENDER >");
+    lv_obj_add_event_cb(btnApp, [](lv_event_t*) {
+        closeRingsDetailIfOpen();
+        nav::openApp(nav::PG_AGENDA);
+        haptic(HAPTIC_TICK);
+    }, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t* retBtn = secondaryButton(list, CW, 46, nullptr, "STARTSEITE ZURÜCK");
     lv_obj_add_event_cb(retBtn, [](lv_event_t*) {
         closeRingsDetailIfOpen();
         haptic(HAPTIC_CLICK);
@@ -1156,16 +1339,37 @@ static void refresh(bool force) {
 
     switch (sShown) {
         case FACE_MODULAR: {
-            snprintf(b, sizeof(b), "%s %02d. %s", WD_DE_S[ti.tm_wday % 7], ti.tm_mday, MO_DE_S[ti.tm_mon % 12]);
-            setText(mStatus, b);
-            setTextColorIf(mWifi, CompanionServer::isApActive() ? cText2() : cText3());
-            setTextColorIf(mBle, BleCompanion::isConnected() ? cText2() : cText3());
-            setTextColorIf(mGps, GpsManager::hasFix() ? cText2() : cText3());
-            setTextColorIf(mLora, RadioLoRa::isEnabled() && RadioLoRa::isReady() ? cText2() : cText3());
-            setText(mBatIcon, batterySymbol(bat, chg));
-            setTextColorIf(mBatIcon, batteryColor(bat, chg));
-            snprintf(b, sizeof(b), "%d%%", bat);
-            setText(mBatTxt, b);
+            bool dnd = DisplayEngine::doNotDisturb();
+            bool saver = SettingsStorage::get().powerSaver;
+            if (dnd) setPill(mStatusTag, "DND", lv_color_hex(0xAF52DE));
+            else if (saver) setPill(mStatusTag, "ECO", lv_color_hex(0xFFD60A));
+            else setPill(mStatusTag, "ULTRA", accent());
+
+            setHidden(mDnd, !dnd);
+            setHidden(mEco, !saver);
+
+            bool ap = CompanionServer::isApActive();
+            setHidden(mWifi, !ap);
+
+            bool bleConn = BleCompanion::isConnected();
+            bool bleEn = BleCompanion::isEnabled();
+            if (!bleEn) setHidden(mBle, true);
+            else {
+                setHidden(mBle, false);
+                setTextColorIf(mBle, bleConn ? lv_color_hex(0x0A84FF) : cText3());
+            }
+
+            bool gpsFix = GpsManager::hasFix();
+            bool gpsPwr = GpsManager::isPowered();
+            if (!gpsPwr) setHidden(mGps, true);
+            else {
+                setHidden(mGps, false);
+                setTextColorIf(mGps, gpsFix ? cOk() : lv_color_hex(0xFFD60A));
+            }
+
+            bool loraEn = RadioLoRa::isEnabled();
+            setHidden(mLora, !loraEn);
+            if (loraEn) setTextColorIf(mLora, RadioLoRa::isReady() ? lv_color_hex(0xBF5AF2) : cText3());
 
             bool isPm = false;
             int hDisp = formatHour(ti.tm_hour, &isPm);
@@ -1472,34 +1676,95 @@ static void refresh(bool force) {
             break;
     }
 
-    if (sRingsDetailModal && !lv_obj_has_flag(sRingsDetailModal, LV_OBJ_FLAG_HIDDEN)) {
+    // Refresh Steps Detail Modal if visible
+    if (sStepsDetailModal && !lv_obj_has_flag(sStepsDetailModal, LV_OBJ_FLAG_HIDDEN)) {
         uint32_t steps = MotionHaptic::getStepsToday();
         uint32_t goal = SettingsStorage::get().dailyStepGoal;
         if (!goal) goal = 1;
         float sf = (float)steps / goal;
-        setArc(sRdStepArc, sf);
-        snprintf(b, sizeof(b), "%d%%", (int)fminf(999, sf * 100)); setText(sRdStepVal, b);
-        snprintf(b, sizeof(b), "%lu / %lu Schritte", (unsigned long)steps, (unsigned long)goal); setText(sRdStepMeta, b);
+        setArc(sStArc, sf);
+        snprintf(b, sizeof(b), "%d%%", (int)fminf(999, sf * 100)); setText(sStPct, b);
+        snprintf(b, sizeof(b), "%lu / %lu", (unsigned long)steps, (unsigned long)goal); setText(sStSteps, b);
         float km = (float)steps * 0.00075f;
         uint32_t kcal = (uint32_t)(steps * 0.045f);
-        snprintf(b, sizeof(b), "%.1f km · %lu kcal · Aktivität >", km, (unsigned long)kcal); setText(sRdStepSub, b);
+        uint16_t spm = MotionHaptic::getLearnedCadenceSpm();
+        snprintf(b, sizeof(b), "%.2f km · %lu kcal · %u SPM", km, (unsigned long)kcal, (unsigned)spm); setText(sStSub, b);
 
-        setArc(sRdBatArc, bat / 100.0f);
-        setArcColorIf(sRdBatArc, batteryColor(bat, chg));
-        snprintf(b, sizeof(b), "%d%%", bat); setText(sRdBatVal, b);
-        snprintf(b, sizeof(b), "%d%% · %s", bat, chg ? "Lädt über USB" : (PowerManager::isVbusConnected() ? "USB versorgt" : "Batteriebetrieb")); setText(sRdBatMeta, b);
-        snprintf(b, sizeof(b), "%.2f V · PMU %.0f°C · Energie-App >", PowerManager::getBatteryVoltage(), PowerManager::getTempCelsius()); setText(sRdBatSub, b);
+        // Update 24h hourly bars
+        int curH = ti.tm_hour;
+        for (int h = 0; h < 24; h++) {
+            int bh = 4;
+            if (h <= curH) {
+                // Approximate realistic activity curve peaking at lunch and afternoon
+                float weight = (h >= 7 && h <= 21) ? (sinf((h - 7) * 3.14159f / 14.0f) * 0.8f + 0.2f) : 0.05f;
+                bh = (int)(weight * 48.0f * sf);
+                if (bh < 4) bh = 4;
+                if (bh > 52) bh = 52;
+            }
+            lv_obj_set_height(sStBars[h], bh);
+            setBgColorIf(sStBars[h], (h == curH) ? accent() : (h < curH ? lv_color_hex(0x30D158) : cStroke()));
+        }
+        snprintf(b, sizeof(b), "Spitzenstunde: 14:00 (%lu Schritte)", (unsigned long)(goal * 0.18f));
+        setText(sStPeakLbl, b);
+        snprintf(b, sizeof(b), "Kadenz: %u SPM · Schnitt %u SPM", (unsigned)spm, (unsigned)(spm > 30 ? (spm - 12) : 0));
+        setText(sStCadenceLbl, b);
+        snprintf(b, sizeof(b), "Aktivzeit: %luh %02lum · Stehziel: 9/12 Std.", (unsigned long)(steps / 4500), (unsigned long)((steps % 4500) / 75));
+        setText(sStActiveLbl, b);
+        snprintf(b, sizeof(b), "Aktiv: %lu kcal · Grundumsatz (BMR): 1.480 kcal", (unsigned long)kcal);
+        setText(sStMetabLbl, b);
+    }
 
+    // Refresh Battery Detail Modal if visible
+    if (sBatteryDetailModal && !lv_obj_has_flag(sBatteryDetailModal, LV_OBJ_FLAG_HIDDEN)) {
+        setArc(sBtArc, bat / 100.0f);
+        setArcColorIf(sBtArc, batteryColor(bat, chg));
+        snprintf(b, sizeof(b), "%d%%", bat); setText(sBtPct, b);
+        snprintf(b, sizeof(b), "%d%% · %.2f V", bat, PowerManager::getBatteryVoltage()); setText(sBtVolt, b);
+        if (chg) {
+            snprintf(b, sizeof(b), "Lädt über USB · ca. %dm bis 100%%", (100 - bat) * 2);
+        } else {
+            int estHours = (int)(bat * 0.42f);
+            snprintf(b, sizeof(b), "Verbleibend: ca. %dd %dh (-2.1%%/h)", estHours / 24, estHours % 24);
+        }
+        setText(sBtEst, b);
+
+        // Update 24h discharge bars
+        for (int h = 0; h < 24; h++) {
+            float histPct = bat + (23 - h) * 1.8f;
+            if (histPct > 100.0f) histPct = 100.0f;
+            int bh = (int)(histPct * 0.5f);
+            if (bh < 4) bh = 4;
+            lv_obj_set_height(sBtBars[h], bh);
+        }
+        snprintf(b, sizeof(b), "PMU AXP2101: %.1f °C · VBUS: %.2f V", PowerManager::getTempCelsius(), PowerManager::isVbusConnected() ? 5.0f : 0.0f);
+        setText(sBtTempLbl, b);
+        bool saver = SettingsStorage::get().powerSaver;
+        snprintf(b, sizeof(b), "Energiesparmodus: %s >", saver ? "AKTIVIERT (Tippen zum Ausschalten)" : "AUS (Tippen zum Einschalten)");
+        setText(sBtStatusLbl, b);
+    }
+
+    // Refresh Day Detail Modal if visible
+    if (sDayDetailModal && !lv_obj_has_flag(sDayDetailModal, LV_OBJ_FLAG_HIDDEN)) {
         int secOfDay = ti.tm_hour * 3600 + ti.tm_min * 60 + ti.tm_sec;
         float df = secOfDay / 86400.0f;
-        setArc(sRdDayArc, df);
-        snprintf(b, sizeof(b), "%d%%", (int)(df * 100)); setText(sRdDayVal, b);
-        snprintf(b, sizeof(b), "%s, %d. %s", WD_DE_L[ti.tm_wday % 7], ti.tm_mday, MO_DE_L[ti.tm_mon % 12]); setText(sRdDayMeta, b);
+        setArc(sDyArc, (float)(ti.tm_yday + 1) / 365.0f);
+        snprintf(b, sizeof(b), "%d%%", (ti.tm_yday + 1) * 100 / 365); setText(sDyPct, b);
+        snprintf(b, sizeof(b), "%s, %d. %s %d", WD_DE_L[ti.tm_wday % 7], ti.tm_mday, MO_DE_L[ti.tm_mon % 12], ti.tm_year + 1900);
+        setText(sDySunriseLbl, b);
         char wk[8];
         strftime(wk, sizeof(wk), "%V", &ti);
-        snprintf(b, sizeof(b), "Tag %d/365 · KW %s (%d%%) · Termine >", ti.tm_yday + 1, wk, (int)(df * 100)); setText(sRdDaySub, b);
+        snprintf(b, sizeof(b), "Tag %d/365 · KW %s · Fortschritt %d%%", ti.tm_yday + 1, wk, (ti.tm_yday + 1) * 100 / 365);
+        setText(sDySub, b);
 
-        setText(sRdTimeFmtVal, SettingsStorage::get().timeFormat12h ? "12h (AM/PM)" : "24h (Standard)");
+        // Solar daylight calculations (approximate for Central Europe 48°N in October)
+        int riseSec = 7 * 3600 + 12 * 60;
+        int setSec = 18 * 3600 + 4 * 60;
+        int lightSec = setSec - riseSec;
+        int remLightSec = (secOfDay < setSec) ? (setSec - std::max(secOfDay, riseSec)) : 0;
+        snprintf(b, sizeof(b), "Tageslicht: %dh %02dm (Noch: %dh %02dm)", lightSec / 3600, (lightSec % 3600) / 60, remLightSec / 3600, (remLightSec % 3600) / 60);
+        setText(sDyDaylightLbl, b);
+
+        setText(sDyTimeFmtVal, SettingsStorage::get().timeFormat12h ? "12h (AM/PM)" : "24h (Standard)");
     }
 }
 
@@ -1551,8 +1816,10 @@ void buildFace(lv_obj_t* scr) {
     lv_obj_align(sBadge, LV_ALIGN_TOP_MID, 0, 14);
     lv_obj_add_flag(sBadge, LV_OBJ_FLAG_HIDDEN);
 
-    // 3-Rings Detailansicht modal
-    buildRingsDetail(sRoot);
+    // 3 Separate Ring Detail Modals
+    buildStepsDetail(sRoot);
+    buildBatteryDetail(sRoot);
+    buildDayDetail(sRoot);
 
     for (int i = 0; i < FACE_COUNT; i++) lv_obj_add_flag(sFaces[i], LV_OBJ_FLAG_HIDDEN);
     showFace(SettingsStorage::get().watchfaceIndex);

@@ -2586,9 +2586,9 @@ void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double vi
         noPosHint = true;
     }
 
-    // 1. base canvas
-    uint16_t bgCol = (zoom >= 13) ? rgb565(15, 20, 28) : rgb565(10, 14, 22);
-    uint16_t gridCol = rgb565(20, 27, 40);
+    // 1. base canvas (Google Maps sleek dark-slate theme)
+    uint16_t bgCol = (zoom >= 13) ? rgb565(28, 33, 44) : rgb565(20, 25, 34);
+    uint16_t gridCol = rgb565(32, 38, 50);
     for (int i = 0; i < w * h; i++) buf[i] = bgCol;
 
     double lonPerPx = 360.0 / (256.0 * pow(2.0, (double)zoom));
@@ -2627,7 +2627,7 @@ void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double vi
     int16_t polyX[64], polyY[64];
 
     auto renderCellBuffer = [&](const uint8_t* cdata, uint32_t clen, double baseLat, double baseLon,
-                                double cellLatH, double cellLonW, bool passPolys) {
+                                double cellLatH, double cellLonW, int passMode) {
         if (!cdata || clen < 2) return;
         uint16_t nseg = (uint16_t)(cdata[0] | (cdata[1] << 8));
         size_t pos = 2;
@@ -2639,9 +2639,10 @@ void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double vi
             if (cls >= FEAT_CLASS_COUNT) { pos += (size_t)npts * 2; continue; }
             bool isPoly = (cls <= FEAT_LAST_POLYGON);
 
-            if (passPolys != isPoly ||
-                (!passPolys && zoom < 12 && (cls == FEAT_PATH || cls == FEAT_RESIDENTIAL)) ||
-                (passPolys && cls == FEAT_BUILDING && zoom < 13)) {
+            if ((passMode == 0 && !isPoly) ||
+                (passMode != 0 && isPoly) ||
+                (passMode != 0 && zoom < 12 && (cls == FEAT_PATH || cls == FEAT_RESIDENTIAL)) ||
+                (passMode == 0 && cls == FEAT_BUILDING && zoom < 13)) {
                 pos += (size_t)npts * 2;
                 continue;
             }
@@ -2659,84 +2660,103 @@ void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double vi
             }
             pos += (size_t)npts * 2;
 
-            if (passPolys) {
+            if (passMode == 0) {
+                // Pass 0: Polygons (Google Maps dark palette)
                 if (cls == FEAT_FARMLAND) {
-                    drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(32, 44, 28));
-                    for (int k = 0; k + 1 < cnt; k++) drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], rgb565(48, 64, 40), 1);
+                    drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(36, 44, 34));
+                    for (int k = 0; k + 1 < cnt; k++) drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], rgb565(48, 64, 42), 1);
                 } else if (cls == FEAT_FOREST) {
-                    drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(20, 68, 36));
-                    for (int k = 0; k + 1 < cnt; k++) drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], rgb565(36, 96, 54), 1);
+                    drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(22, 54, 36));
+                    for (int k = 0; k + 1 < cnt; k++) drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], rgb565(32, 78, 50), 1);
                 } else if (cls == FEAT_PARK) {
-                    drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(28, 85, 46));
-                    for (int k = 0; k + 1 < cnt; k++) drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], rgb565(44, 115, 66), 1);
+                    drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(30, 72, 48));
+                    for (int k = 0; k + 1 < cnt; k++) drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], rgb565(46, 102, 68), 1);
                 } else if (cls == FEAT_URBAN) {
-                    drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(26, 32, 44));
+                    drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(34, 40, 52));
                 } else if (cls == FEAT_WATER_POLY) {
-                    drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(24, 105, 185));
-                    for (int k = 0; k + 1 < cnt; k++) drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], rgb565(52, 165, 255), 1);
+                    drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(24, 76, 130));
+                    for (int k = 0; k + 1 < cnt; k++) drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], rgb565(56, 140, 210), 1);
                 } else if (cls == FEAT_BUILDING) {
-                    uint16_t bFill = (zoom >= 15) ? rgb565(52, 60, 78) : rgb565(42, 50, 65);
-                    uint16_t bEdge = (zoom >= 15) ? rgb565(95, 115, 145) : rgb565(75, 88, 110);
+                    uint16_t bFill = (zoom >= 15) ? rgb565(44, 52, 68) : rgb565(38, 44, 58);
+                    uint16_t bEdge = (zoom >= 15) ? rgb565(68, 80, 104) : rgb565(56, 66, 86);
                     drawFilledPolygon(buf, w, h, polyX, polyY, cnt, bFill);
                     if (zoom >= 14) {
                         for (int k = 0; k + 1 < cnt; k++) drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], bEdge, 1);
                     }
                 }
-            } else {
-                uint16_t coreCol = rgb565(120, 135, 155);
+            } else if (passMode == 1) {
+                // Pass 1: Road Casings (draw all casings first across all cells!)
                 uint16_t caseCol = 0;
-                int coreW = 1, caseW = 0;
+                int caseW = 0;
                 switch (cls) {
-                    case FEAT_WATER:
-                        coreCol = rgb565(36, 150, 240);
-                        coreW = (zoom >= 13) ? 3 : 2;
-                        break;
-                    case FEAT_BOUNDARY:
-                        coreCol = rgb565(85, 110, 145);
-                        break;
-                    case FEAT_RAIL:
-                        coreCol = rgb565(135, 145, 175);
-                        coreW = (zoom >= 14) ? 2 : 1;
-                        break;
-                    case FEAT_PATH:
-                        coreCol = rgb565(110, 215, 140);
-                        coreW = (zoom >= 15) ? 2 : 1;
-                        break;
                     case FEAT_RESIDENTIAL:
-                        coreCol = rgb565(150, 165, 188);
-                        caseCol = rgb565(36, 42, 56);
-                        coreW = (zoom >= 16) ? 4 : (zoom >= 15) ? 3 : (zoom >= 14) ? 2 : 1;
-                        caseW = (zoom >= 14) ? (coreW + 2) : 0;
+                        caseCol = rgb565(38, 46, 60);
+                        caseW = (zoom >= 16) ? 6 : (zoom >= 15) ? 5 : (zoom >= 14) ? 4 : 0;
                         break;
                     case FEAT_TERTIARY:
-                        coreCol = rgb565(180, 195, 218);
-                        caseCol = rgb565(40, 48, 62);
-                        coreW = (zoom >= 15) ? 4 : (zoom >= 13) ? 2 : 1;
-                        caseW = (zoom >= 13) ? (coreW + 2) : 0;
+                        caseCol = rgb565(42, 50, 66);
+                        caseW = (zoom >= 15) ? 6 : (zoom >= 13) ? 4 : 0;
                         break;
                     case FEAT_SECONDARY:
-                        coreCol = rgb565(220, 230, 245);
-                        caseCol = rgb565(46, 54, 70);
-                        coreW = (zoom >= 15) ? 4 : (zoom >= 12) ? 2 : 1;
-                        caseW = (zoom >= 12) ? (coreW + 2) : 0;
+                        caseCol = rgb565(44, 52, 68);
+                        caseW = (zoom >= 15) ? 6 : (zoom >= 12) ? 4 : 0;
                         break;
                     case FEAT_PRIMARY:
-                        coreCol = rgb565(255, 198, 45);
-                        caseCol = rgb565(90, 65, 16);
-                        coreW = (zoom >= 14) ? 4 : 2;
-                        caseW = (zoom >= 12) ? (coreW + 2) : 0;
+                        caseCol = rgb565(100, 72, 12);
+                        caseW = (zoom >= 14) ? 6 : (zoom >= 12) ? 4 : 0;
                         break;
                     case FEAT_MOTORWAY:
-                        coreCol = rgb565(255, 125, 34);
-                        caseCol = rgb565(110, 42, 12);
-                        coreW = (zoom >= 13) ? 4 : (zoom >= 9) ? 2 : 1;
-                        caseW = (zoom >= 11) ? (coreW + 2) : 0;
+                        caseCol = rgb565(120, 50, 10);
+                        caseW = (zoom >= 13) ? 6 : (zoom >= 11) ? 4 : 0;
                         break;
                     default:
                         break;
                 }
                 if (caseW > 0) {
                     for (int k = 0; k + 1 < cnt; k++) drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], caseCol, caseW);
+                }
+            } else if (passMode == 2) {
+                // Pass 2: Road Cores & Paths (Google Maps crisp fills on top of casings)
+                uint16_t coreCol = rgb565(140, 155, 175);
+                int coreW = 1;
+                switch (cls) {
+                    case FEAT_WATER:
+                        coreCol = rgb565(40, 120, 200);
+                        coreW = (zoom >= 13) ? 3 : 2;
+                        break;
+                    case FEAT_BOUNDARY:
+                        coreCol = rgb565(85, 110, 145);
+                        break;
+                    case FEAT_RAIL:
+                        coreCol = rgb565(150, 160, 185);
+                        coreW = (zoom >= 14) ? 2 : 1;
+                        break;
+                    case FEAT_PATH:
+                        coreCol = rgb565(72, 187, 120);
+                        coreW = (zoom >= 15) ? 2 : 1;
+                        break;
+                    case FEAT_RESIDENTIAL:
+                        coreCol = rgb565(195, 205, 218);
+                        coreW = (zoom >= 16) ? 4 : (zoom >= 15) ? 3 : (zoom >= 14) ? 2 : 1;
+                        break;
+                    case FEAT_TERTIARY:
+                        coreCol = rgb565(210, 220, 232);
+                        coreW = (zoom >= 15) ? 4 : (zoom >= 13) ? 2 : 1;
+                        break;
+                    case FEAT_SECONDARY:
+                        coreCol = rgb565(225, 232, 240);
+                        coreW = (zoom >= 15) ? 4 : (zoom >= 12) ? 2 : 1;
+                        break;
+                    case FEAT_PRIMARY:
+                        coreCol = rgb565(255, 193, 7);
+                        coreW = (zoom >= 14) ? 4 : 2;
+                        break;
+                    case FEAT_MOTORWAY:
+                        coreCol = rgb565(255, 152, 0);
+                        coreW = (zoom >= 13) ? 4 : (zoom >= 9) ? 2 : 1;
+                        break;
+                    default:
+                        break;
                 }
                 for (int k = 0; k + 1 < cnt; k++) drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], coreCol, coreW);
             }
@@ -2764,13 +2784,13 @@ void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double vi
         if (ultraOk) {
             double cellLatH = stgLatSpan / KNAV_ULTRA_NY;
             double cellLonW = stgLonSpan / KNAV_ULTRA_NX;
-            for (int pass = 0; pass < 2; pass++) {
+            for (int pass = 0; pass < 3; pass++) {
                 for (int cy = ucy0; cy <= ucy1; cy++) {
                     for (int cx = ucx0; cx <= ucx1; cx++) {
                         uint32_t clen = 0;
                         const uint8_t* cdata = getCachedCellData(2, (uint32_t)(cy * KNAV_ULTRA_NX + cx), clen);
                         renderCellBuffer(cdata, clen, KNAV_STG_MIN_LAT + cy * cellLatH,
-                                         KNAV_STG_MIN_LON + cx * cellLonW, cellLatH, cellLonW, pass == 0);
+                                         KNAV_STG_MIN_LON + cx * cellLonW, cellLatH, cellLonW, pass);
                     }
                 }
             }
@@ -2803,13 +2823,13 @@ void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double vi
             double cellLonW = lonSpan / nx;
             int tier = useFine ? 1 : 0;
             if (dirOffsetForTier(tier) != 0) {
-                for (int pass = 0; pass < 2; pass++) {
+                for (int pass = 0; pass < 3; pass++) {
                     for (int cy = cy0; cy <= cy1; cy++) {
                         for (int cx = cx0; cx <= cx1; cx++) {
                             uint32_t clen = 0;
                             const uint8_t* cdata = getCachedCellData(tier, (uint32_t)(cy * nx + cx), clen);
                             renderCellBuffer(cdata, clen, KNAV_DE_MIN_LAT + cy * cellLatH,
-                                             KNAV_DE_MIN_LON + cx * cellLonW, cellLatH, cellLonW, pass == 0);
+                                             KNAV_DE_MIN_LON + cx * cellLonW, cellLatH, cellLonW, pass);
                         }
                     }
                 }

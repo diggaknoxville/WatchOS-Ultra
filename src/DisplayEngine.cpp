@@ -355,7 +355,7 @@ static void debugConsole() {
                 }
                 break;
             }
-            case 'K': nav::sideKey(false); Serial.printf("KEY page %d\n", (int)nav::current()); break;
+            case 'K': if (!pages::closeRingsDetailIfOpen()) nav::sideKey(false); Serial.printf("KEY page %d\n", (int)nav::current()); break;
             case 'L': nav::sideKey(true);  Serial.printf("KEY page %d\n", (int)nav::current()); break;
             case 'I': {
                 NavStatus st = NavEngine::status();
@@ -535,6 +535,7 @@ bool DisplayEngine::init() {
     pages::buildAppMedia(scr);
     pages::buildCalib(scr);
     pages::buildGames(scr);
+    pages::buildCalculator(scr);
 
     buildBanner();
     buildAodAndTorch();

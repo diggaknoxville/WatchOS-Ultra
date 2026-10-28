@@ -7,17 +7,17 @@ using namespace ui;
 
 namespace {
 
-const int BC = 6, BR = 5, BW = 50, BH = 16, GAP = 4;
-const int OX = AREA_X0 + (AREA_W - (BC * (BW + GAP) - GAP)) / 2;
+const int BRK_COLS = 6, BRK_ROWS = 5, BRK_W = 50, BRK_H = 16, BRK_GAP = 4;
+const int OX = AREA_X0 + (AREA_W - (BRK_COLS * (BRK_W + BRK_GAP) - BRK_GAP)) / 2;
 const int OY = 92;
 const int PW = 72, PH = 10, PY = AREA_Y1 - 22;
 const int BALL = 12;
-const uint32_t ROWCOL[BR] = {0xFF453A, 0xFF9F0A, 0xFFD60A, 0x30D158, 0x64D2FF};
+const uint32_t ROWCOL[BRK_ROWS] = {0xFF453A, 0xFF9F0A, 0xFFD60A, 0x30D158, 0x64D2FF};
 
-lv_obj_t* sBrick[BR][BC];
+lv_obj_t* sBrick[BRK_ROWS][BRK_COLS];
 lv_obj_t* sPaddle;
 lv_obj_t* sBall;
-bool alive[BR][BC];
+bool alive[BRK_ROWS][BRK_COLS];
 int left;
 float px, bx, by, vx, vy, speed;
 int lives, level;
@@ -32,8 +32,8 @@ void status() {
 
 void resetBricks() {
     left = 0;
-    for (int r = 0; r < BR; r++)
-        for (int c = 0; c < BC; c++) { alive[r][c] = true; setHidden(sBrick[r][c], false); left++; }
+    for (int r = 0; r < BRK_ROWS; r++)
+        for (int c = 0; c < BRK_COLS; c++) { alive[r][c] = true; setHidden(sBrick[r][c], false); left++; }
 }
 
 void serve() {
@@ -47,9 +47,9 @@ void serve() {
 
 void build(lv_obj_t* area) {
     rect(area, AREA_X0, AREA_Y0 + 6, AREA_W, 2, cStroke());
-    for (int r = 0; r < BR; r++)
-        for (int c = 0; c < BC; c++)
-            sBrick[r][c] = rect(area, OX + c * (BW + GAP), OY + r * (BH + GAP), BW, BH, lv_color_hex(ROWCOL[r]), 4);
+    for (int r = 0; r < BRK_ROWS; r++)
+        for (int c = 0; c < BRK_COLS; c++)
+            sBrick[r][c] = rect(area, OX + c * (BRK_W + BRK_GAP), OY + r * (BRK_H + BRK_GAP), BRK_W, BRK_H, lv_color_hex(ROWCOL[r]), 4);
     sPaddle = rect(area, 0, PY, PW, PH, cText(), 5);
     sBall = disc(area, 0, 0, BALL, accent());
 }
@@ -101,10 +101,10 @@ void tick(uint32_t dtMs, const Input& in) {
     }
 
     // bricks
-    int c = (int)floorf((bx - OX) / (BW + GAP)), rr = (int)floorf((by - OY) / (BH + GAP));
-    if (c >= 0 && c < BC && rr >= 0 && rr < BR && alive[rr][c]) {
-        float lx = bx - (OX + c * (BW + GAP)), ly = by - (OY + rr * (BH + GAP));
-        if (lx >= -r && lx <= BW + r && ly >= -r && ly <= BH + r) {
+    int c = (int)floorf((bx - OX) / (BRK_W + BRK_GAP)), rr = (int)floorf((by - OY) / (BRK_H + BRK_GAP));
+    if (c >= 0 && c < BRK_COLS && rr >= 0 && rr < BRK_ROWS && alive[rr][c]) {
+        float lx = bx - (OX + c * (BRK_W + BRK_GAP)), ly = by - (OY + rr * (BRK_H + BRK_GAP));
+        if (lx >= -r && lx <= BRK_W + r && ly >= -r && ly <= BRK_H + r) {
             alive[rr][c] = false;
             setHidden(sBrick[rr][c], true);
             left--;
@@ -112,7 +112,7 @@ void tick(uint32_t dtMs, const Input& in) {
             setScore(score);
             beep(660 + rr * 80, 25);
             // bounce on the side that was hit
-            float ox = fminf(lx, BW - lx), oy = fminf(ly, BH - ly);
+            float ox = fminf(lx, BRK_W - lx), oy = fminf(ly, BRK_H - ly);
             if (ox < oy) vx = -vx; else vy = -vy;
             if (left == 0) {
                 level++;

@@ -58,6 +58,16 @@ struct Game {
     void (*fmtScore)(uint32_t v, char* out, size_t n);
 };
 
+extern const Game GAME_LABYRINTH;
+extern const Game GAME_BREAKOUT;
+extern const Game GAME_DICE;
+extern const Game GAME_BALANCE;
+extern const Game GAME_SNAKE;
+extern const Game GAME_2048;
+extern const Game GAME_REACTION;
+extern const Game GAME_MEMORY;
+extern const Game GAME_FLAPPY;
+
 // ---- host services for games --------------------------------------------
 void setScore(uint32_t score);                 // HUD, right
 void setStatus(const char* text);              // HUD, left of the score (lives, round ...)

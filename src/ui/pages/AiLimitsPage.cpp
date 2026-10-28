@@ -9,6 +9,7 @@
 #include "BleCompanion.h"
 #include "CompanionServer.h"
 #include "DisplayEngine.h"
+#include "SettingsStorage.h"
 #include <time.h>
 
 using namespace ui;
@@ -92,9 +93,16 @@ static void refresh(bool) {
     setHidden(sStaleBanner, !isStale);
     if (isStale) {
         char sbuf[64];
-        if (syncAge < 86400) snprintf(sbuf, sizeof(sbuf), "Veraltet (vor %uh) • Tippen fuer Update >", (unsigned)(syncAge / 3600));
-        else snprintf(sbuf, sizeof(sbuf), "Veraltet (vor %ud) • Tippen fuer Update >", (unsigned)(syncAge / 86400));
+        if (syncAge < 86400) snprintf(sbuf, sizeof(sbuf), "Veraltet (vor %uh) • Hotspot fuer Sync >", (unsigned)(syncAge / 3600));
+        else snprintf(sbuf, sizeof(sbuf), "Veraltet (vor %ud) • Hotspot fuer Sync >", (unsigned)(syncAge / 86400));
         setText(sStaleTxt, sbuf);
+        lv_obj_set_y(sCards[0], 108);
+        lv_obj_set_y(sCards[1], 230);
+        lv_obj_set_y(sCards[2], 368);
+    } else {
+        lv_obj_set_y(sCards[0], 64);
+        lv_obj_set_y(sCards[1], 192);
+        lv_obj_set_y(sCards[2], 342);
     }
 
     // honest empty state: nothing has ever been received from the companion app
@@ -383,22 +391,31 @@ void buildAiLimits(lv_obj_t* scr) {
     lv_obj_set_style_bg_opa(sArgonBar, LV_OPA_COVER, LV_PART_INDICATOR);
     lv_obj_set_style_radius(sArgonBar, 3, LV_PART_INDICATOR);
 
-    // Stale reminder banner
+    // Prominenter Stale-Alert Banner direkt unter dem Header
     sStaleBanner = lv_obj_create(p);
-    lv_obj_set_size(sStaleBanner, CW, 34);
-    lv_obj_align(sStaleBanner, LV_ALIGN_BOTTOM_MID, 0, -6);
-    lv_obj_set_style_bg_color(sStaleBanner, lv_color_hex(0x3E2400), 0);
+    lv_obj_set_size(sStaleBanner, CW, 44);
+    lv_obj_set_pos(sStaleBanner, M, 58);
+    lv_obj_set_style_bg_color(sStaleBanner, lv_color_hex(0x2E1A00), 0);
     lv_obj_set_style_bg_opa(sStaleBanner, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(sStaleBanner, cWarn(), 0);
-    lv_obj_set_style_border_width(sStaleBanner, 1, 0);
-    lv_obj_set_style_radius(sStaleBanner, 17, 0);
+    lv_obj_set_style_border_color(sStaleBanner, lv_color_hex(0xF59E0B), 0);
+    lv_obj_set_style_border_width(sStaleBanner, 2, 0);
+    lv_obj_set_style_radius(sStaleBanner, 14, 0);
+    lv_obj_set_flex_flow(sStaleBanner, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(sStaleBanner, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(sStaleBanner, 8, 0);
     pressable(sStaleBanner);
-    sStaleTxt = label(sStaleBanner, F.cap, cWarn(), "Update noetig: Tippen fuer Hotspot >");
-    lv_obj_center(sStaleTxt);
+
+    lv_obj_t* stIco = label(sStaleBanner, F.icoS, lv_color_hex(0xF59E0B), LV_SYMBOL_WARNING);
+    sStaleTxt = label(sStaleBanner, F.cap, lv_color_hex(0xFDE68A), "Veraltet • Hotspot fuer Sync >");
     lv_obj_add_event_cb(sStaleBanner, [](lv_event_t*) {
+        SystemSettings& s = SettingsStorage::get();
+        s.wifiApEnabled = true;
+        SettingsStorage::save();
         CompanionServer::requestAp(true);
-        DisplayEngine::showToast("WLAN-Hotspot", "Aktiv fuer Handy-Update", 3000, ICO_WIFI);
+        DisplayEngine::showToast("Hotspot aktiv", "Handy per WLAN verbinden", 3000, ICO_WIFI);
         haptic(HAPTIC_CLICK);
+        nav::markDirty(nav::PG_APP_CONNECT);
+        nav::markDirty(nav::PG_CONTROL);
     }, LV_EVENT_CLICKED, NULL);
     lv_obj_add_flag(sStaleBanner, LV_OBJ_FLAG_HIDDEN);
 

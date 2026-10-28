@@ -434,6 +434,11 @@ class ServerCallbacks : public NimBLEServerCallbacks {
         return sPasskey;
     }
 
+    void onPassKeyEntry(NimBLEConnInfo& connInfo) override {
+        Serial.printf("[BLE] Auto-injecting passkey for entry: %06lu\n", (unsigned long)sPasskey);
+        NimBLEDevice::injectPassKey(connInfo, sPasskey);
+    }
+
     void onConfirmPassKey(NimBLEConnInfo& connInfo, uint32_t passkey) override {
         Serial.printf("[BLE] Auto-confirming passkey: %06lu\n", (unsigned long)passkey);
         NimBLEDevice::injectConfirmPasskey(connInfo, true);
@@ -481,9 +486,12 @@ static bool ensureStack() {
     NimBLEDevice::init(BLE_DEVICE_NAME);
     NimBLEDevice::setPower(ESP_PWR_LVL_P3);      // wrist to phone range; +9 dBm only costs current
 
-    // Standard BLE Security: Just Works (no passkey prompt error on smartphones)
+    // Standard BLE Security: Just Works & passkey support without smartphone pairing errors
+    NimBLEDevice::setSecurityPasskey(sPasskey);
     NimBLEDevice::setSecurityAuth(true /*bond*/, false /*mitm*/, true /*sc*/);
     NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT);
+    NimBLEDevice::setSecurityInitKey(BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID);
+    NimBLEDevice::setSecurityRespKey(BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID);
 
     sServer = NimBLEDevice::createServer();
     sServer->setCallbacks(new ServerCallbacks());
@@ -626,16 +634,28 @@ bool BleCompanion::isStackRunning() { return sStackInited; }
 bool BleCompanion::init() {
     preload();
     sBleEnabled = SettingsStorage::get().bleEnabled;
-    if (sPasskey == 0) sPasskey = esp_random() % 1000000UL;
+    Preferences p;
+    if (p.begin("ble_cfg", false)) {
+        sPasskey = p.getUInt("passkey", 123456);
+        p.putUInt("passkey", sPasskey);
+        p.end();
+    } else {
+        sPasskey = 123456;
+    }
     if (sBleEnabled) {
         if (ensureStack()) {
             NimBLEDevice::getAdvertising()->start();
-            Serial.println("[BLE] NimBLE advertising started as '" BLE_DEVICE_NAME "' (passkey pairing)");
+            Serial.printf("[BLE] NimBLE advertising started as '%s' (passkey %06lu)\n", BLE_DEVICE_NAME, (unsigned long)sPasskey);
         }
     } else {
         Serial.println("[BLE] Disabled by user settings (stack deferred)");
     }
     return true;
+}
+
+void BleCompanion::resetBonds() {
+    NimBLEDevice::deleteAllBonds();
+    Serial.println("[BLE] All bonds cleared from NVS");
 }
 
 uint32_t BleCompanion::getPasskey() { return sPasskey; }

@@ -382,9 +382,6 @@ void CompanionServer::startAp() {
     WiFi.persistent(false);
     WiFi.disconnect(true);
     WiFi.mode(WIFI_AP);
-    // 11 dBm covers wrist to phone comfortably; 19.5 dBm only drained the
-    // battery and stressed the AXP2101 rail during TX bursts.
-    WiFi.setTxPower(WIFI_POWER_11dBm);
     IPAddress IP(192, 168, 4, 1);
     WiFi.softAPConfig(IP, IP, IPAddress(255, 255, 255, 0));
     bool ok = WiFi.softAP(apName, apPassword, 1, 0, 4);
@@ -393,15 +390,24 @@ void CompanionServer::startAp() {
         ok = WiFi.softAP(apName, apPassword, 1, 0, 4);
     }
     if (ok) {
+        WiFi.setTxPower(WIFI_POWER_11dBm);
         dnsServer.start(53, "*", IP);
         server.begin();
         apRunning = true;
         sApLastUseMs = millis();
+        nav::markDirty(nav::PG_APP_CONNECT);
+        nav::markDirty(nav::PG_CONTROL);
+        nav::markDirty(nav::PG_FACE);
+        DisplayEngine::showToast("Hotspot aktiv", apName, 2500, ICO_WIFI);
         Serial.printf("[WIFI] Access point '%s' up at %s, portal PIN active\n", apName, IP.toString().c_str());
     } else {
         apRunning = false;
         WiFi.mode(WIFI_OFF);
-        Serial.printf("[WIFI] Failed to start SoftAP '%s' (out of internal memory)\n", apName);
+        SettingsStorage::get().wifiApEnabled = false;
+        nav::markDirty(nav::PG_APP_CONNECT);
+        nav::markDirty(nav::PG_CONTROL);
+        DisplayEngine::showToast("Hotspot-Fehler", "Konnte nicht starten", 3000, ICO_WIFI_OFF);
+        Serial.printf("[WIFI] Failed to start SoftAP '%s'\n", apName);
     }
 }
 
@@ -412,6 +418,9 @@ void CompanionServer::stopAp() {
     WiFi.mode(WIFI_OFF);
     apRunning = false;
     portalPin[0] = 0;
+    nav::markDirty(nav::PG_APP_CONNECT);
+    nav::markDirty(nav::PG_CONTROL);
+    nav::markDirty(nav::PG_FACE);
     Serial.println("[WIFI] Access point stopped");
 }
 

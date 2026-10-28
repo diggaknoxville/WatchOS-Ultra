@@ -40,6 +40,8 @@ PAGES = {
     "app_calendar": 10, "app_navi": 11, "app_stopwatch": 12, "app_lora": 13,
     "app_connect": 14, "app_settings": 15, "app_faces": 16, "app_power": 17,
     "app_media": 18, "calib": 19, "app_calib": 19,
+    "app_games": 20, "games": 20, "game": 21,
+    "app_calc": 22, "calc": 22,
 }
 CAROUSEL = ["launcher", "face", "ailimits", "activity", "agenda", "position", "lora", "system"]
 SHEETS = ["control", "notifs"]
@@ -204,9 +206,15 @@ def _read_exact(s, need, timeout):
     data = bytearray()
     deadline = time.time() + timeout
     while len(data) < need and time.time() < deadline:
-        chunk = s.read(need - len(data))
-        if chunk:
-            data += chunk
+        want = min(need - len(data), 8192)
+        try:
+            chunk = s.read(want)
+            if chunk:
+                data += chunk
+            else:
+                time.sleep(0.005)
+        except Exception:
+            time.sleep(0.01)
     return bytes(data)
 
 
@@ -256,7 +264,7 @@ def snapshot(s, path, retries=3):
     for attempt in range(1, retries + 1):
         try:
             return _snapshot_once(s, path)
-        except WatchError as e:
+        except Exception as e:
             last = e
             print(f"  snapshot attempt {attempt} failed: {e}")
             time.sleep(1.0)
