@@ -503,7 +503,7 @@ void buildPosition(lv_obj_t* scr) {
     lv_obj_align(sRoutePill, LV_ALIGN_BOTTOM_MID, 0, -8);
     lv_obj_add_flag(sRoutePill, LV_OBJ_FLAG_HIDDEN);
 
-    lv_obj_t* zIn = hudButton(sMapCard, MAP_W - 44, 8, 36, 36, "+");
+    lv_obj_t* zIn = hudButton(sMapCard, MAP_W - 52, 8, 44, 44, "+");
     lv_obj_add_event_cb(zIn, [](lv_event_t*) {
         if (sZoom < 17) sZoom++;
         sAutoZoom = false;
@@ -512,7 +512,7 @@ void buildPosition(lv_obj_t* scr) {
         haptic(HAPTIC_TICK);
         refresh(true);
     }, LV_EVENT_CLICKED, NULL);
-    lv_obj_t* zOut = hudButton(sMapCard, MAP_W - 44, 50, 36, 36, "-");
+    lv_obj_t* zOut = hudButton(sMapCard, MAP_W - 52, 58, 44, 44, "-");
     lv_obj_add_event_cb(zOut, [](lv_event_t*) {
         if (sZoom > 6) sZoom--;
         sAutoZoom = false;
@@ -521,7 +521,7 @@ void buildPosition(lv_obj_t* scr) {
         haptic(HAPTIC_TICK);
         refresh(true);
     }, LV_EVENT_CLICKED, NULL);
-    sZoomBadge = hudButton(sMapCard, MAP_W - 56, 92, 48, 24, "A Z15");
+    sZoomBadge = hudButton(sMapCard, MAP_W - 56, 114, 48, 28, "A Z15");
     sZoomLbl = lv_obj_get_child(sZoomBadge, 0);
     lv_obj_set_style_text_font(sZoomLbl, F.cap, 0);
     lv_obj_add_event_cb(sZoomBadge, [](lv_event_t*) {
@@ -539,7 +539,7 @@ void buildPosition(lv_obj_t* scr) {
     lv_obj_set_style_bg_color(sScaleBar, cText(), 0);
     lv_obj_align(sScaleBar, LV_ALIGN_BOTTOM_LEFT, 10, -10);
 
-    sRecenterBtn = hudButton(sMapCard, MAP_W - 110, MAP_H - 42, 100, 32, "Zentrieren");
+    sRecenterBtn = hudButton(sMapCard, MAP_W - 118, MAP_H - 54, 108, 44, "Zentrieren");
     lv_obj_add_event_cb(sRecenterBtn, [](lv_event_t*) {
         sManualPan = false;
         sAutoZoom = true;
@@ -603,7 +603,7 @@ void buildPosition(lv_obj_t* scr) {
     lv_obj_set_pos(sTurnDest, 64, 44);
     sTurnMeta = caption(sNavBox, "", cText2());
     lv_obj_set_pos(sTurnMeta, 16, 74);
-    sMeshSendBtn = secondaryButton(sNavBox, 92, 40, ICO_PODCASTS, "Mesh");
+    sMeshSendBtn = secondaryButton(sNavBox, 92, 44, ICO_PODCASTS, "Mesh");
     lv_obj_align(sMeshSendBtn, LV_ALIGN_TOP_RIGHT, -12, 12);
     lv_obj_add_event_cb(sMeshSendBtn, [](lv_event_t*) {
         NavStatus st = NavEngine::status();
@@ -628,7 +628,7 @@ void buildPosition(lv_obj_t* scr) {
     }, LV_EVENT_CLICKED, NULL);
 
     static const char* MODES[3] = {"AUTO", "FUSS", "MESH"};
-    sModeTabs = tabBar(p, M_BOT + 86, BAR_Y + 8, 132, MODES, 3, 0, [](lv_event_t* e) {
+    sModeTabs = tabBar(p, M_BOT + 86, BAR_Y + (BAR_H - 40) / 2, 132, MODES, 3, 0, [](lv_event_t* e) {
         NavMode m = (NavMode)(int)(intptr_t)lv_event_get_user_data(e);
         NavEngine::setMode(m);
         sMapNeedsRedraw = true;
@@ -671,8 +671,8 @@ void buildPosition(lv_obj_t* scr) {
     lv_obj_set_style_bg_opa(sSearchModal, LV_OPA_COVER, 0);
     lv_obj_add_flag(sSearchModal, LV_OBJ_FLAG_CLICKABLE);
     title(sSearchModal, "ZIEL");
-    lv_obj_t* closeBtn = secondaryButton(sSearchModal, 84, 32, ICO_CLOSE, "Zurück");
-    lv_obj_align(closeBtn, LV_ALIGN_TOP_RIGHT, -M_HEAD, 26);
+    lv_obj_t* closeBtn = secondaryButton(sSearchModal, 100, 44, ICO_CLOSE, "Zurück");
+    lv_obj_align(closeBtn, LV_ALIGN_TOP_RIGHT, -M_HEAD, 20);
     lv_obj_add_event_cb(closeBtn, [](lv_event_t*) { setHidden(sSearchModal, true); haptic(HAPTIC_TICK); }, LV_EVENT_CLICKED, NULL);
     sFilterTabs = tabBar(sSearchModal, M, CONTENT_Y, CW, FILTER_LABELS, 7, 0, [](lv_event_t* e) {
         sActiveFilter = (int)(intptr_t)lv_event_get_user_data(e);
@@ -680,8 +680,8 @@ void buildPosition(lv_obj_t* scr) {
         populateSearchList();
     });
     sSearchList = lv_obj_create(sSearchModal);
-    lv_obj_set_size(sSearchList, CW, SCR_H - CONTENT_Y - 44);
-    lv_obj_set_pos(sSearchList, M, CONTENT_Y + 40);
+    lv_obj_set_size(sSearchList, CW, SCR_H - CONTENT_Y - 52);
+    lv_obj_set_pos(sSearchList, M, CONTENT_Y + 48);
     lv_obj_set_style_bg_opa(sSearchList, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(sSearchList, 0, 0);
     lv_obj_set_style_pad_all(sSearchList, 0, 0);
@@ -699,7 +699,7 @@ void buildPosition(lv_obj_t* scr) {
     lv_obj_set_style_bg_opa(sSkyModal, LV_OPA_COVER, 0);
     lv_obj_add_flag(sSkyModal, LV_OBJ_FLAG_CLICKABLE);
     title(sSkyModal, "SATELLITEN");
-    lv_obj_t* skyClose = secondaryButton(sSkyModal, 84, 32, ICO_CLOSE, "Zurück");
+    lv_obj_t* skyClose = secondaryButton(sSkyModal, 100, 44, ICO_CLOSE, "Zurück");
     lv_obj_align(skyClose, LV_ALIGN_TOP_RIGHT, -M_HEAD, 26);
     lv_obj_add_event_cb(skyClose, [](lv_event_t*) { setHidden(sSkyModal, true); haptic(HAPTIC_TICK); }, LV_EVENT_CLICKED, NULL);
     sSkySub = caption(sSkyModal, "", accent());

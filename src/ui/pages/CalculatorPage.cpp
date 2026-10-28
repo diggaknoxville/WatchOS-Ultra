@@ -334,15 +334,15 @@ void buildCalculator(lv_obj_t* scr) {
     lv_obj_t* hdr = box(p, SCR_W, 50);
     lv_obj_set_pos(hdr, 0, 10);
 
-    lv_obj_t* backBtn = box(hdr, 82, 34);
-    lv_obj_set_pos(backBtn, 14, 8);
+    lv_obj_t* backBtn = box(hdr, 96, 44);
+    lv_obj_set_pos(backBtn, 14, 3);
     lv_obj_set_style_bg_color(backBtn, cSurf(), 0);
     lv_obj_set_style_bg_opa(backBtn, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(backBtn, 17, 0);
+    lv_obj_set_style_radius(backBtn, 22, 0);
     lv_obj_set_style_border_width(backBtn, 1, 0);
     lv_obj_set_style_border_color(backBtn, cStroke(), 0);
     pressable(backBtn);
-    lv_obj_t* bLbl = label(backBtn, F.small, accent(), "< APPS");
+    lv_obj_t* bLbl = label(backBtn, F.small, accent(), ICO_CHEVRON_LEFT " Apps");
     accReg(bLbl, ACC_TEXT);
     lv_obj_center(bLbl);
     lv_obj_add_event_cb(backBtn, [](lv_event_t*) {
@@ -356,7 +356,7 @@ void buildCalculator(lv_obj_t* scr) {
     sCalcDegRadPill = pill(hdr, sDegMode ? "DEG" : "RAD", accent());
     accReg(sCalcDegRadPill, ACC_TEXT);
     lv_obj_align(sCalcDegRadPill, LV_ALIGN_RIGHT_MID, -14, 0);
-    lv_obj_add_flag(sCalcDegRadPill, LV_OBJ_FLAG_CLICKABLE);
+    pressable(sCalcDegRadPill);                     // 28 px pill, 56 px hit region
     lv_obj_add_event_cb(sCalcDegRadPill, [](lv_event_t*) {
         sDegMode = !sDegMode;
         setPill(sCalcDegRadPill, sDegMode ? "DEG" : "RAD", accent());
@@ -378,13 +378,13 @@ void buildCalculator(lv_obj_t* scr) {
     lv_obj_align(sCalcResLbl, LV_ALIGN_BOTTOM_RIGHT, 0, -4);
 
     // Mode Selector Tab Bar: [ 123 ] [ fx ] [ MEM ]
-    lv_obj_t* modeRow = box(p, CW, 32);
+    lv_obj_t* modeRow = box(p, CW, 40);
     lv_obj_set_pos(modeRow, M, 150);
     lv_obj_set_flex_flow(modeRow, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(modeRow, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
     auto makeTabBtn = [&](const char* title, int mode) -> lv_obj_t* {
-        lv_obj_t* b = box(modeRow, (CW - 16) / 3, 32);
+        lv_obj_t* b = box(modeRow, (CW - 16) / 3, 40);
         lv_obj_set_style_radius(b, 12, 0);
         lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
         lv_obj_set_style_bg_color(b, mode == 0 ? accent() : cSurf(), 0);
@@ -410,7 +410,7 @@ void buildCalculator(lv_obj_t* scr) {
 
     auto createGrid = [&](lv_obj_t* parent) -> lv_obj_t* {
         lv_obj_t* g = box(parent, CW, 290);
-        lv_obj_set_pos(g, M, 190);
+        lv_obj_set_pos(g, M, 196);
         lv_obj_set_flex_flow(g, LV_FLEX_FLOW_ROW_WRAP);
         lv_obj_set_flex_align(g, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
         lv_obj_set_style_pad_row(g, 6, 0);

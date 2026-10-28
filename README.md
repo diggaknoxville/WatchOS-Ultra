@@ -2,7 +2,7 @@
 
 Firmware für die **LilyGO T-Watch Ultra** (ESP32-S3) auf Basis von Arduino-ESP32 3.3 (pioarduino), LVGL 9.4 und FreeRTOS. Zwei Tasks (UI auf Core 1, Hintergrunddienste auf Core 0), ein RLE-Compositor für das 410×502-AMOLED, Meshtastic-kompatibler LoRa-Funk, Offline-Karten von der microSD-Karte, GNSS, Schrittzähler und ein WLAN-Portal zur Konfiguration.
 
-Version 1.2.0, Codename „Kronos“. Interne Bezeichner (`Kronos*`-Klassen, `kronos_*`-NVS-Namespaces) sind aus Kompatibilitätsgründen mit gespeicherten Daten beibehalten.
+Version 1.4.1, Codename „Kronos“. Interne Bezeichner (`Kronos*`-Klassen, `kronos_*`-NVS-Namespaces) sind aus Kompatibilitätsgründen mit gespeicherten Daten beibehalten.
 
 ---
 
@@ -218,7 +218,8 @@ WatchOS-Ultra/
 ├── platformio.ini, build_firmware.sh, version.json
 ├── LICENSE, THIRD_PARTY_NOTICES.md
 ├── REVIEW.md                          # Code-Review, Grundlage der Überarbeitung 1.1.0
-└── REVIEW-2.md                        # Review 2: Akku, Touch, App-Drawer, Start (1.2.0)
+├── REVIEW-2.md                        # Review 2: Akku, Touch, App-Drawer, Start (1.2.0)
+└── REVIEW-3-DESIGN.md                 # Design-Review nach Apple HIG (1.4.1)
 ```
 
 ---

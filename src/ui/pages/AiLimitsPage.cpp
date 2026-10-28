@@ -93,8 +93,8 @@ static void refresh(bool) {
     setHidden(sStaleBanner, !isStale);
     if (isStale) {
         char sbuf[64];
-        if (syncAge < 86400) snprintf(sbuf, sizeof(sbuf), "Veraltet (vor %uh) • Hotspot fuer Sync >", (unsigned)(syncAge / 3600));
-        else snprintf(sbuf, sizeof(sbuf), "Veraltet (vor %ud) • Hotspot fuer Sync >", (unsigned)(syncAge / 86400));
+        if (syncAge < 86400) snprintf(sbuf, sizeof(sbuf), "Veraltet (vor %u h) • Hotspot für Sync", (unsigned)(syncAge / 3600));
+        else snprintf(sbuf, sizeof(sbuf), "Veraltet (vor %u d) • Hotspot für Sync", (unsigned)(syncAge / 86400));
         setText(sStaleTxt, sbuf);
         lv_obj_set_y(sCards[0], 96);
         lv_obj_set_y(sCards[1], 198);
@@ -406,7 +406,7 @@ void buildAiLimits(lv_obj_t* scr) {
     pressable(sStaleBanner);
 
     lv_obj_t* stIco = label(sStaleBanner, F.icoS, lv_color_hex(0xF59E0B), ICO_INFO);
-    sStaleTxt = label(sStaleBanner, F.cap, lv_color_hex(0xFDE68A), "Veraltet • Hotspot fuer Sync >");
+    sStaleTxt = label(sStaleBanner, F.cap, lv_color_hex(0xFDE68A), "Veraltet • Hotspot für Sync");
     lv_obj_add_event_cb(sStaleBanner, [](lv_event_t*) {
         SystemSettings& s = SettingsStorage::get();
         s.wifiApEnabled = true;

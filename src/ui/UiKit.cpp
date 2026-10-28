@@ -36,8 +36,8 @@ void initFonts() {
     F.numS  = lv_tiny_ttf_create_data(orbitron_ttf, orbitron_ttf_len, 20);
     F.title = lv_tiny_ttf_create_data(rajdhani_ttf, rajdhani_ttf_len, 34);
     F.body  = lv_tiny_ttf_create_data(rajdhani_ttf, rajdhani_ttf_len, 26);
-    F.small = lv_tiny_ttf_create_data(rajdhani_ttf, rajdhani_ttf_len, 21);
-    F.cap   = lv_tiny_ttf_create_data(rajdhani_ttf, rajdhani_ttf_len, 17);
+    F.small = lv_tiny_ttf_create_data(rajdhani_ttf, rajdhani_ttf_len, 22);   // 11 pt at 2x
+    F.cap   = lv_tiny_ttf_create_data(rajdhani_ttf, rajdhani_ttf_len, 20);   // captions carry information
     F.icon  = &lv_font_montserrat_24;
     F.iconS = &lv_font_montserrat_20;
     F.iconL = &lv_font_montserrat_36;
@@ -81,7 +81,7 @@ lv_obj_t* label(lv_obj_t* p, const lv_font_t* f, lv_color_t c, const char* t) {
 
 lv_obj_t* caption(lv_obj_t* p, const char* t, lv_color_t c) {
     lv_obj_t* l = label(p, F.cap, c, t);
-    lv_obj_set_style_text_letter_space(l, 2, 0);
+    lv_obj_set_style_text_letter_space(l, 1, 0);
     return l;
 }
 
@@ -197,6 +197,18 @@ void pressable(lv_obj_t* o) {
     lv_obj_add_flag(o, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_style_opa(o, LV_OPA_70, LV_STATE_PRESSED);
     lv_obj_set_style_opa(o, LV_OPA_40, LV_STATE_DISABLED);
+    hitArea(o);
+}
+
+void hitArea(lv_obj_t* o, int minPx) {
+    if (!o) return;
+    int32_t w = lv_obj_get_style_width(o, LV_PART_MAIN);
+    int32_t h = lv_obj_get_style_height(o, LV_PART_MAIN);
+    // only fixed sizes are known here; content- and percent-sized objects keep their box
+    int ext = 0;
+    if (!LV_COORD_IS_PCT(w) && w != LV_SIZE_CONTENT && w > 0 && w < minPx) ext = (minPx - w) / 2;
+    if (!LV_COORD_IS_PCT(h) && h != LV_SIZE_CONTENT && h > 0 && h < minPx && (minPx - h) / 2 > ext) ext = (minPx - h) / 2;
+    if (ext > 0) lv_obj_set_ext_click_area(o, ext);
 }
 
 lv_obj_t* pill(lv_obj_t* parent, const char* text, lv_color_t color) {
@@ -338,7 +350,8 @@ lv_obj_t* secondaryButton(lv_obj_t* parent, int w, int h, const char* icon, cons
 }
 
 lv_obj_t* dangerButton(lv_obj_t* parent, int w, int h, const char* icon, const char* text) {
-    return buttonBase(parent, w, h, icon, text, cCrit(), cText(), false);
+    // black on #FF453A: 6.2:1 (white would be 3.4:1)
+    return buttonBase(parent, w, h, icon, text, cCrit(), cBg(), false);
 }
 
 lv_obj_t* iconButton(lv_obj_t* parent, int size, const char* icon, lv_color_t bg, lv_color_t fg) {
@@ -381,7 +394,7 @@ void setButtonEnabled(lv_obj_t* btn, bool enabled) {
 
 lv_obj_t* tabBar(lv_obj_t* parent, int x, int y, int w, const char* const* names, int n, int active,
                  lv_event_cb_t cb) {
-    lv_obj_t* bar = box(parent, w, 32);
+    lv_obj_t* bar = box(parent, w, 40);
     lv_obj_set_pos(bar, x, y);
     lv_obj_set_style_radius(bar, 12, 0);
     lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
@@ -391,11 +404,12 @@ lv_obj_t* tabBar(lv_obj_t* parent, int x, int y, int w, const char* const* names
     lv_obj_set_flex_align(bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(bar, 3, 0);
     for (int i = 0; i < n; i++) {
-        lv_obj_t* t = box(bar, 10, 26);
+        lv_obj_t* t = box(bar, 10, 34);
         lv_obj_set_flex_grow(t, 1);
         lv_obj_set_style_radius(t, 10, 0);
         lv_obj_set_style_bg_opa(t, LV_OPA_COVER, 0);
         pressable(t);
+        lv_obj_set_ext_click_area(t, 0);              // neighbours would overlap
         if (cb) lv_obj_add_event_cb(t, cb, LV_EVENT_CLICKED, (void*)(intptr_t)i);
         lv_obj_t* l = caption(t, names[i], cText());
         lv_obj_remove_flag(l, LV_OBJ_FLAG_CLICKABLE);
@@ -436,7 +450,7 @@ static void buildDialog() {
     lv_obj_set_style_bg_opa(sDlgBack, LV_OPA_70, 0);
     lv_obj_set_style_bg_color(sDlgBack, cBg(), 0);
     lv_obj_add_flag(sDlgBack, LV_OBJ_FLAG_CLICKABLE);          // swallow touches
-    sDlgCard = card(sDlgBack, CW, 260);
+    sDlgCard = card(sDlgBack, CW, 264);
     lv_obj_set_style_bg_color(sDlgCard, cSurf2(), 0);
     lv_obj_center(sDlgCard);
     sDlgTitle = label(sDlgCard, F.body, cText(), "");
@@ -450,10 +464,10 @@ static void buildDialog() {
     lv_obj_set_style_text_align(sDlgMsg, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(sDlgMsg, LV_ALIGN_TOP_MID, 0, 70);
     const int bw = (CW - 40 - 12) / 2;
-    sDlgCancel = secondaryButton(sDlgCard, bw, 52, nullptr, "Abbrechen");
+    sDlgCancel = secondaryButton(sDlgCard, bw, BTN_H, nullptr, "Abbrechen");
     lv_obj_align(sDlgCancel, LV_ALIGN_BOTTOM_LEFT, 20, -20);
     lv_obj_add_event_cb(sDlgCancel, [](lv_event_t*) { haptic(HAPTIC_TICK); dialogAnswer(false); }, LV_EVENT_CLICKED, NULL);
-    sDlgOk = primaryButton(sDlgCard, bw, 52, nullptr, "OK");
+    sDlgOk = primaryButton(sDlgCard, bw, BTN_H, nullptr, "OK");
     lv_obj_align(sDlgOk, LV_ALIGN_BOTTOM_RIGHT, -20, -20);
     lv_obj_add_event_cb(sDlgOk, [](lv_event_t*) { haptic(HAPTIC_CLICK); dialogAnswer(true); }, LV_EVENT_CLICKED, NULL);
     lv_obj_add_flag(sDlgBack, LV_OBJ_FLAG_HIDDEN);
@@ -467,10 +481,17 @@ void confirmDialog(const char* titleTxt, const char* msg, const char* okText, co
     lv_label_set_text(sDlgTitle, titleTxt ? titleTxt : "");
     lv_label_set_text(sDlgMsg, msg ? msg : "");
     setButtonText(sDlgOk, okText ? okText : "OK");
-    setButtonText(sDlgCancel, cancelText ? cancelText : "Abbrechen");
+    // informational dialog (no cancel text): one centred button
+    const bool single = !cancelText || !cancelText[0];
+    const int bw = (CW - 40 - 12) / 2;
+    setHidden(sDlgCancel, single);
+    setButtonText(sDlgCancel, single ? "Abbrechen" : cancelText);
+    lv_obj_set_width(sDlgOk, single ? CW - 40 : bw);
+    if (single) lv_obj_align(sDlgOk, LV_ALIGN_BOTTOM_MID, 0, -20);
+    else lv_obj_align(sDlgOk, LV_ALIGN_BOTTOM_RIGHT, -20, -20);
     setBgColorIf(sDlgOk, danger ? cCrit() : accent());
     lv_obj_t* okl = buttonLabel(sDlgOk);
-    if (okl) setTextColorIf(okl, danger ? cText() : cBg());
+    if (okl) setTextColorIf(okl, cBg());                 // black on red and on the accent
     lv_obj_move_foreground(sDlgBack);
     setHidden(sDlgBack, false);
 }

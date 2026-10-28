@@ -256,7 +256,7 @@ void buildHost(lv_obj_t* scr) {
     lv_obj_align(sOverScore, LV_ALIGN_TOP_MID, 0, 62);
     sOverBest = caption(sOver, "", cText2());
     lv_obj_align(sOverBest, LV_ALIGN_TOP_MID, 0, 132);
-    lv_obj_t* again = primaryButton(sOver, 220, 52, ICO_REFRESH, "Nochmal");
+    lv_obj_t* again = primaryButton(sOver, 220, BTN_H, ICO_REFRESH, "Nochmal");
     lv_obj_align(again, LV_ALIGN_BOTTOM_MID, 0, -18);
     lv_obj_add_event_cb(again, [](lv_event_t*) { haptic(HAPTIC_TICK); startCurrent(); }, LV_EVENT_CLICKED, NULL);
     lv_obj_add_flag(sOver, LV_OBJ_FLAG_HIDDEN);
