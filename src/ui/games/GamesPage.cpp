@@ -16,11 +16,6 @@
 
 using namespace ui;
 
-namespace games {
-extern const Game GAME_LABYRINTH, GAME_BREAKOUT, GAME_DICE, GAME_BALANCE, GAME_SNAKE,
-                  GAME_2048, GAME_REACTION, GAME_MEMORY, GAME_FLAPPY;
-}
-
 namespace {
 
 using namespace games;
@@ -40,7 +35,7 @@ bool sPrefsOk = false;
 void loadBest() {
     sPrefsOk = sPrefs.begin("kronos_games", false);
     for (int i = 0; i < N_GAMES; i++) {
-        char k[4];
+        char k[16];
         snprintf(k, sizeof(k), "b%d", i);
         sBest[i] = sPrefsOk ? sPrefs.getUInt(k, 0) : 0;
     }
@@ -48,7 +43,7 @@ void loadBest() {
 
 void storeBest(int i) {
     if (!sPrefsOk) return;
-    char k[4];
+    char k[16];
     snprintf(k, sizeof(k), "b%d", i);
     sPrefs.putUInt(k, sBest[i]);
 }
