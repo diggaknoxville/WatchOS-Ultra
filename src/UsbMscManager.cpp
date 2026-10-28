@@ -9,7 +9,7 @@
 
 static USBMSC sMsc;
 static bool sMscInited = false;
-static bool sMscEnabled = true;
+static bool sMscEnabled = false;
 static volatile bool sMediaMounted = false;
 static volatile bool sDirtyWrite = false;
 
@@ -72,7 +72,7 @@ bool UsbMscManager::init() {
     sMsc.vendorID("WATCHOS");
     sMsc.productID("MICROSD DRIVE");
     sMsc.productRevision("1.0");
-    sMsc.mediaPresent(true);
+    sMsc.mediaPresent(sMscEnabled);
     sMsc.isWritable(NavEngine::status().sdWritable);
     sMsc.onRead(onMscRead);
     sMsc.onWrite(onMscWrite);

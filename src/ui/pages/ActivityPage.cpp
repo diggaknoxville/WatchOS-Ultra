@@ -140,7 +140,7 @@ static void refresh(bool) {
         setText(aDays[i], D1[(lt.tm_wday + 1 + i) % 7]);
     }
     if (aSevenDaySummLbl) {
-        snprintf(b, sizeof(b), "Ø 7-Tage: %lu · Zielquote: %d%%", (unsigned long)avgSteps, goalMetDays * 100 / 7);
+        snprintf(b, sizeof(b), "7-Tage-Schnitt: %lu · Quote: %d%%", (unsigned long)avgSteps, goalMetDays * 100 / 7);
         setText(aSevenDaySummLbl, b);
     }
 }
@@ -149,8 +149,8 @@ void buildActivity(lv_obj_t* scr) {
     lv_obj_t* p = pageRoot(scr);
     title(p, "FITNESS");
 
-    static const char* TABS[3] = {"HEUTE", "HISTORIE", "WAAGE"};
-    aTabs = tabBar(p, M_HEAD + 90, 26, 220, TABS, 3, 0, [](lv_event_t* e) {
+    static const char* TABS[3] = {"TAG", "HIST", "WAAGE"};
+    aTabs = tabBar(p, SCR_W - M - 190, 24, 190, TABS, 3, 0, [](lv_event_t* e) {
         sTab = (int)(intptr_t)lv_event_get_user_data(e);
         haptic(HAPTIC_TICK);
         refresh(true);
@@ -204,7 +204,7 @@ void buildActivity(lv_obj_t* scr) {
         lv_obj_set_style_text_align(aDays[i], LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_pos(aDays[i], x, 134);
     }
-    aSevenDaySummLbl = caption(cd, "Ø 7-Tage: -- · Zielquote: --%", accent());
+    aSevenDaySummLbl = caption(cd, "7-Tage-Schnitt: -- · Quote: --%", accent());
     accReg(aSevenDaySummLbl, ACC_TEXT);
     lv_obj_set_pos(aSevenDaySummLbl, 20, 156);
 
@@ -223,9 +223,9 @@ void buildActivity(lv_obj_t* scr) {
     lv_obj_t* hcap1 = caption(hc1, "7-TAGE-DURCHSCHNITT", accent());
     accReg(hcap1, ACC_TEXT);
     lv_obj_set_pos(hcap1, 16, 12);
-    aHistAvgStepsLbl = label(hc1, F.title, cText(), "Ø -- Schritte / Tag");
+    aHistAvgStepsLbl = label(hc1, F.title, cText(), "Schnitt: -- Schritte / Tag");
     lv_obj_set_pos(aHistAvgStepsLbl, 16, 36);
-    aHistAvgMetaLbl = caption(hc1, "Ø -- km · Ø -- kcal täglich", cText2());
+    aHistAvgMetaLbl = caption(hc1, "Schnitt: -- km · -- kcal täglich", cText2());
     lv_obj_set_pos(aHistAvgMetaLbl, 16, 70);
 
     // Card 2: Spitzenleistungen & Zielquote

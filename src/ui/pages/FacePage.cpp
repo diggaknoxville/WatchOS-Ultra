@@ -490,14 +490,14 @@ static void buildUltraWayfinder(lv_obj_t* f) {
     wCompassPointer = label(ringBox, F.title, COL_ULTRA, "^");
     lv_obj_align(wCompassPointer, LV_ALIGN_TOP_MID, 0, 4);
 
-    wLblN = label(ringBox, F.title, COL_ULTRA, "N");
-    lv_obj_set_pos(wLblN, 183, 10);
-    wLblO = label(ringBox, F.title, cText2(), "O");
-    lv_obj_set_pos(wLblO, 350, 183);
-    wLblS = label(ringBox, F.title, cText2(), "S");
-    lv_obj_set_pos(wLblS, 183, 350);
-    wLblW = label(ringBox, F.title, cText2(), "W");
-    lv_obj_set_pos(wLblW, 16, 183);
+    wLblN = label(ringBox, F.small, COL_ULTRA, "N");
+    lv_obj_set_pos(wLblN, 187, 10);
+    wLblO = label(ringBox, F.small, cText2(), "O");
+    lv_obj_set_pos(wLblO, 360, 187);
+    wLblS = label(ringBox, F.small, cText2(), "S");
+    lv_obj_set_pos(wLblS, 187, 360);
+    wLblW = label(ringBox, F.small, cText2(), "W");
+    lv_obj_set_pos(wLblW, 10, 187);
 
     wCoord = caption(f, "KEIN FIX", cText2());
     lv_obj_align(wCoord, LV_ALIGN_TOP_MID, 0, 52);
@@ -677,15 +677,15 @@ static void buildCasio(lv_obj_t* f) {
         lv_obj_set_style_bg_color(kBarDots[g], LCD_DIM, 0);
     }
 
-    lv_obj_t* tRow = box(lcd, CW - 44, 96);
+    lv_obj_t* tRow = box(lcd, CW - 32, 96);
     lv_obj_align(tRow, LV_ALIGN_TOP_MID, 0, 88);
     lv_obj_set_flex_flow(tRow, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(tRow, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    kHH = label(tRow, F.hero, LCD_INK, "00");
-    label(tRow, F.hero, LCD_INK, ":");
-    kMM = label(tRow, F.hero, LCD_INK, "00");
-    kSS = label(tRow, F.title, LCD_INK, "00");
-    lv_obj_set_style_pad_left(kSS, 6, 0);
+    kHH = label(tRow, F.numL, LCD_INK, "00");
+    label(tRow, F.numL, LCD_INK, ":");
+    kMM = label(tRow, F.numL, LCD_INK, "00");
+    kSS = label(tRow, F.numS, LCD_INK, "00");
+    lv_obj_set_style_pad_left(kSS, 8, 0);
 
     lv_obj_t* teleRow = box(lcd, CW - 50, 44);
     lv_obj_align(teleRow, LV_ALIGN_BOTTOM_MID, 0, -14);
@@ -1605,16 +1605,16 @@ static void refresh(bool force) {
                 setText(wHeading, b);
             }
 
-            // Dynamic live rotating compass ring (N, O, S, W)
-            const float CR = 170.0f, CCX = 193.0f, CCY = 193.0f;
+            // Dynamic live rotating compass ring (N, O, S, W) on outer bezel perimeter
+            const float CR = 180.0f, CCX = 193.0f, CCY = 193.0f;
             float aN = (0.0f - hd) * (float)M_PI / 180.0f;
             float aO = (90.0f - hd) * (float)M_PI / 180.0f;
             float aS = (180.0f - hd) * (float)M_PI / 180.0f;
             float aW = (270.0f - hd) * (float)M_PI / 180.0f;
-            lv_obj_set_pos(wLblN, (int)lroundf(CCX + CR * sinf(aN) - 10), (int)lroundf(CCY - CR * cosf(aN) - 12));
-            lv_obj_set_pos(wLblO, (int)lroundf(CCX + CR * sinf(aO) - 10), (int)lroundf(CCY - CR * cosf(aO) - 12));
-            lv_obj_set_pos(wLblS, (int)lroundf(CCX + CR * sinf(aS) - 10), (int)lroundf(CCY - CR * cosf(aS) - 12));
-            lv_obj_set_pos(wLblW, (int)lroundf(CCX + CR * sinf(aW) - 10), (int)lroundf(CCY - CR * cosf(aW) - 12));
+            lv_obj_set_pos(wLblN, (int)lroundf(CCX + CR * sinf(aN) - 6), (int)lroundf(CCY - CR * cosf(aN) - 8));
+            lv_obj_set_pos(wLblO, (int)lroundf(CCX + CR * sinf(aO) - 6), (int)lroundf(CCY - CR * cosf(aO) - 8));
+            lv_obj_set_pos(wLblS, (int)lroundf(CCX + CR * sinf(aS) - 6), (int)lroundf(CCY - CR * cosf(aS) - 8));
+            lv_obj_set_pos(wLblW, (int)lroundf(CCX + CR * sinf(aW) - 6), (int)lroundf(CCY - CR * cosf(aW) - 8));
 
             uint32_t steps = MotionHaptic::getStepsToday();
             uint32_t goal = SettingsStorage::get().dailyStepGoal ? SettingsStorage::get().dailyStepGoal : 1;
@@ -1840,9 +1840,9 @@ static void refresh(bool force) {
                 long daysInYear = ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)) ? 366 : 365;
                 long dim = daysInMonth(year, ti.tm_mon);
                 int pct[3];
-                pct[0] = (int)((ti.tm_yday * 86400L + secOfDay) * 100 / (daysInYear * 86400L));
-                pct[1] = (int)(((ti.tm_mday - 1) * 86400L + secOfDay) * 100 / (dim * 86400L));
-                pct[2] = (int)(secOfDay * 100 / 86400L);
+                pct[0] = (int)(((int64_t)ti.tm_yday * 86400LL + secOfDay) * 100LL / (daysInYear * 86400LL));
+                pct[1] = (int)(((int64_t)(ti.tm_mday - 1) * 86400LL + secOfDay) * 100LL / (dim * 86400LL));
+                pct[2] = (int)(secOfDay * 100LL / 86400LL);
                 for (int i = 0; i < 3; i++) {
                     setBar(ltBars[i], pct[i]);
                     snprintf(b, sizeof(b), "%d%%", pct[i]); setText(ltPct[i], b);

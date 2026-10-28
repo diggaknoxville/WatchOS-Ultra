@@ -96,13 +96,13 @@ static void refresh(bool) {
         if (syncAge < 86400) snprintf(sbuf, sizeof(sbuf), "Veraltet (vor %uh) • Hotspot fuer Sync >", (unsigned)(syncAge / 3600));
         else snprintf(sbuf, sizeof(sbuf), "Veraltet (vor %ud) • Hotspot fuer Sync >", (unsigned)(syncAge / 86400));
         setText(sStaleTxt, sbuf);
-        lv_obj_set_y(sCards[0], 108);
-        lv_obj_set_y(sCards[1], 230);
-        lv_obj_set_y(sCards[2], 368);
+        lv_obj_set_y(sCards[0], 96);
+        lv_obj_set_y(sCards[1], 198);
+        lv_obj_set_y(sCards[2], 328);
     } else {
-        lv_obj_set_y(sCards[0], 64);
-        lv_obj_set_y(sCards[1], 192);
-        lv_obj_set_y(sCards[2], 342);
+        lv_obj_set_y(sCards[0], 60);
+        lv_obj_set_y(sCards[1], 162);
+        lv_obj_set_y(sCards[2], 292);
     }
 
     // honest empty state: nothing has ever been received from the companion app
@@ -226,18 +226,18 @@ void buildAiLimits(lv_obj_t* scr) {
     // ========================================================================
     // SEKTION 1: ANTHROPIC (CLAUDE PRO)
     // ========================================================================
-    const int S1_Y = 82;
-    lv_obj_t* card1 = card(p, CW, 102);
+    const int S1_Y = 60;
+    lv_obj_t* card1 = card(p, CW, 94);
     lv_obj_set_pos(card1, M, S1_Y);
     sCards[0] = card1;
 
     lv_obj_t* cap1 = caption(card1, "ANTHROPIC  •  CLAUDE", COL_ANTH_OUT);
-    lv_obj_set_pos(cap1, 16, 10);
+    lv_obj_set_pos(cap1, 16, 8);
 
     // Dual concentric rings (left)
-    const int R1_SZ = 68, R1_W = 5;
-    const int R1_IN_SZ = 52;
-    const int R1_X = 16, R1_Y = 28;
+    const int R1_SZ = 64, R1_W = 5;
+    const int R1_IN_SZ = 48;
+    const int R1_X = 16, R1_Y = 24;
 
     sAnthRing5h = ring(card1, R1_SZ, R1_W, COL_ANTH_OUT);
     lv_obj_set_pos(sAnthRing5h, R1_X, R1_Y);
@@ -248,28 +248,28 @@ void buildAiLimits(lv_obj_t* scr) {
     // Countdowns & percentages beside the rings (right)
     const int TXT1_X = R1_X + R1_SZ + 16;
     sAnthTxt5h = label(card1, F.body, cText(), "5h: --");
-    lv_obj_set_pos(sAnthTxt5h, TXT1_X, 36);
+    lv_obj_set_pos(sAnthTxt5h, TXT1_X, 30);
 
     sAnthTxtWk = label(card1, F.body, cText2(), "Wk: --");
-    lv_obj_set_pos(sAnthTxtWk, TXT1_X, 64);
+    lv_obj_set_pos(sAnthTxtWk, TXT1_X, 58);
 
     // ========================================================================
     // SEKTION 2: ANTIGRAVITY IDE (GOOGLE AI PRO)
     // ========================================================================
-    const int S2_Y = 192;
-    lv_obj_t* card2 = card(p, CW, 142);
+    const int S2_Y = 162;
+    lv_obj_t* card2 = card(p, CW, 122);
     lv_obj_set_pos(card2, M, S2_Y);
     sCards[1] = card2;
 
     lv_obj_t* cap2 = caption(card2, "ANTIGRAVITY IDE", COL_AG_GEM);
-    lv_obj_set_pos(cap2, 16, 10);
+    lv_obj_set_pos(cap2, 16, 8);
 
-    const int R2_SZ = 72, R2_IN_SZ = 56, R2_W = 5;
+    const int R2_SZ = 62, R2_IN_SZ = 46, R2_W = 4;
     const int COL_W = (CW - 32) / 2; // ~165px
 
     // --- Sub-group 2A: Gemini Models ---
     const int G2A_X = 16 + (COL_W - R2_SZ) / 2;
-    const int G2_Y = 32;
+    const int G2_Y = 26;
 
     sAgGemRing5h = ring(card2, R2_SZ, R2_W, COL_AG_GEM);
     lv_obj_set_pos(sAgGemRing5h, G2A_X, G2_Y);
@@ -277,7 +277,7 @@ void buildAiLimits(lv_obj_t* scr) {
     sAgGemRingWk = ring(card2, R2_IN_SZ, R2_W, COL_AG_GEM2);
     lv_obj_set_pos(sAgGemRingWk, G2A_X + (R2_SZ - R2_IN_SZ) / 2, G2_Y + (R2_SZ - R2_IN_SZ) / 2);
 
-    // Center container with 2 compact lines (Solution B)
+    // Center container with 2 compact lines
     lv_obj_t* cBoxA = box(card2, R2_IN_SZ, R2_IN_SZ);
     lv_obj_set_pos(cBoxA, G2A_X + (R2_SZ - R2_IN_SZ) / 2, G2_Y + (R2_SZ - R2_IN_SZ) / 2);
     lv_obj_set_flex_flow(cBoxA, LV_FLEX_FLOW_COLUMN);
@@ -289,7 +289,7 @@ void buildAiLimits(lv_obj_t* scr) {
     sAgGemCap = lblGem;
     lv_obj_set_width(lblGem, COL_W);
     lv_obj_set_style_text_align(lblGem, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_pos(lblGem, 16, G2_Y + R2_SZ + 6);
+    lv_obj_set_pos(lblGem, 16, G2_Y + R2_SZ + 2);
 
     // --- Sub-group 2B: Claude & GPT Models ---
     const int G2B_X = 16 + COL_W + (COL_W - R2_SZ) / 2;
@@ -300,7 +300,7 @@ void buildAiLimits(lv_obj_t* scr) {
     sAgCldRingWk = ring(card2, R2_IN_SZ, R2_W, COL_AG_CLD2);
     lv_obj_set_pos(sAgCldRingWk, G2B_X + (R2_SZ - R2_IN_SZ) / 2, G2_Y + (R2_SZ - R2_IN_SZ) / 2);
 
-    // Center container with 2 compact lines (Solution B)
+    // Center container with 2 compact lines
     lv_obj_t* cBoxB = box(card2, R2_IN_SZ, R2_IN_SZ);
     lv_obj_set_pos(cBoxB, G2B_X + (R2_SZ - R2_IN_SZ) / 2, G2_Y + (R2_SZ - R2_IN_SZ) / 2);
     lv_obj_set_flex_flow(cBoxB, LV_FLEX_FLOW_COLUMN);
@@ -312,23 +312,23 @@ void buildAiLimits(lv_obj_t* scr) {
     sAgCldCap = lblCld;
     lv_obj_set_width(lblCld, COL_W);
     lv_obj_set_style_text_align(lblCld, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_pos(lblCld, 16 + COL_W, G2_Y + R2_SZ + 6);
+    lv_obj_set_pos(lblCld, 16 + COL_W, G2_Y + R2_SZ + 2);
 
     // ========================================================================
     // SEKTION 3: GOOGLE CLOUD & GEMINI 4 ARGON
     // ========================================================================
-    const int S3_Y = 342;
-    lv_obj_t* card3 = card(p, CW, 142);
+    const int S3_Y = 292;
+    lv_obj_t* card3 = card(p, CW, 136);
     lv_obj_set_pos(card3, M, S3_Y);
     sCards[2] = card3;
 
     lv_obj_t* cap3 = caption(card3, "GOOGLE CLOUD", COL_GC_PRO);
-    lv_obj_set_pos(cap3, 16, 8);
+    lv_obj_set_pos(cap3, 16, 6);
 
     // 3 rings side-by-side for Gemini 1.5 Pro, Flash and Daily Quota
-    const int R3_SZ = 54, R3_W = 4;
+    const int R3_SZ = 48, R3_W = 4;
     const int COL3_W = (CW - 32) / 3; // ~110px
-    const int G3_Y = 28;
+    const int G3_Y = 22;
 
     // Ring 1: Pro (5h)
     int r1_x = 16 + (COL3_W - R3_SZ) / 2;
@@ -376,13 +376,13 @@ void buildAiLimits(lv_obj_t* scr) {
     lv_obj_set_pos(lblDay, 16 + 2 * COL3_W, G3_Y + R3_SZ + 2);
 
     // --- Bottom Bar: Gemini 4 Argon Weekly ---
-    const int BAR_Y = 108;
+    const int BAR_Y = 98;
     sArgonTxt = caption(card3, "ARGON WOCHE  --% • --", COL_ARGON);
     lv_obj_set_pos(sArgonTxt, 16, BAR_Y);
 
     sArgonBar = lv_bar_create(card3);
     lv_obj_set_size(sArgonBar, CW - 32, 6);
-    lv_obj_set_pos(sArgonBar, 16, BAR_Y + 18);
+    lv_obj_set_pos(sArgonBar, 16, BAR_Y + 16);
     lv_bar_set_range(sArgonBar, 0, 100);
     lv_obj_set_style_bg_color(sArgonBar, cStroke(), LV_PART_MAIN);
     lv_obj_set_style_bg_opa(sArgonBar, LV_OPA_COVER, LV_PART_MAIN);
@@ -393,19 +393,19 @@ void buildAiLimits(lv_obj_t* scr) {
 
     // Prominenter Stale-Alert Banner direkt unter dem Header
     sStaleBanner = lv_obj_create(p);
-    lv_obj_set_size(sStaleBanner, CW, 44);
-    lv_obj_set_pos(sStaleBanner, M, 58);
+    lv_obj_set_size(sStaleBanner, CW, 34);
+    lv_obj_set_pos(sStaleBanner, M, 56);
     lv_obj_set_style_bg_color(sStaleBanner, lv_color_hex(0x2E1A00), 0);
     lv_obj_set_style_bg_opa(sStaleBanner, LV_OPA_COVER, 0);
     lv_obj_set_style_border_color(sStaleBanner, lv_color_hex(0xF59E0B), 0);
     lv_obj_set_style_border_width(sStaleBanner, 2, 0);
-    lv_obj_set_style_radius(sStaleBanner, 14, 0);
+    lv_obj_set_style_radius(sStaleBanner, 12, 0);
     lv_obj_set_flex_flow(sStaleBanner, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(sStaleBanner, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(sStaleBanner, 8, 0);
     pressable(sStaleBanner);
 
-    lv_obj_t* stIco = label(sStaleBanner, F.icoS, lv_color_hex(0xF59E0B), LV_SYMBOL_WARNING);
+    lv_obj_t* stIco = label(sStaleBanner, F.icoS, lv_color_hex(0xF59E0B), ICO_INFO);
     sStaleTxt = label(sStaleBanner, F.cap, lv_color_hex(0xFDE68A), "Veraltet • Hotspot fuer Sync >");
     lv_obj_add_event_cb(sStaleBanner, [](lv_event_t*) {
         SystemSettings& s = SettingsStorage::get();
