@@ -67,23 +67,29 @@ Aufgaben werden sequenziell, autonom und vollständig mit Firmware-Flash und Har
 
 ---
 
-## Iteration 4: Geplante nächste Evolutionsschritte
-*Frage: "Aber was ist, wenn die Statusleiste des Startbildschirms, die Google-Maps-Kartenqualität und das Standalone-AI-Sync-System noch besser, schneller und umfangreicher wären? Wie sähe das aus?"*
+## Iteration 4: Live-Funkstatus, AI-Sync-Prominenz & Navigation
 
-### [ ] P1: Startscreen-Kopfleiste & Funkstandard-Indikatoren (Live Subsystem Telemetrie)
-- **Komponente:** `src/ui/pages/FacePage.cpp`, `src/DisplayEngine.cpp`
-- **Ziel:** Bereinigung redundanter Datums-/Akku-Anzeigen auf den Zifferblättern; Einführung einer konsistenten, mikro-skalierten System-Statusleiste mit echten Live-Symbolen für alle Funkstandards (WLAN AP on/off, BLE verbunden/aktiv/aus, GPS Fix/Suchlauf, LoRa Mesh aktiv/standby, Energiesparmodus, Nicht Stören).
+### [X] P1: Startscreen-Kopfleiste & Funkstandard-Indikatoren (Live Subsystem Telemetrie)
+- **Status:** ERLEDIGT & HARDWARE-VERIFIZIERT (Screenshot `shot_verified_face_v4.png`).
+- **Umsetzung:**
+  1. Alle Funk- & Systemindikatoren (ECO, DND, WLAN, BLE, GPS, LoRa) bleiben permanent im Header sichtbar.
+  2. Aktive / verbundene Zustände leuchten in ihren Neon-Akzentfarben (z. B. WLAN `0xFF9F0A`, BLE `0x0A84FF`, GPS Fix `0x30D158`).
+  3. Inaktive / ausgeschaltete Zustände verbleiben als dezentes Dunkelschiefer-Icon (`0x253044`).
+  4. Status-Pill und Symbolleiste sind interaktiv: Ein Fingertipp öffnet direkt das Kontrollzentrum.
+
+---
+
+### [X] P3: Standalone AI-Sync & Stale-Warning Banner
+- **Status:** ERLEDIGT & HARDWARE-VERIFIZIERT (Screenshot `shot_verified_ailimits_v4.png`, `shot_verified_face_v4.png`).
+- **Umsetzung:**
+  1. Prominenter, 44 px hoher Warnbanner in Leucht-Bernstein mit Drop-Shadow direkt unter dem Header in der AI-Limits-Ansicht bei Werten älter als 12 Stunden.
+  2. Ein Fingertipp auf den Banner aktiviert sofort den WLAN-Hotspot und navigiert automatisch zur QR-Code-Verbindungsseite.
+  3. Auf dem Startbildschirm (Modular Face) erscheint bei veralteten Daten ohne anstehende Termine ein Hinweis mit Direktlink zur Synchronisation.
 
 ---
 
 ### [ ] P2: Google Maps Cartography Overhaul (Detailgrad & Straßenhierarchie)
 - **Komponente:** `src/NavEngine.cpp`, `src/ui/pages/PositionPage.cpp`
-- **Ziel:** Straßenhierarchie mit unterschiedlichen Farbtönen und Strichstärken (Autobahnen, Hauptverkehrsstraßen, Wohnstraßen), Park-/Waldflächengrün (`0x1B3828`), Gewässerflächen (`0x163456`), Gebäudegrundrisse und präzise Maßstabsleiste.
-
----
-
-### [ ] P3: Standalone AI-Sync & Stale-Warning Banner
-- **Komponente:** `src/AiLimitsStore.cpp`, `src/CompanionServer.cpp`, `src/ui/pages/AiLimitsPage.cpp`
-- **Ziel:** Zentrales, prominentes Banner auf dem Startbildschirm/Limit-Screen bei veralteten AI-Werten (>24h). Unterstützung für direkten Standalone-Sync über bekanntes Heim-WLAN bzw. Web-Portal Verifikation.
+- **Ziel:** Weitere Optimierung der Vektorkarte nach Google-Maps-Standard (Wasserlinienkontrast, präzise Parkflächen, Straßenbeschriftung).
 
 
