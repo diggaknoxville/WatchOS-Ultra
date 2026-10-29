@@ -24,12 +24,13 @@ static lv_obj_t *sClock, *sTabs, *sWrapToggles, *sWrapSystem;
 static int sActiveTab = 0;
 
 // system tab
-static lv_obj_t *sSlider, *sPct, *sTimeoutRow, *sAodTile, *sWristTile, *sHapticTile;
+static lv_obj_t *sSlider, *sPct, *sTimeoutRow, *sHapticTile;
 static const uint16_t TIMEOUT_STEPS[] = {15, 30, 60, 0};
 
-// media / info card
+// media / info card & buttons
 static lv_obj_t *sMediaCard, *sMediaTitle, *sMediaArtist, *sMediaPlay;
 static lv_obj_t *sInfoCard, *sInfoLbl;
+static lv_obj_t *sBtnSet, *sBtnPwr;
 
 static const int TILE_W = (CW - 10) / 2;
 static const int TILE_H = 62;
@@ -132,25 +133,29 @@ static void refresh(bool) {
     if (s.autoSleepSec == 0) snprintf(b, sizeof(b), "Nie");
     else snprintf(b, sizeof(b), "%u s", (unsigned)s.autoSleepSec);
     setValueRow(sTimeoutRow, b);
-    paintTile(sAodTile, s.aodEnabled);
-    paintTile(sWristTile, s.wristWakeEnabled);
     paintTile(sHapticTile, s.hapticEnabled);
 
-    // media card only when the phone actually reports something
+    // Media card: show only when phone is connected. If no phone is connected, hide completely.
     MediaState ms = BleCompanion::getMediaState();
     bool conn = BleCompanion::isConnected();
-    bool showMedia = conn && (ms.isPlaying || ms.title[0]);
-    setHidden(sMediaCard, !showMedia);
-    setHidden(sInfoCard, showMedia);
-    if (showMedia) {
-        setText(sMediaTitle, ms.title[0] ? ms.title : "Wiedergabe");
-        setText(sMediaArtist, ms.artist[0] ? ms.artist : (ms.isPlaying ? "Läuft" : "Pausiert"));
-        setText(lv_obj_get_child(sMediaPlay, 0), ms.isPlaying ? ICO_PAUSE : ICO_PLAY_ARROW);
+    const int mediaY = 3 * (TILE_H + 8) + 2;
+    if (!conn) {
+        setHidden(sMediaCard, true);
+        setHidden(sInfoCard, true);
+        if (sBtnSet && sBtnPwr) {
+            lv_obj_set_y(sBtnSet, mediaY + 6);
+            lv_obj_set_y(sBtnPwr, mediaY + 6);
+        }
     } else {
-        int bat = PowerManager::getBatteryPercent();
-        const char* pwr = PowerManager::isCharging() ? "lädt" : (PowerManager::isVbusConnected() ? "USB" : "Akku");
-        snprintf(b, sizeof(b), "Akku %d%% (%s) · %s", bat, pwr, conn ? "Handy verbunden" : "Kein Handy");
-        setText(sInfoLbl, b);
+        setHidden(sMediaCard, false);
+        setHidden(sInfoCard, true);
+        setText(sMediaTitle, ms.title[0] ? ms.title : "Smartphone Audio");
+        setText(sMediaArtist, ms.artist[0] ? ms.artist : (ms.isPlaying ? "Wiedergabe aktiv" : "Pausiert"));
+        setText(lv_obj_get_child(sMediaPlay, 0), ms.isPlaying ? ICO_PAUSE : ICO_PLAY_ARROW);
+        if (sBtnSet && sBtnPwr) {
+            lv_obj_set_y(sBtnSet, mediaY + 108);
+            lv_obj_set_y(sBtnPwr, mediaY + 108);
+        }
     }
 }
 
@@ -249,13 +254,13 @@ void buildControl(lv_obj_t* scr) {
     lv_label_set_long_mode(sInfoLbl, LV_LABEL_LONG_WRAP);
     // Buttons under media / info card to directly reach Settings and Power
     const int subBtnW = (CW - 10) / 2;
-    lv_obj_t* btnSet = secondaryButton(sWrapToggles, subBtnW, 40, ICO_SETTINGS, "Optionen");
-    lv_obj_set_pos(btnSet, M, mediaY + 106);
-    lv_obj_add_event_cb(btnSet, [](lv_event_t*) { haptic(HAPTIC_CLICK); nav::openApp(nav::PG_APP_SETTINGS); }, LV_EVENT_CLICKED, NULL);
+    sBtnSet = secondaryButton(sWrapToggles, subBtnW, 40, ICO_SETTINGS, "Optionen");
+    lv_obj_set_pos(sBtnSet, M, mediaY + 6);
+    lv_obj_add_event_cb(sBtnSet, [](lv_event_t*) { haptic(HAPTIC_CLICK); nav::openApp(nav::PG_APP_SETTINGS); }, LV_EVENT_CLICKED, NULL);
 
-    lv_obj_t* btnPwr = secondaryButton(sWrapToggles, subBtnW, 40, ICO_POWER_SETTINGS_NEW, "Energie");
-    lv_obj_set_pos(btnPwr, M + subBtnW + 10, mediaY + 106);
-    lv_obj_add_event_cb(btnPwr, [](lv_event_t*) { haptic(HAPTIC_CLICK); nav::openApp(nav::PG_APP_POWER); }, LV_EVENT_CLICKED, NULL);
+    sBtnPwr = secondaryButton(sWrapToggles, subBtnW, 40, ICO_POWER_SETTINGS_NEW, "Energie");
+    lv_obj_set_pos(sBtnPwr, M + subBtnW + 10, mediaY + 6);
+    lv_obj_add_event_cb(sBtnPwr, [](lv_event_t*) { haptic(HAPTIC_CLICK); nav::openApp(nav::PG_APP_POWER); }, LV_EVENT_CLICKED, NULL);
 
     // ===================================================== tab 1: SYSTEM
     sWrapSystem = box(p, SCR_W, SCR_H - GRID_Y);
@@ -306,23 +311,7 @@ void buildControl(lv_obj_t* scr) {
         refresh(true);
     });
 
-    sAodTile = makeTile(sWrapSystem, M, 148, CW, 56, ICO_WATCH, "Always-On-Display", [](lv_event_t*) {
-        SystemSettings& s = SettingsStorage::get();
-        s.aodEnabled = !s.aodEnabled;
-        SettingsStorage::save();
-        nav::markDirty(nav::PG_APP_SETTINGS);
-        haptic(HAPTIC_TICK);
-        refresh(true);
-    }, nullptr);
-    sWristTile = makeTile(sWrapSystem, M, 208, TILE_W, 56, ICO_VISIBILITY, "Handgelenk", [](lv_event_t*) {
-        SystemSettings& s = SettingsStorage::get();
-        s.wristWakeEnabled = !s.wristWakeEnabled;
-        SettingsStorage::save();
-        nav::markDirty(nav::PG_APP_SETTINGS);
-        haptic(HAPTIC_TICK);
-        refresh(true);
-    }, nullptr);
-    sHapticTile = makeTile(sWrapSystem, M + TILE_W + 10, 208, TILE_W, 56, ICO_VIBRATION, "Haptik", [](lv_event_t*) {
+    sHapticTile = makeTile(sWrapSystem, M, 148, CW, 56, ICO_VIBRATION, "Haptisches Feedback", [](lv_event_t*) {
         SystemSettings& s = SettingsStorage::get();
         s.hapticEnabled = !s.hapticEnabled;
         SettingsStorage::save();
@@ -332,11 +321,11 @@ void buildControl(lv_obj_t* scr) {
     }, nullptr);
 
     lv_obj_t* setBtn2 = primaryButton(sWrapSystem, subBtnW, 46, ICO_SETTINGS, "Optionen");
-    lv_obj_set_pos(setBtn2, M, 270);
+    lv_obj_set_pos(setBtn2, M, 214);
     lv_obj_add_event_cb(setBtn2, [](lv_event_t*) { haptic(HAPTIC_TICK); nav::openApp(nav::PG_APP_SETTINGS); }, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t* pwrBtn = secondaryButton(sWrapSystem, subBtnW, 46, ICO_POWER_SETTINGS_NEW, "Energie");
-    lv_obj_set_pos(pwrBtn, M + subBtnW + 10, 270);
+    lv_obj_set_pos(pwrBtn, M + subBtnW + 10, 214);
     lv_obj_add_event_cb(pwrBtn, [](lv_event_t*) { haptic(HAPTIC_TICK); nav::openApp(nav::PG_APP_POWER); }, LV_EVENT_CLICKED, NULL);
 
     // bottom grabber

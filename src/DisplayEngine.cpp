@@ -16,6 +16,7 @@
 #include "NavEngine.h"
 #include "RadioLoRa.h"
 #include "CompanionServer.h"
+#include "AiLimitsStore.h"
 #include <LilyGoLib.h>
 #include <SD.h>
 #include "ff.h"
@@ -273,9 +274,10 @@ static void perfReport(unsigned long now) {
 // Serial console (UI task):
 //   S snapshot | G<page> go | F<n> face | T<epoch>,<tz>[,<zone>] time | N<title>|<msg>
 //   P perf toggle | K / L side key click / long | B panel throughput | M<place> navigate
+//   A<json> push AI limits | T<ep,tz,zone> sync time
 static void debugConsole() {
-    static char line[96];
-    static uint8_t len = 0;
+    static char line[512];
+    static uint16_t len = 0;
     while (Serial.available()) {
         char ch = (char)Serial.read();
         if (ch != '\n' && ch != '\r') { if (len < sizeof(line) - 1) line[len++] = ch; continue; }
@@ -345,6 +347,13 @@ static void debugConsole() {
                 RtcManager::syncFromEpoch((time_t)ep, (int32_t)tz, zone[0] ? zone : nullptr);
                 RtcManager::noteSyncSource("USB");
                 Serial.printf("TIME_SET %ld tz=%ld zone=%s\n", ep, tz, zone);
+                Serial.flush();
+                break;
+            }
+            case 'A': {
+                bool ok = AiLimitsStore::updateFromJson(line + 1);
+                nav::markDirty(nav::PG_AI_LIMITS);
+                Serial.printf("AI_LIMITS_SET ok=%d\n", (int)ok);
                 Serial.flush();
                 break;
             }

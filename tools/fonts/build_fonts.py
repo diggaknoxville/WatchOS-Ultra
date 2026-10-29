@@ -19,7 +19,7 @@ from fontTools import subset
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "..", "..", "src", "fonts")
-GLYPHS = ("0123456789:.,;-+%/ °·•–—…ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+GLYPHS = ("0123456789:.,;-+%/ °·•–—…~ABCDEFGHIJKLMNOPQRSTUVWXYZ"
           "abcdefghijklmnopqrstuvwxyzäöüÄÖÜß€!?#()[]'\"&@*=<>_|")
 
 

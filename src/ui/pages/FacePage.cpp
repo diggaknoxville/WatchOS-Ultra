@@ -171,11 +171,13 @@ static lv_obj_t *sStHourBars[24], *sStHourPeakLbl = nullptr;
 // Battery Detail widgets
 static lv_obj_t *sBtArc = nullptr, *sBtPct = nullptr, *sBtVolt = nullptr, *sBtEst = nullptr;
 static lv_obj_t *sBtRateLbl = nullptr, *sBtTempLbl = nullptr, *sBtStatusLbl = nullptr, *sBtSourceLbl = nullptr;
+static lv_obj_t *sBtHourBars[24], *sBtHourTrendLbl = nullptr;
 
 // Day Detail widgets
 static lv_obj_t *sDyArc = nullptr, *sDyPct = nullptr, *sDyTitle = nullptr, *sDySub = nullptr;
 static lv_obj_t *sDySunriseLbl = nullptr, *sDySunsetLbl = nullptr, *sDyDaylightLbl = nullptr;
 static lv_obj_t *sDyMoonLbl = nullptr, *sDySeasonLbl = nullptr, *sDyTimeFmtVal = nullptr;
+static lv_obj_t *sDyHourBars[24], *sDySunPosLbl = nullptr;
 
 static inline int formatHour(int hour24, bool* isPm = nullptr) {
     if (isPm) *isPm = (hour24 >= 12);
@@ -1321,7 +1323,7 @@ static void buildBatteryDetail(lv_obj_t* parent) {
     sBtEst = caption(c1, "", cText2());
     lv_obj_set_pos(sBtEst, 106, 78);
 
-    // Card 2: what the PMU really measures (no discharge history is recorded)
+    // Card 2: what the PMU really measures
     lv_obj_t* c2 = card(list, CW, 118);
     lv_obj_set_style_radius(c2, R_TILE, 0);
     lv_obj_t* l2 = caption(c2, "MESSWERTE AXP2101", cText3());
@@ -1332,6 +1334,26 @@ static void buildBatteryDetail(lv_obj_t* parent) {
     lv_obj_set_pos(sBtTempLbl, 16, 68);
     sBtSourceLbl = caption(c2, "", cText2());
     lv_obj_set_pos(sBtSourceLbl, 16, 90);
+
+    // Card 2b: 24h Hourly Battery History Chart
+    lv_obj_t* cBatHour = card(list, CW, 126);
+    lv_obj_set_style_radius(cBatHour, R_TILE, 0);
+    lv_obj_t* lBatHour = caption(cBatHour, "24H ENTLADE- & LADEVERLAUF", cOk());
+    lv_obj_set_pos(lBatHour, 16, 10);
+    sBtHourTrendLbl = caption(cBatHour, "Trend: --", cText2());
+    lv_obj_set_pos(sBtHourTrendLbl, 16, 30);
+    const int bBarW = 9, bGap = 5;
+    for (int h = 0; h < 24; h++) {
+        int x = 14 + h * (bBarW + bGap);
+        sBtHourBars[h] = box(cBatHour, bBarW, 4);
+        lv_obj_set_style_radius(sBtHourBars[h], 2, 0);
+        lv_obj_set_style_bg_opa(sBtHourBars[h], LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(sBtHourBars[h], cOk(), 0);
+        lv_obj_set_pos(sBtHourBars[h], x, 100);
+    }
+    lv_obj_t* lb0 = caption(cBatHour, "00h", cText3()); lv_obj_set_pos(lb0, 14, 104);
+    lv_obj_t* lb12 = caption(cBatHour, "12h", cText3()); lv_obj_set_pos(lb12, 14 + 12 * 14 - 8, 104);
+    lv_obj_t* lb23 = caption(cBatHour, "23h", cText3()); lv_obj_align(lb23, LV_ALIGN_BOTTOM_RIGHT, -14, -4);
 
     // Card 3: power saver (tap toggles)
     lv_obj_t* c4 = card(list, CW, 78);
@@ -1394,6 +1416,25 @@ static void buildDayDetail(lv_obj_t* parent) {
     lv_obj_set_pos(sDySunsetLbl, 16, 68);
     lv_obj_set_width(sDySunsetLbl, CW - 32);
     lv_label_set_long_mode(sDySunsetLbl, LV_LABEL_LONG_WRAP);
+
+    // Card 2b: 24h Daylight & Sun Altitude Curve
+    lv_obj_t* cSunCurve = card(list, CW, 126);
+    lv_obj_set_style_radius(cSunCurve, R_TILE, 0);
+    lv_obj_t* lSun = caption(cSunCurve, "24H TAGESLICHT- & SONNENSTAND", lv_color_hex(0xFBBF24));
+    lv_obj_set_pos(lSun, 16, 10);
+    sDySunPosLbl = caption(cSunCurve, "Sonnenverlauf: --", cText2());
+    lv_obj_set_pos(sDySunPosLbl, 16, 30);
+    for (int h = 0; h < 24; h++) {
+        int x = 14 + h * 14;
+        sDyHourBars[h] = box(cSunCurve, 9, 4);
+        lv_obj_set_style_radius(sDyHourBars[h], 2, 0);
+        lv_obj_set_style_bg_opa(sDyHourBars[h], LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(sDyHourBars[h], cStroke(), 0);
+        lv_obj_set_pos(sDyHourBars[h], x, 100);
+    }
+    lv_obj_t* ls0 = caption(cSunCurve, "00h", cText3()); lv_obj_set_pos(ls0, 14, 104);
+    lv_obj_t* ls12 = caption(cSunCurve, "12h (Mittag)", cText3()); lv_obj_set_pos(ls12, 14 + 12 * 14 - 24, 104);
+    lv_obj_t* ls23 = caption(cSunCurve, "23h", cText3()); lv_obj_align(ls23, LV_ALIGN_BOTTOM_RIGHT, -14, -4);
 
     // Card 3: moon phase and meteorological season (computed)
     lv_obj_t* c3 = card(list, CW, 90);
@@ -1598,7 +1639,7 @@ static void refresh(bool force) {
                     time_t nowSec = time(nullptr);
                     bool aiStale = aid.has_data && ((nowSec > (time_t)aid.last_sync_time) ? (nowSec - aid.last_sync_time > 86400) : false);
                     if (aiStale) {
-                        setText(mEvent, ICO_INFO " AI-LIMITS VERALTET (TIPPEN)");
+                        setText(mEvent, "! AI-LIMITS VERALTET (TIPPEN)");
                         setTextColorIf(mEvent, lv_color_hex(0xF59E0B));
                     } else {
                         setText(mEvent, "");
@@ -2068,6 +2109,28 @@ static void refresh(bool force) {
                  (unsigned long)PowerManager::cpuMhz());
         setText(sBtSourceLbl, b);
         setText(sBtStatusLbl, PowerManager::powerSaver() ? "An · tippen zum Ausschalten" : "Aus · tippen zum Einschalten");
+
+        uint8_t hourlyBat[24];
+        PowerManager::getHourlyBattery(hourlyBat);
+        int curH = ti.tm_hour % 24;
+        int minBat = 100, maxBat = 0;
+        for (int h = 0; h < 24; h++) {
+            if (sBtHourBars[h]) {
+                int val = hourlyBat[h];
+                if (val < minBat) minBat = val;
+                if (val > maxBat) maxBat = val;
+                int bh = (int)(val * 50 / 100);
+                if (bh < 3) bh = 3;
+                if (lv_obj_get_height(sBtHourBars[h]) != bh) {
+                    lv_obj_set_height(sBtHourBars[h], bh);
+                    lv_obj_set_y(sBtHourBars[h], 100 - bh);
+                }
+                bool isCur = (h == curH);
+                setBgColorIf(sBtHourBars[h], isCur ? accent() : (val > 20 ? cOk() : cWarn()));
+            }
+        }
+        snprintf(b, sizeof(b), "24h-Spanne: %d%% .. %d%% (Aktuell %d%% um %02d:00)", minBat, maxBat, bat, curH);
+        setText(sBtHourTrendLbl, b);
     }
 
     // Refresh Day Detail Modal if visible
@@ -2135,6 +2198,45 @@ static void refresh(bool force) {
         }
         snprintf(b, sizeof(b), "%s · Tag %d von %d", SEASONS[sIdx], dayInSeason, seasonDays);
         setText(sDySeasonLbl, b);
+
+        // Update 24h Solar Curve chart
+        int curH = ti.tm_hour % 24;
+        int curMin = ti.tm_hour * 60 + ti.tm_min;
+        for (int h = 0; h < 24; h++) {
+            if (sDyHourBars[h]) {
+                int m = h * 60 + 30;
+                int bh = 4;
+                lv_color_t col = cStroke();
+                if (riseMin > 0 && setMin > riseMin) {
+                    if (m >= riseMin && m <= setMin) {
+                        float rel = (float)(m - riseMin) / (float)(setMin - riseMin);
+                        float curve = sinf(rel * 3.14159f);
+                        bh = 8 + (int)(curve * 44);
+                        col = lv_color_hex(0xFBBF24); // golden sun
+                    } else {
+                        bh = 4;
+                        col = lv_color_hex(0x1E293B); // dark night
+                    }
+                } else {
+                    bh = (h >= 6 && h <= 18) ? 36 : 4;
+                    col = (h >= 6 && h <= 18) ? lv_color_hex(0xFBBF24) : lv_color_hex(0x1E293B);
+                }
+                if (lv_obj_get_height(sDyHourBars[h]) != bh) {
+                    lv_obj_set_height(sDyHourBars[h], bh);
+                    lv_obj_set_y(sDyHourBars[h], 100 - bh);
+                }
+                if (h == curH) col = accent();
+                setBgColorIf(sDyHourBars[h], col);
+            }
+        }
+        if (riseMin > 0 && setMin > riseMin) {
+            if (curMin < riseMin) snprintf(b, sizeof(b), "Nacht • Aufgang in %dh %02dm", (riseMin - curMin) / 60, (riseMin - curMin) % 60);
+            else if (curMin <= setMin) snprintf(b, sizeof(b), "Tag • Untergang in %dh %02dm", (setMin - curMin) / 60, (setMin - curMin) % 60);
+            else snprintf(b, sizeof(b), "Nacht • Sonne untergegangen");
+        } else {
+            snprintf(b, sizeof(b), "Tageskurve • Stand %02d:%02d", curH, ti.tm_min);
+        }
+        setText(sDySunPosLbl, b);
 
         setText(sDyTimeFmtVal, SettingsStorage::get().timeFormat12h ? "12h (AM/PM)" : "24h");
     }

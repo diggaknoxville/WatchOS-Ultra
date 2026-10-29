@@ -85,9 +85,9 @@ static void refresh(bool) {
 
     if (sTab == 1) {
         // Tab 1: Rich Historical Analytics & Performance Trends
-        snprintf(b, sizeof(b), "~ %lu Schritte / Tag", (unsigned long)avgSteps);
+        snprintf(b, sizeof(b), "ca. %lu Schritte / Tag", (unsigned long)avgSteps);
         setText(aHistAvgStepsLbl, b);
-        snprintf(b, sizeof(b), "~ %.1f km · ~ %lu kcal täglich", avgKm, (unsigned long)avgKcal);
+        snprintf(b, sizeof(b), "ca. %.1f km · ca. %lu kcal täglich", avgKm, (unsigned long)avgKcal);
         setText(aHistAvgMetaLbl, b);
         float totKm = (float)total7 * 0.00075f;
         snprintf(b, sizeof(b), "7-Tage-Summe: %lu Schritte (%.1f km)", (unsigned long)total7, totKm);

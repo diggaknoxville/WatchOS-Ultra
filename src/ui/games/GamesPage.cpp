@@ -128,8 +128,14 @@ void startCurrent() {
 void sampleInput(uint32_t dt) {
     float ax, ay, az;
     MotionHaptic::getAccel(ax, ay, az);
-    float tx = TILT_SIGN_X * (ax - sZeroX) / TILT_FULL;
-    float ty = TILT_SIGN_Y * (ay - sZeroY) / TILT_FULL;
+    // Correct physical IMU axis mapping for games:
+    // ax = pitch (top/bottom), ay = roll (left/right).
+    // top runter -> ball moves up (ty < 0)
+    // bottom runter -> ball moves down (ty > 0)
+    // links runter -> ball moves left (tx < 0)
+    // rechts runter -> ball moves right (tx > 0)
+    float tx = -(ay - sZeroY) / TILT_FULL;
+    float ty = -(ax - sZeroX) / TILT_FULL;
     sIn.tx = tx < -1 ? -1 : (tx > 1 ? 1 : tx);
     sIn.ty = ty < -1 ? -1 : (ty > 1 ? 1 : ty);
     // orientation change rate as a shake measure (unit vector delta per 100 ms)

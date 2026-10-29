@@ -8,6 +8,8 @@
 #include "NavEngine.h"
 #include "AudioEngine.h"
 #include "UsbMscManager.h"
+#include "RtcManager.h"
+#include <Preferences.h>
 #include <Wire.h>
 #include <LilyGoLib.h>      // global `instance` (AXP2101 pmu + backlight)
 #include <esp_sleep.h>
@@ -32,6 +34,9 @@ static volatile unsigned long sStateSince = 0;         // millis() of the last s
 
 // CPU clock
 static SemaphoreHandle_t sClkMutex = nullptr;
+
+// 24h battery percentage history (persisted in NVS)
+static uint8_t sHourlyBattery[24] = {0};
 
 // light sleep: UI task park handshake
 static SemaphoreHandle_t sParkReqSem = nullptr;        // bg -> UI: please park
@@ -137,6 +142,18 @@ bool PowerManager::init() {
     updateTelemetry();
     lastActivityTime = millis();
     sStateSince = lastActivityTime;
+
+    Preferences p;
+    if (p.begin("kronos_pwr", false)) {
+        if (p.isKey("hourly_bat")) {
+            p.getBytes("hourly_bat", sHourlyBattery, sizeof(sHourlyBattery));
+        } else {
+            uint8_t cur = (uint8_t)(cachedPercent >= 0 ? cachedPercent : 100);
+            for (int i = 0; i < 24; i++) sHourlyBattery[i] = cur;
+            p.putBytes("hourly_bat", sHourlyBattery, sizeof(sHourlyBattery));
+        }
+        p.end();
+    }
     Serial.printf("[PMU] Battery %d%% (%s)  %.2fV  vbus=%d charging=%d\n",
                   cachedPercent, cachedBattery ? "fuel gauge" : "no battery / voltage curve",
                   cachedVolt, cachedVbus, cachedCharging);
@@ -263,10 +280,30 @@ void PowerManager::updateTelemetry() {
     cachedPercent = pct;
 
     cachedTemp = instance.pmu.getTemperature();
+
+    // Record hourly battery level
+    struct tm lt;
+    RtcManager::getLocalTimeInfo(&lt);
+    int h = lt.tm_hour % 24;
+    if (sHourlyBattery[h] != (uint8_t)cachedPercent) {
+        sHourlyBattery[h] = (uint8_t)cachedPercent;
+        static uint32_t sLastBatSave = 0;
+        if (millis() - sLastBatSave > 30000) {
+            sLastBatSave = millis();
+            Preferences p;
+            if (p.begin("kronos_pwr", false)) {
+                p.putBytes("hourly_bat", sHourlyBattery, sizeof(sHourlyBattery));
+                p.end();
+            }
+        }
+    }
 }
 
 float PowerManager::getBatteryVoltage() { return cachedVolt; }
 int PowerManager::getBatteryPercent() { return cachedPercent; }
+void PowerManager::getHourlyBattery(uint8_t out[24]) {
+    memcpy(out, sHourlyBattery, sizeof(sHourlyBattery));
+}
 bool PowerManager::isBatteryConnected() { return cachedBattery; }
 bool PowerManager::isCharging() { return cachedCharging; }
 bool PowerManager::isVbusConnected() { return cachedVbus; }

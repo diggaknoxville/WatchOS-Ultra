@@ -306,6 +306,13 @@ def cmd_face(s, args):
     print(set_face(s, args.face))
 
 
+def cmd_aisync(s, args):
+    payload = args.json if args.json else '{"claude_5h":85,"claude_wk":42,"ag_gemini_5h":90,"ag_gemini_wk":35,"ag_claude_5h":65,"ag_claude_wk":28,"gc_5h":78,"gc_weekly":92,"gc_daily":45,"argon_weekly":80}'
+    s.write(f"A{payload}\n".encode())
+    line = wait_line(s, "AI_LIMITS_SET", 3.0)
+    print(line or "sent")
+
+
 def cmd_notify(s, args):
     title = args.title.replace("|", "/")
     s.write(f"N{title}|{args.body}\n".encode())
@@ -431,6 +438,10 @@ def build_parser():
     p = sub.add_parser("face", help="select a watch face")
     p.add_argument("face")
     p.set_defaults(fn=cmd_face)
+
+    p = sub.add_parser("aisync", help="push AI limits JSON over USB")
+    p.add_argument("--json", default=None, help="custom JSON payload")
+    p.set_defaults(fn=cmd_aisync)
 
     p = sub.add_parser("notify", help="show a notification")
     p.add_argument("title")

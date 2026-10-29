@@ -654,7 +654,7 @@ static const uint32_t GOAL_STEPS[] = {5000, 8000, 10000, 12000, 15000, 20000};
 
 enum SetRow : uint8_t {
     SR_AOD = 0, SR_WRIST, SR_WIFI, SR_BLE, SR_GPS, SR_LORA, SR_BEACON, SR_SOUND, SR_HAPTIC,   // toggles
-    SR_TIMEOUT, SR_GOAL, SR_TZ, SR_SYNC, SR_TIME_FMT, SR_ABOUT,                             // value rows
+    SR_PHONE_MGR, SR_TIMEOUT, SR_GOAL, SR_TZ, SR_SYNC, SR_TIME_FMT, SR_ABOUT,                 // value rows
     SR_COUNT
 };
 static lv_obj_t* sSetRows[SR_COUNT] = {nullptr};
@@ -682,6 +682,7 @@ static void refreshSettings(bool) {
         if (sColorDots[i]) setBorderWidthIf(sColorDots[i], (s.accentColor == ACCENT_PALETTE[i]) ? 3 : 0);
     }
     for (int i = SR_AOD; i <= SR_HAPTIC; i++) setToggleRow(sSetRows[i], setRowState(i));
+    setValueRow(sSetRows[SR_PHONE_MGR], BleCompanion::isConnected() ? "Verbunden" : "Verwalten / QR");
     char b[48];
     if (s.autoSleepSec == 0) snprintf(b, sizeof(b), "Nie");
     else snprintf(b, sizeof(b), "%u s", (unsigned)s.autoSleepSec);
@@ -791,6 +792,10 @@ void buildSettings(lv_obj_t* scr) {
 
     // ---- VERBINDUNGEN ----
     sectionHeader(list, -1, "VERBINDUNGEN");
+    sSetRows[SR_PHONE_MGR] = valueRow(list, -1, ICO_SMARTPHONE, "Smartphone-Verwaltung", "--", [](lv_event_t*) {
+        haptic(HAPTIC_TICK);
+        nav::openApp(nav::PG_APP_CONNECT);
+    });
     sSetRows[SR_WIFI]   = toggleRow(list, -1, ICO_WIFI, "WLAN-Hotspot", false, onSetToggle, (void*)(intptr_t)SR_WIFI);
     sSetRows[SR_BLE]    = toggleRow(list, -1, ICO_SMARTPHONE, "Bluetooth", false, onSetToggle, (void*)(intptr_t)SR_BLE);
     sSetRows[SR_GPS]    = toggleRow(list, -1, ICO_SATELLITE_ALT, "GPS", false, onSetToggle, (void*)(intptr_t)SR_GPS);
