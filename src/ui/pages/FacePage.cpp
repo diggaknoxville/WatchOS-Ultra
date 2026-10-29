@@ -31,6 +31,7 @@
 #include "GpsManager.h"
 #include "NavEngine.h"
 #include "DisplayEngine.h"
+#include "AiLimitsStore.h"
 #include "Config.h"
 #include <sys/time.h>
 #include <math.h>
@@ -311,12 +312,22 @@ static void buildModular(lv_obj_t* f) {
     mStatusTag = pill(f, "ULTRA", accent());
     accReg(mStatusTag, ACC_TEXT);
     lv_obj_set_pos(mStatusTag, M_HEAD, 24);
+    pressable(mStatusTag);
+    lv_obj_add_event_cb(mStatusTag, [](lv_event_t*) {
+        haptic(HAPTIC_TICK);
+        nav::openApp(nav::PG_CONTROL);
+    }, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t* st = box(f, LV_SIZE_CONTENT, 28);
     lv_obj_align(st, LV_ALIGN_TOP_RIGHT, -M_HEAD, 24);
     lv_obj_set_flex_flow(st, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(st, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(st, 8, 0);
+    pressable(st);
+    lv_obj_add_event_cb(st, [](lv_event_t*) {
+        haptic(HAPTIC_TICK);
+        nav::openApp(nav::PG_CONTROL);
+    }, LV_EVENT_CLICKED, NULL);
 
     mEco  = label(st, F.icoS, lv_color_hex(0xFFD60A), ICO_BOLT);
     mDnd  = label(st, F.icoS, lv_color_hex(0xAF52DE), ICO_BEDTIME);
@@ -355,8 +366,13 @@ static void buildModular(lv_obj_t* f) {
     lv_obj_set_style_text_letter_space(mDate, 1, 0);
     lv_obj_align(mDate, LV_ALIGN_TOP_MID, 0, 230);
 
-    mEvent = caption(f, "", cText3());              // next calendar event (if synced)
+    mEvent = caption(f, "", cText3());              // next calendar event or AI warning (if synced)
     lv_obj_align(mEvent, LV_ALIGN_TOP_MID, 0, 264);
+    pressable(mEvent);
+    lv_obj_add_event_cb(mEvent, [](lv_event_t*) {
+        haptic(HAPTIC_TICK);
+        nav::openApp(nav::PG_AI_LIMITS);
+    }, LV_EVENT_CLICKED, NULL);
 
     static const char* caps[3] = {"SCHRITTE", "AKKU", "TAG"};
     const int startX = 36;
@@ -1526,31 +1542,30 @@ static void refresh(bool force) {
             else if (saver) setPill(mStatusTag, "ECO", lv_color_hex(0xFFD60A));
             else setPill(mStatusTag, "ULTRA", accent());
 
-            setHidden(mDnd, !dnd);
-            setHidden(mEco, !saver);
+            // All radio status icons always remain visible with clear ON vs OFF color telemetry
+            setHidden(mDnd, false);
+            setTextColorIf(mDnd, dnd ? lv_color_hex(0xAF52DE) : lv_color_hex(0x253044));
+
+            setHidden(mEco, false);
+            setTextColorIf(mEco, saver ? lv_color_hex(0xFFD60A) : lv_color_hex(0x253044));
 
             bool ap = CompanionServer::isApActive();
-            setHidden(mWifi, !ap);
+            setHidden(mWifi, false);
+            setTextColorIf(mWifi, ap ? lv_color_hex(0xFF9F0A) : lv_color_hex(0x253044));
 
             bool bleConn = BleCompanion::isConnected();
             bool bleEn = BleCompanion::isEnabled();
-            if (!bleEn) setHidden(mBle, true);
-            else {
-                setHidden(mBle, false);
-                setTextColorIf(mBle, bleConn ? lv_color_hex(0x0A84FF) : cText3());
-            }
+            setHidden(mBle, false);
+            setTextColorIf(mBle, bleConn ? lv_color_hex(0x0A84FF) : (bleEn ? lv_color_hex(0x4A607E) : lv_color_hex(0x253044)));
 
             bool gpsFix = GpsManager::hasFix();
             bool gpsPwr = GpsManager::isPowered();
-            if (!gpsPwr) setHidden(mGps, true);
-            else {
-                setHidden(mGps, false);
-                setTextColorIf(mGps, gpsFix ? cOk() : lv_color_hex(0xFFD60A));
-            }
+            setHidden(mGps, false);
+            setTextColorIf(mGps, gpsFix ? cOk() : (gpsPwr ? lv_color_hex(0xFFD60A) : lv_color_hex(0x253044)));
 
             bool loraEn = RadioLoRa::isEnabled();
-            setHidden(mLora, !loraEn);
-            if (loraEn) setTextColorIf(mLora, RadioLoRa::isReady() ? lv_color_hex(0xBF5AF2) : cText3());
+            setHidden(mLora, false);
+            setTextColorIf(mLora, (loraEn && RadioLoRa::isReady()) ? lv_color_hex(0xBF5AF2) : (loraEn ? lv_color_hex(0x4A607E) : lv_color_hex(0x253044)));
 
             bool isPm = false;
             int hDisp = formatHour(ti.tm_hour, &isPm);
@@ -1568,7 +1583,7 @@ static void refresh(bool force) {
             snprintf(b, sizeof(b), "%s, %d. %s", WD_DE_L[ti.tm_wday % 7], ti.tm_mday, MO_DE_L[ti.tm_mon % 12]);
             setText(mDate, b);
 
-            if (force || (secTick && ti.tm_sec % 30 == 0)) {  // next calendar event, twice a minute
+            if (force || (secTick && ti.tm_sec % 30 == 0)) {  // next calendar event or AI limits stale reminder
                 CalendarEvent ev;
                 if (BleCompanion::getUpcomingEvents(&ev, 1) > 0) {
                     time_t st = (time_t)ev.startEpoch;
@@ -1577,8 +1592,18 @@ static void refresh(bool force) {
                     if (ev.allDay) snprintf(b, sizeof(b), "%02d.%02d. %s", et.tm_mday, et.tm_mon + 1, ev.title);
                     else snprintf(b, sizeof(b), "%02d:%02d %s", et.tm_hour, et.tm_min, ev.title);
                     setText(mEvent, b);
+                    setTextColorIf(mEvent, cText3());
                 } else {
-                    setText(mEvent, "");
+                    AiLimitsData aid = AiLimitsStore::get();
+                    time_t nowSec = time(nullptr);
+                    bool aiStale = aid.has_data && ((nowSec > (time_t)aid.last_sync_time) ? (nowSec - aid.last_sync_time > 86400) : false);
+                    if (aiStale) {
+                        setText(mEvent, ICO_INFO " AI-LIMITS VERALTET (TIPPEN)");
+                        setTextColorIf(mEvent, lv_color_hex(0xF59E0B));
+                    } else {
+                        setText(mEvent, "");
+                        setTextColorIf(mEvent, cText3());
+                    }
                 }
             }
 
