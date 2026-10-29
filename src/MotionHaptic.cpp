@@ -20,6 +20,7 @@ static uint32_t filteredFalseSteps = 0;
 static uint16_t learnedCadenceSpm = 106; // EMA of the wearer's walking cadence (steps/min), see header
 static uint16_t cadenceSamples = 0;    // number of EMA updates; the window is used from 20 on
 static uint32_t history[6] = {0};      // completed days, oldest first
+static uint16_t sHourlySteps[24] = {0}; // 24h step distribution
 static bool goalNotified = false;
 static bool dirty = false;
 static uint32_t lifetimePending = 0;   // flushed to the lifetime counter on persist
@@ -100,6 +101,7 @@ static void persist() {
     p.putFloat("p0", sPitchZero);
     p.putFloat("y0", sYawZero);
     p.putBytes("hist", history, sizeof(history));
+    p.putBytes("hourly", sHourlySteps, sizeof(sHourlySteps));
     p.putBool("goal", goalNotified);
     p.end();
     if (lifetimePending) { SettingsStorage::addSteps(lifetimePending); lifetimePending = 0; }
@@ -134,6 +136,7 @@ static void rolloverIfNeeded() {
                   (unsigned long)key, (unsigned long)stepsToday, (unsigned long)filteredFalseSteps);
     dayKey = key;
     stepsToday = 0;
+    memset(sHourlySteps, 0, sizeof(sHourlySteps));
     filteredFalseSteps = 0;
     goalNotified = false;
     persist();
@@ -198,6 +201,7 @@ bool MotionHaptic::init() {
         sPitchZero = p.getFloat("p0", 0.0f);
         sYawZero = p.getFloat("y0", 0.0f);
         p.getBytes("hist", history, sizeof(history));
+        p.getBytes("hourly", sHourlySteps, sizeof(sHourlySteps));
         goalNotified = p.getBool("goal", false);
         p.end();
     }
@@ -226,6 +230,9 @@ static void commitVerifiedSteps(uint32_t count, unsigned long now) {
     if (count == 0) return;
     stepsToday += count;
     lifetimePending += count;
+    struct tm lt;
+    RtcManager::getLocalTimeInfo(&lt);
+    sHourlySteps[lt.tm_hour % 24] += (uint16_t)count;
     sLastConfirmedWalkMs = now;
     sStillStartMs = now;
     if (sSleeping) {
@@ -431,7 +438,7 @@ void MotionHaptic::getAccel(float &ax, float &ay, float &az) {
 void MotionHaptic::getEuler(float &roll, float &pitch, float &yaw) {
     roll = sRawRoll - sRollZero;
     pitch = sRawPitch - sPitchZero;
-    float h = fmodf((sYawZero - sRawYaw) + 360.0f, 360.0f);
+    float h = fmodf((sRawYaw - sYawZero) + 360.0f, 360.0f);
     if (h < 0) h += 360.0f;
     yaw = h;
 }
@@ -488,6 +495,10 @@ bool MotionHaptic::isSensorOnline() { return sensorOnline; }
 void MotionHaptic::getHistory(uint32_t out[7]) {
     for (int i = 0; i < 6; i++) out[i] = history[i];
     out[6] = stepsToday;
+}
+
+void MotionHaptic::getHourlySteps(uint16_t out[24]) {
+    memcpy(out, sHourlySteps, sizeof(sHourlySteps));
 }
 
 void MotionHaptic::setWristWakeCallback(WristWakeCallback cb) { wristWakeCb = cb; }

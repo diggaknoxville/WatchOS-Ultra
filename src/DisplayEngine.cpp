@@ -312,6 +312,7 @@ static void debugConsole() {
                     writeStart = millis();
                 }
                 Serial.print("\nEND\n");
+                Serial.flush();
                 lv_draw_buf_destroy(snap);
                 break;
             }

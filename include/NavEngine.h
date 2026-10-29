@@ -144,7 +144,7 @@ public:
     // GPX trail, peers, own position, scale bar) into an RGB565 buffer.
     // Holds the engine mutex for the duration (see header comment).
     // viewLat/viewLon == (0,0) means "no position": the map centre is used.
-    static void renderMap(uint16_t* buf, int w, int h, double viewLat, double viewLon, int zoom);
+    static void renderMap(uint16_t* buf, int w, int h, double viewLat, double viewLon, int zoom, float headingDeg = 0.0f);
 
     // Centre of the loaded map's bounding box, or Germany's centre when no map
     // (or a V2 map without bbox) is loaded. Returns true if a map is loaded.

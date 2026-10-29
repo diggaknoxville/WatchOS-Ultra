@@ -2592,7 +2592,7 @@ static void limitCellRange(int& c0, int& c1, int maxN) {
     c1 = c0 + maxN - 1;
 }
 
-void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double viewLon, int zoom) {
+void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double viewLon, int zoom, float headingDeg) {
     if (!buf || w <= 0 || h <= 0) return;
     zoom = std::clamp(zoom, 3, 18);
     NavLock lock;
@@ -2620,9 +2620,22 @@ void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double vi
     if (cosLat < 0.2) cosLat = 0.2;
     double latPerPx = lonPerPx * cosLat;
 
+    bool rotate = fabsf(headingDeg) > 0.5f;
+    double radR = rotate ? (-headingDeg * (double)M_PI / 180.0) : 0.0;
+    double cosR = rotate ? cos(radR) : 1.0;
+    double sinR = rotate ? sin(radR) : 0.0;
+    double halfW = w * 0.5, halfH = h * 0.5;
+
     auto project = [&](double lat, double lon, int& sx, int& sy) {
-        sx = (int)(w * 0.5 + (lon - viewLon) / lonPerPx);
-        sy = (int)(h * 0.5 - (lat - viewLat) / latPerPx);
+        double dx = (lon - viewLon) / lonPerPx;
+        double dy = -(lat - viewLat) / latPerPx;
+        if (rotate) {
+            sx = (int)(halfW + (dx * cosR - dy * sinR));
+            sy = (int)(halfH + (dx * sinR + dy * cosR));
+        } else {
+            sx = (int)(halfW + dx);
+            sy = (int)(halfH + dy);
+        }
     };
 
     if (zoom <= 13) {
@@ -2643,10 +2656,11 @@ void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double vi
         }
     }
 
-    double minLat = viewLat - (h * 0.58) * latPerPx;
-    double maxLat = viewLat + (h * 0.58) * latPerPx;
-    double minLon = viewLon - (w * 0.58) * lonPerPx;
-    double maxLon = viewLon + (w * 0.58) * lonPerPx;
+    double diagFactor = rotate ? 0.85 : 0.58;
+    double minLat = viewLat - (h * diagFactor) * latPerPx;
+    double maxLat = viewLat + (h * diagFactor) * latPerPx;
+    double minLon = viewLon - (w * diagFactor) * lonPerPx;
+    double maxLon = viewLon + (w * diagFactor) * lonPerPx;
 
     int16_t polyX[64], polyY[64];
 
@@ -3021,10 +3035,12 @@ void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double vi
             uint16_t myCol = (sStat.posSource == POS_SRC_GPS_LIVE)  ? rgb565(48, 209, 88) :
                              (sStat.posSource == POS_SRC_LORA_MESH) ? rgb565(191, 90, 242) :
                                                                       rgb565(10, 132, 255);
-            // Dynamic heading direction cone when moving
+            // Dynamic heading direction cone when moving or heading-up active
             float spd = GpsManager::speedKmh();
-            if (spd > 2.0f || (sStat.headingDeg >= 0.0f && spd > 0.5f)) {
-                float rad = (float)sStat.headingDeg * 0.0174533f;
+            float myHeading = (sStat.headingDeg >= 0.0f) ? sStat.headingDeg : headingDeg;
+            if (spd > 1.5f || rotate) {
+                float arrowAngle = rotate ? (myHeading - headingDeg) : myHeading;
+                float rad = arrowAngle * 0.0174533f;
                 int tipX = ux + (int)(sinf(rad) * 18.0f);
                 int tipY = uy - (int)(cosf(rad) * 18.0f);
                 int wing1X = ux + (int)(sinf(rad + 2.5f) * 11.0f);
@@ -3046,9 +3062,17 @@ void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double vi
         int cx = w - 20, cy = 20;
         drawFilledCircle(buf, w, h, cx, cy, 9, rgb565(18, 24, 36));
         drawRing(buf, w, h, cx, cy, 10, rgb565(55, 70, 95));
-        drawLine(buf, w, h, cx, cy, cx, cy - 6, rgb565(255, 65, 65), 2);
-        drawLine(buf, w, h, cx, cy, cx, cy + 6, rgb565(210, 220, 235), 1);
-        drawMapText(buf, w, h, cx - 2, cy - 14, "N", rgb565(255, 85, 85), rgb565(10, 14, 22), 1);
+        float nAngle = rotate ? (-headingDeg) : 0.0f;
+        float nRad = nAngle * 0.0174533f;
+        int nx = cx + (int)(sinf(nRad) * 7.0f);
+        int ny = cy - (int)(cosf(nRad) * 7.0f);
+        int sx = cx - (int)(sinf(nRad) * 7.0f);
+        int sy = cy + (int)(cosf(nRad) * 7.0f);
+        drawLine(buf, w, h, cx, cy, nx, ny, rgb565(255, 65, 65), 2);
+        drawLine(buf, w, h, cx, cy, sx, sy, rgb565(210, 220, 235), 1);
+        int lx = cx + (int)(sinf(nRad) * 12.0f) - 2;
+        int ly = cy - (int)(cosf(nRad) * 12.0f) - 4;
+        drawMapText(buf, w, h, lx, ly, "N", rgb565(255, 85, 85), rgb565(10, 14, 22), 1);
     }
 
     // 11. scale bar (60 px)

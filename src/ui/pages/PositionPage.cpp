@@ -33,6 +33,7 @@ static uint16_t* sMapBuf = nullptr;
 
 // HUD on the map
 static lv_obj_t *sSrcPill, *sRoutePill, *sZoomBadge, *sZoomLbl, *sScaleBar, *sScaleLbl, *sRecenterBtn;
+static lv_obj_t *sHeadingUpBtn;
 static lv_obj_t *sNoPosOverlay;
 
 // info card (free) / guidance card (navigating)
@@ -61,6 +62,8 @@ static unsigned long sManualInteractMs = 0;
 static double sViewLat = 0, sViewLon = 0;
 static double sLastRenderedLat = 0, sLastRenderedLon = 0;
 static int sLastRenderedZoom = -1;
+static bool sHeadingUp = false;
+static float sLastRenderedHeading = 0.0f;
 static bool sMapNeedsRedraw = true;
 static uint32_t sLastRefreshMs = 0;
 
@@ -115,7 +118,9 @@ static void redrawCanvas(const NavStatus& st) {
     double lon = sManualPan ? sViewLon : st.curLon;
     sViewLat = lat;
     sViewLon = lon;
-    NavEngine::renderMap(sMapBuf, MAP_W, MAP_H, lat, lon, sZoom);
+    float hd = sHeadingUp ? MotionHaptic::getHeadingDeg() : 0.0f;
+    NavEngine::renderMap(sMapBuf, MAP_W, MAP_H, lat, lon, sZoom, hd);
+    sLastRenderedHeading = hd;
     if (sManualPan) {
         int cx = MAP_W / 2, cy = MAP_H / 2;
         uint16_t chCol = (uint16_t)0x07FF; // cyan
@@ -331,6 +336,12 @@ static void refresh(bool force) {
         sZoom = targetZoom;
         sMapNeedsRedraw = true;
     }
+    if (sHeadingUp) {
+        float curHd = MotionHaptic::getHeadingDeg();
+        if (fabsf(curHd - sLastRenderedHeading) > 3.0f) {
+            sMapNeedsRedraw = true;
+        }
+    }
 
     char b[80];
     snprintf(b, sizeof(b), "%sZ%d", sAutoZoom ? "A " : "", sZoom);
@@ -498,6 +509,14 @@ void buildPosition(lv_obj_t* scr) {
     lv_obj_set_pos(sSrcPill, 8, 8);
     lv_obj_set_style_bg_opa(sSrcPill, LV_OPA_80, 0);
     lv_obj_set_style_bg_color(sSrcPill, cBg(), 0);
+    sHeadingUpBtn = hudButton(sMapCard, 8, 42, 54, 28, "N-UP");
+    lv_obj_add_event_cb(sHeadingUpBtn, [](lv_event_t*) {
+        sHeadingUp = !sHeadingUp;
+        setButtonText(sHeadingUpBtn, sHeadingUp ? "HD-UP" : "N-UP");
+        sMapNeedsRedraw = true;
+        haptic(HAPTIC_TICK);
+        refresh(true);
+    }, LV_EVENT_CLICKED, NULL);
     sRoutePill = pill(sMapCard, "LUFTLINIE", cWarn());
     lv_obj_set_style_bg_opa(sRoutePill, LV_OPA_80, 0);
     lv_obj_set_style_bg_color(sRoutePill, cBg(), 0);

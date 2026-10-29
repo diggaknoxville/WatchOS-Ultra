@@ -61,6 +61,7 @@ public:
     static float getDistanceKm();              // steps * 0.75 m (fixed stride, no user profile)
     static uint32_t getCalories();             // steps * 0.042 kcal (rough estimate, no user profile)
     static void getHistory(uint32_t out[7]);   // oldest .. today
+    static void getHourlySteps(uint16_t out[24]); // 24h step distribution
     static bool isSensorOnline();
 
     typedef void (*WristWakeCallback)();

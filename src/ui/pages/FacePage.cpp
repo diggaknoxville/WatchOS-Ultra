@@ -165,6 +165,7 @@ static lv_obj_t* sDayDetailModal = nullptr;
 static lv_obj_t *sStArc = nullptr, *sStPct = nullptr, *sStSteps = nullptr, *sStSub = nullptr;
 static lv_obj_t *sStHistBars[7], *sStHistDays[7];
 static lv_obj_t *sStPeakLbl = nullptr, *sStCadenceLbl = nullptr, *sStActiveLbl = nullptr, *sStMetabLbl = nullptr, *sStDistLbl = nullptr;
+static lv_obj_t *sStHourBars[24], *sStHourPeakLbl = nullptr;
 
 // Battery Detail widgets
 static lv_obj_t *sBtArc = nullptr, *sBtPct = nullptr, *sBtVolt = nullptr, *sBtEst = nullptr;
@@ -251,7 +252,7 @@ static const int T_SZ = 376;
 
 // 5: Casio
 static lv_obj_t *kDayBoxes[7], *kDayLabels[7], *kDate, *kBarDots[10];
-static lv_obj_t *kHH, *kMM, *kSS, *kBat, *kSteps, *kHeading;
+static lv_obj_t *kHH, *kMM, *kSS, *kBat, *kSteps, *kHeading, *kDist, *kKcal, *kCadence;
 
 // 6: Bauhaus
 static lv_obj_t *bDial, *bDate;
@@ -263,20 +264,7 @@ static const int B_SZ = 380;
 static lv_obj_t *yHeader, *yHero, *ySec, *yStatus, *yDiag, *yBat, *yNav, *yBio;
 
 // 8: WordClock
-enum WcWordId : uint8_t {
-    WC_ES = 0, WC_IST, WC_FUENF_M,
-    WC_ZEHN_M, WC_ZWANZIG,
-    WC_DREI_M, WC_VIERTEL,
-    WC_VOR, WC_NACH,
-    WC_HALB, WC_ELF, WC_FUENF_H,
-    WC_EINS, WC_ZWEI,
-    WC_DREI_H, WC_VIER,
-    WC_SECHS, WC_ACHT,
-    WC_SIEBEN, WC_NEUN,
-    WC_ZEHN_H, WC_ZWOELF, WC_UHR,
-    WC_COUNT
-};
-static lv_obj_t *wcWords[WC_COUNT];
+static lv_obj_t *sWcLetters[10][11];
 static lv_obj_t *wcDots[4];
 
 // 9: Solar Orbit
@@ -299,7 +287,8 @@ static const int RT_SZ = 370;
 
 // 13: Lifetime
 static lv_obj_t *ltBars[4], *ltPct[4], *ltTime, *ltDate;
-static lv_obj_t *ltDots[52], *ltStats;
+static lv_obj_t *ltDots[52], *ltStats, *ltModePill;
+static bool sLifetimeRemainingMode = false;
 
 static void longPress(lv_event_t*) {
     faceNext();
@@ -624,81 +613,119 @@ static void buildSkeletonTourbillon(lv_obj_t* f) {
 static void buildCasio(lv_obj_t* f) {
     const lv_color_t LCD_BG  = lv_color_hex(0x9EAC8D);
     const lv_color_t LCD_INK = lv_color_hex(0x111611);
-    const lv_color_t LCD_DIM = lv_color_hex(0x829171);
+    const lv_color_t LCD_DIM = lv_color_hex(0x849474);
+    const lv_color_t GOLD    = lv_color_hex(0xF5A623);
+    const lv_color_t RED     = lv_color_hex(0xE53935);
+    const lv_color_t BLUE_LINE = lv_color_hex(0x1E4880);
 
-    lv_obj_t* cCase = card(f, CW, 430);
+    lv_obj_t* cCase = card(f, CW, 450);
     lv_obj_align(cCase, LV_ALIGN_TOP_MID, 0, 24);
-    lv_obj_set_style_bg_color(cCase, lv_color_hex(0x14181F), 0);
+    lv_obj_set_style_bg_color(cCase, lv_color_hex(0x12161E), 0);
     lv_obj_set_style_border_width(cCase, 2, 0);
-    lv_obj_set_style_border_color(cCase, lv_color_hex(0x235594), 0);
+    lv_obj_set_style_border_color(cCase, BLUE_LINE, 0);
 
+    // Bezel branding
     lv_obj_t* casio = label(cCase, F.title, cText(), "CASIO");
-    lv_obj_set_pos(casio, 20, 10);
-    lv_obj_t* illum = label(cCase, F.small, lv_color_hex(0xF5A623), "ILLUMINATOR");
-    lv_obj_align(illum, LV_ALIGN_TOP_RIGHT, -20, 12);
+    lv_obj_set_pos(casio, 18, 10);
+    lv_obj_t* illum = label(cCase, F.small, GOLD, "ILLUMINATOR");
+    lv_obj_align(illum, LV_ALIGN_TOP_RIGHT, -18, 12);
 
-    lv_obj_t* lcd = box(cCase, CW - 32, 330);
-    lv_obj_align(lcd, LV_ALIGN_TOP_MID, 0, 44);
-    lv_obj_set_style_radius(lcd, 12, 0);
+    lv_obj_t* lLight = caption(cCase, "LIGHT", cText3()); lv_obj_set_pos(lLight, 18, 40);
+    lv_obj_t* lMode  = caption(cCase, "MODE", cText3());  lv_obj_set_pos(lMode, 18, 386);
+    lv_obj_t* lStart = caption(cCase, "START/STOP", cText3()); lv_obj_align(lStart, LV_ALIGN_TOP_RIGHT, -18, 40);
+    lv_obj_t* lReset = caption(cCase, "SPLIT/RESET", cText3()); lv_obj_align(lReset, LV_ALIGN_TOP_RIGHT, -18, 386);
+
+    // LCD screen
+    lv_obj_t* lcd = box(cCase, CW - 28, 316);
+    lv_obj_align(lcd, LV_ALIGN_TOP_MID, 0, 64);
+    lv_obj_set_style_radius(lcd, 8, 0);
     lv_obj_set_style_bg_color(lcd, LCD_BG, 0);
     lv_obj_set_style_bg_opa(lcd, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(lcd, 2, 0);
     lv_obj_set_style_border_color(lcd, LCD_INK, 0);
 
+    // Row 1: Day of Week Pills
     static const char* dNames[7] = {"MO", "DI", "MI", "DO", "FR", "SA", "SO"};
     for (int i = 0; i < 7; i++) {
-        kDayBoxes[i] = box(lcd, 36, 22);
-        lv_obj_set_pos(kDayBoxes[i], 12 + i * 46, 12);
-        lv_obj_set_style_radius(kDayBoxes[i], 4, 0);
+        kDayBoxes[i] = box(lcd, 36, 20);
+        lv_obj_set_pos(kDayBoxes[i], 12 + i * 46, 8);
+        lv_obj_set_style_radius(kDayBoxes[i], 3, 0);
         lv_obj_set_style_bg_opa(kDayBoxes[i], LV_OPA_COVER, 0);
         lv_obj_set_style_bg_color(kDayBoxes[i], LCD_BG, 0);
         kDayLabels[i] = label(kDayBoxes[i], F.cap, LCD_DIM, dNames[i]);
         lv_obj_center(kDayLabels[i]);
     }
 
-    lv_obj_t* k24h = card(lcd, 36, 20);
-    lv_obj_set_pos(k24h, 16, 46);
+    // Row 2: Status Flags & Date
+    lv_obj_t* k24h = card(lcd, 34, 18);
+    lv_obj_set_pos(k24h, 12, 34);
     lv_obj_set_style_bg_color(k24h, LCD_INK, 0);
     lv_obj_t* l24 = label(k24h, F.cap, LCD_BG, "24H");
     lv_obj_center(l24);
 
     lv_obj_t* kAlm = label(lcd, F.cap, LCD_INK, "ALM • SIG");
-    lv_obj_set_pos(kAlm, 62, 48);
+    lv_obj_set_pos(kAlm, 54, 35);
 
-    kDate = label(lcd, F.title, LCD_INK, "--.--");
-    lv_obj_align(kDate, LV_ALIGN_TOP_RIGHT, -16, 44);
+    // Date ghost and active
+    lv_obj_t* kDateGhost = label(lcd, F.title, LCD_DIM, "88.88.");
+    lv_obj_align(kDateGhost, LV_ALIGN_TOP_RIGHT, -14, 30);
+    kDate = label(lcd, F.title, LCD_INK, "--.--.");
+    lv_obj_align(kDate, LV_ALIGN_TOP_RIGHT, -14, 30);
 
+    // Row 3: Multi-Function Sensor Telemetry
+    lv_obj_t* teleRow = box(lcd, CW - 48, 24);
+    lv_obj_set_pos(teleRow, 12, 64);
+    lv_obj_set_flex_flow(teleRow, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(teleRow, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    kSteps = label(teleRow, F.cap, LCD_INK, "STP 0");
+    kHeading = label(teleRow, F.cap, LCD_INK, "DIR N 000°");
+    kBat = label(teleRow, F.cap, LCD_INK, "BAT 100%");
+
+    // Row 4: Main 7-Segment Time Display with Shadow Ghosting
+    lv_obj_t* tBox = box(lcd, CW - 36, 100);
+    lv_obj_set_pos(tBox, 8, 92);
+
+    // Ghosting layer behind active digits
+    lv_obj_t* ghostHHMM = label(tBox, F.numL, LCD_DIM, "88:88");
+    lv_obj_align(ghostHHMM, LV_ALIGN_LEFT_MID, 16, 0);
+    lv_obj_t* ghostSS = label(tBox, F.numS, LCD_DIM, "88");
+    lv_obj_align(ghostSS, LV_ALIGN_RIGHT_MID, -24, 6);
+
+    // Active time digits
+    lv_obj_t* tRow = box(tBox, 230, 90);
+    lv_obj_align(tRow, LV_ALIGN_LEFT_MID, 16, 0);
+    lv_obj_set_flex_flow(tRow, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(tRow, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    kHH = label(tRow, F.numL, LCD_INK, "00");
+    label(tRow, F.numL, LCD_INK, ":");
+    kMM = label(tRow, F.numL, LCD_INK, "00");
+
+    kSS = label(tBox, F.numS, LCD_INK, "00");
+    lv_obj_align(kSS, LV_ALIGN_RIGHT_MID, -24, 6);
+
+    // Row 5: 10-Segment Second Tick Matrix
     for (int g = 0; g < 10; g++) {
-        kBarDots[g] = box(lcd, 8, 5);
-        lv_obj_set_pos(kBarDots[g], 16 + g * 12, 74);
+        kBarDots[g] = box(lcd, 28, 6);
+        lv_obj_set_pos(kBarDots[g], 14 + g * 32, 202);
         lv_obj_set_style_radius(kBarDots[g], 1, 0);
         lv_obj_set_style_bg_opa(kBarDots[g], LV_OPA_COVER, 0);
         lv_obj_set_style_bg_color(kBarDots[g], LCD_DIM, 0);
     }
 
-    lv_obj_t* tRow = box(lcd, CW - 32, 96);
-    lv_obj_align(tRow, LV_ALIGN_TOP_MID, 0, 88);
-    lv_obj_set_flex_flow(tRow, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(tRow, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    kHH = label(tRow, F.numL, LCD_INK, "00");
-    label(tRow, F.numL, LCD_INK, ":");
-    kMM = label(tRow, F.numL, LCD_INK, "00");
-    kSS = label(tRow, F.numS, LCD_INK, "00");
-    lv_obj_set_style_pad_left(kSS, 8, 0);
+    // Row 6: Sub-data: Distance and Calories & Cadence
+    lv_obj_t* footRow = box(lcd, CW - 48, 26);
+    lv_obj_set_pos(footRow, 12, 222);
+    lv_obj_set_flex_flow(footRow, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(footRow, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    kDist = label(footRow, F.cap, LCD_INK, "0.00 KM");
+    kKcal = label(footRow, F.cap, LCD_INK, "0 KCAL");
+    kCadence = label(footRow, F.cap, LCD_INK, "106 SPM");
 
-    lv_obj_t* teleRow = box(lcd, CW - 50, 44);
-    lv_obj_align(teleRow, LV_ALIGN_BOTTOM_MID, 0, -14);
-    lv_obj_set_flex_flow(teleRow, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(teleRow, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-    kSteps = label(teleRow, F.small, LCD_INK, "STP 0");
-    kHeading = label(teleRow, F.small, LCD_INK, "DIR N 000°");
-    kBat = label(teleRow, F.small, LCD_INK, "BAT 00%");
-
-    lv_obj_t* wr = label(cCase, F.small, lv_color_hex(0xE53935), "WATER 20BAR RESIST");
-    lv_obj_set_pos(wr, 20, 390);
-    lv_obj_t* chro = label(cCase, F.small, lv_color_hex(0xF5A623), "ALARM CHRONO");
-    lv_obj_align(chro, LV_ALIGN_TOP_RIGHT, -20, 390);
+    // Bottom bezel
+    lv_obj_t* wr = label(cCase, F.small, RED, "WATER 20BAR RESIST");
+    lv_obj_set_pos(wr, 18, 412);
+    lv_obj_t* chro = label(cCase, F.small, GOLD, "ALARM CHRONOGRAPH");
+    lv_obj_align(chro, LV_ALIGN_TOP_RIGHT, -18, 412);
 }
 
 // ============================================================================
@@ -790,69 +817,43 @@ static void buildCyberpunk(lv_obj_t* f) {
 // ============================================================================
 // 8: WORDCLOCK
 // ============================================================================
+static const char* const WC_CHARS[10][11] = {
+    {"E","S","K","I","S","T","A","F","Ü","N","F"},
+    {"Z","E","H","N","Z","W","A","N","Z","I","G"},
+    {"D","R","E","I","V","I","E","R","T","E","L"},
+    {"T","G","V","O","R","N","A","C","H","P","M"},
+    {"H","A","L","B","A","E","L","F","Ü","N","F"},
+    {"E","I","N","S","X","Z","W","E","I","N","S"},
+    {"D","R","E","I","A","U","V","I","E","R","T"},
+    {"S","E","C","H","S","N","L","A","C","H","T"},
+    {"S","I","E","B","E","N","Z","W","Ö","L","F"},
+    {"Z","E","H","N","E","U","N","K","U","H","R"}
+};
+
 static void buildWordClock(lv_obj_t* f) {
     lv_obj_t* pan = card(f, CW, 450);
     lv_obj_align(pan, LV_ALIGN_TOP_MID, 0, 24);
     lv_obj_set_style_bg_color(pan, lv_color_hex(0x0C1019), 0);
+    lv_obj_set_style_border_width(pan, 1, 0);
+    lv_obj_set_style_border_color(pan, cStroke(), 0);
 
-    const int Y0 = 22, DY = 38;
-    auto addW = [&](int idx, const char* txt, int x, int y) {
-        wcWords[idx] = label(pan, F.title, lv_color_hex(0x222A38), txt);
-        lv_obj_set_pos(wcWords[idx], x, y);
-    };
-
-    // Row 0: ES IST FÜNF
-    addW(WC_ES, "ES", 28, Y0 + 0 * DY);
-    addW(WC_IST, "IST", 88, Y0 + 0 * DY);
-    addW(WC_FUENF_M, "FÜNF", 240, Y0 + 0 * DY);
-
-    // Row 1: ZEHN ZWANZIG
-    addW(WC_ZEHN_M, "ZEHN", 28, Y0 + 1 * DY);
-    addW(WC_ZWANZIG, "ZWANZIG", 176, Y0 + 1 * DY);
-
-    // Row 2: DREI VIERTEL
-    addW(WC_DREI_M, "DREI", 28, Y0 + 2 * DY);
-    addW(WC_VIERTEL, "VIERTEL", 176, Y0 + 2 * DY);
-
-    // Row 3: VOR NACH
-    addW(WC_VOR, "VOR", 54, Y0 + 3 * DY);
-    addW(WC_NACH, "NACH", 210, Y0 + 3 * DY);
-
-    // Row 4: HALB ELF FÜNF
-    addW(WC_HALB, "HALB", 28, Y0 + 4 * DY);
-    addW(WC_ELF, "ELF", 154, Y0 + 4 * DY);
-    addW(WC_FUENF_H, "FÜNF", 240, Y0 + 4 * DY);
-
-    // Row 5: EINS ZWEI
-    addW(WC_EINS, "EINS", 28, Y0 + 5 * DY);
-    addW(WC_ZWEI, "ZWEI", 230, Y0 + 5 * DY);
-
-    // Row 6: DREI VIER
-    addW(WC_DREI_H, "DREI", 28, Y0 + 6 * DY);
-    addW(WC_VIER, "VIER", 236, Y0 + 6 * DY);
-
-    // Row 7: SECHS ACHT
-    addW(WC_SECHS, "SECHS", 28, Y0 + 7 * DY);
-    addW(WC_ACHT, "ACHT", 226, Y0 + 7 * DY);
-
-    // Row 8: SIEBEN NEUN
-    addW(WC_SIEBEN, "SIEBEN", 28, Y0 + 8 * DY);
-    addW(WC_NEUN, "NEUN", 232, Y0 + 8 * DY);
-
-    // Row 9: ZEHN ZWÖLF UHR
-    addW(WC_ZEHN_H, "ZEHN", 28, Y0 + 9 * DY);
-    addW(WC_ZWOELF, "ZWÖLF", 146, Y0 + 9 * DY);
-    addW(WC_UHR, "UHR", 262, Y0 + 9 * DY);
+    const int X0 = 14, Y0 = 18, DX = 32, DY = 41;
+    for (int r = 0; r < 10; r++) {
+        for (int c = 0; c < 11; c++) {
+            sWcLetters[r][c] = label(pan, F.body, lv_color_hex(0x202735), WC_CHARS[r][c]);
+            lv_obj_set_pos(sWcLetters[r][c], X0 + c * DX + 4, Y0 + r * DY);
+        }
+    }
 
     // 4 Minute Dots in corners
-    wcDots[0] = box(pan, 8, 8); lv_obj_set_pos(wcDots[0], 14, 12);
-    wcDots[1] = box(pan, 8, 8); lv_obj_align(wcDots[1], LV_ALIGN_TOP_RIGHT, -14, 12);
-    wcDots[2] = box(pan, 8, 8); lv_obj_align(wcDots[2], LV_ALIGN_BOTTOM_RIGHT, -14, -12);
-    wcDots[3] = box(pan, 8, 8); lv_obj_align(wcDots[3], LV_ALIGN_BOTTOM_LEFT, 14, -12);
+    wcDots[0] = box(pan, 8, 8); lv_obj_set_pos(wcDots[0], 12, 12);
+    wcDots[1] = box(pan, 8, 8); lv_obj_align(wcDots[1], LV_ALIGN_TOP_RIGHT, -12, 12);
+    wcDots[2] = box(pan, 8, 8); lv_obj_align(wcDots[2], LV_ALIGN_BOTTOM_RIGHT, -12, -12);
+    wcDots[3] = box(pan, 8, 8); lv_obj_align(wcDots[3], LV_ALIGN_BOTTOM_LEFT, 12, -12);
     for (int i = 0; i < 4; i++) {
         lv_obj_set_style_radius(wcDots[i], 4, 0);
         lv_obj_set_style_bg_opa(wcDots[i], LV_OPA_COVER, 0);
-        lv_obj_set_style_bg_color(wcDots[i], lv_color_hex(0x222A38), 0);
+        lv_obj_set_style_bg_color(wcDots[i], lv_color_hex(0x202735), 0);
     }
 }
 
@@ -1074,15 +1075,24 @@ static void buildRadarTactical(lv_obj_t* f) {
 // ============================================================================
 static void buildLifetime(lv_obj_t* f) {
     ltTime = label(f, F.numL, cText(), "00:00");
-    lv_obj_align(ltTime, LV_ALIGN_TOP_MID, 0, 22);
+    lv_obj_align(ltTime, LV_ALIGN_TOP_MID, 0, 20);
     ltDate = caption(f, "", accent());
     accReg(ltDate, ACC_TEXT);
-    lv_obj_align(ltDate, LV_ALIGN_TOP_MID, 0, 82);
+    lv_obj_align(ltDate, LV_ALIGN_TOP_MID, 0, 78);
+
+    ltModePill = pill(f, "VERBRAUCHT", accent());
+    accReg(ltModePill, ACC_BG);
+    lv_obj_align(ltModePill, LV_ALIGN_TOP_RIGHT, -M, 20);
+    pressable(ltModePill);
+    lv_obj_add_event_cb(ltModePill, [](lv_event_t*) {
+        sLifetimeRemainingMode = !sLifetimeRemainingMode;
+        haptic(HAPTIC_TICK);
+    }, LV_EVENT_CLICKED, NULL);
 
     // 52-Week Visual Dot Matrix (4 rows of 13 dots)
-    lv_obj_t* dotBox = box(f, CW, 78);
-    lv_obj_align(dotBox, LV_ALIGN_TOP_MID, 0, 110);
-    const int DW = 18, DH = 12, DGX = 8, DGY = 6;
+    lv_obj_t* dotBox = box(f, CW, 74);
+    lv_obj_align(dotBox, LV_ALIGN_TOP_MID, 0, 104);
+    const int DW = 18, DH = 11, DGX = 8, DGY = 6;
     for (int i = 0; i < 52; i++) {
         int row = i / 13;
         int col = i % 13;
@@ -1094,30 +1104,30 @@ static void buildLifetime(lv_obj_t* f) {
     }
 
     ltStats = caption(f, "WOCHE -- / 52  •  VERBLIEBEN: --", cText2());
-    lv_obj_align(ltStats, LV_ALIGN_TOP_MID, 0, 198);
+    lv_obj_align(ltStats, LV_ALIGN_TOP_MID, 0, 188);
 
-    static const char* labels[3] = {"JAHR", "MONAT", "TAG"};
-    static const lv_color_t colors[3] = {
-        lv_color_hex(0xF5A623), lv_color_hex(0x00E5FF), lv_color_hex(0x76FF03)
+    static const char* labels[4] = {"LEBEN", "JAHR", "MONAT", "TAG"};
+    static const lv_color_t colors[4] = {
+        lv_color_hex(0xAF52DE), lv_color_hex(0xF5A623), lv_color_hex(0x00E5FF), lv_color_hex(0x30D158)
     };
-    const int Y_START = 228, STEP = 70;
-    for (int i = 0; i < 3; i++) {
-        lv_obj_t* c = card(f, CW, 60);
+    const int Y_START = 216, STEP = 54;
+    for (int i = 0; i < 4; i++) {
+        lv_obj_t* c = card(f, CW, 48);
         lv_obj_set_pos(c, M, Y_START + i * STEP);
         lv_obj_t* cap = caption(c, labels[i], cText2());
-        lv_obj_set_pos(cap, 16, 8);
+        lv_obj_set_pos(cap, 14, 4);
         ltPct[i] = label(c, F.small, colors[i], "0%");
-        lv_obj_align(ltPct[i], LV_ALIGN_TOP_RIGHT, -16, 8);
+        lv_obj_align(ltPct[i], LV_ALIGN_TOP_RIGHT, -14, 4);
         ltBars[i] = lv_bar_create(c);
-        lv_obj_set_size(ltBars[i], CW - 32, 6);
-        lv_obj_align(ltBars[i], LV_ALIGN_BOTTOM_MID, 0, -10);
+        lv_obj_set_size(ltBars[i], CW - 28, 5);
+        lv_obj_align(ltBars[i], LV_ALIGN_BOTTOM_MID, 0, -6);
         lv_bar_set_range(ltBars[i], 0, 100);
         lv_obj_set_style_bg_color(ltBars[i], cStroke(), LV_PART_MAIN);
         lv_obj_set_style_bg_opa(ltBars[i], LV_OPA_COVER, LV_PART_MAIN);
-        lv_obj_set_style_radius(ltBars[i], 3, LV_PART_MAIN);
+        lv_obj_set_style_radius(ltBars[i], 2, LV_PART_MAIN);
         lv_obj_set_style_bg_color(ltBars[i], colors[i], LV_PART_INDICATOR);
         lv_obj_set_style_bg_opa(ltBars[i], LV_OPA_COVER, LV_PART_INDICATOR);
-        lv_obj_set_style_radius(ltBars[i], 3, LV_PART_INDICATOR);
+        lv_obj_set_style_radius(ltBars[i], 2, LV_PART_INDICATOR);
     }
 }
 
@@ -1219,6 +1229,27 @@ static void buildStepsDetail(lv_obj_t* parent) {
         lv_obj_set_style_text_align(sStHistDays[i], LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_pos(sStHistDays[i], x, 124);
     }
+
+    // Card 2b: 24h Hourly Step Distribution Histogram
+    lv_obj_t* cHour = card(list, CW, 120);
+    lv_obj_set_style_radius(cHour, R_TILE, 0);
+    lv_obj_t* lHour = caption(cHour, "24H TAGESVERTEILUNG (STUNDEN)", accent());
+    accReg(lHour, ACC_TEXT);
+    lv_obj_set_pos(lHour, 16, 10);
+    sStHourPeakLbl = caption(cHour, "Aktivste Stunde: --:00", cText2());
+    lv_obj_set_pos(sStHourPeakLbl, 16, 30);
+    const int hBarW = 9, hGap = 5;
+    for (int h = 0; h < 24; h++) {
+        int x = 14 + h * (hBarW + hGap);
+        sStHourBars[h] = box(cHour, hBarW, 4);
+        lv_obj_set_style_radius(sStHourBars[h], 2, 0);
+        lv_obj_set_style_bg_opa(sStHourBars[h], LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(sStHourBars[h], cStroke(), 0);
+        lv_obj_set_pos(sStHourBars[h], x, 96);
+    }
+    lv_obj_t* l0 = caption(cHour, "00h", cText3()); lv_obj_set_pos(l0, 14, 100);
+    lv_obj_t* l12 = caption(cHour, "12h", cText3()); lv_obj_set_pos(l12, 14 + 12 * 14 - 8, 100);
+    lv_obj_t* l23 = caption(cHour, "23h", cText3()); lv_obj_align(l23, LV_ALIGN_BOTTOM_RIGHT, -14, -4);
 
     // Card 3: cadence and motion state (measured)
     lv_obj_t* c3 = card(list, CW, 100);
@@ -1666,11 +1697,11 @@ static void refresh(bool force) {
             for (int i = 0; i < 7; i++) {
                 bool active = (i == dIdx);
                 setBgColorIf(kDayBoxes[i], active ? lv_color_hex(0x111611) : lv_color_hex(0x9EAC8D));
-                setTextColorIf(kDayLabels[i], active ? lv_color_hex(0x9EAC8D) : lv_color_hex(0x829171));
+                setTextColorIf(kDayLabels[i], active ? lv_color_hex(0x9EAC8D) : lv_color_hex(0x849474));
             }
             snprintf(b, sizeof(b), "%02d.%02d.", ti.tm_mday, ti.tm_mon + 1); setText(kDate, b);
             for (int g = 0; g < 10; g++) {
-                setBgColorIf(kBarDots[g], (g <= (ti.tm_sec % 10)) ? lv_color_hex(0x111611) : lv_color_hex(0x829171));
+                setBgColorIf(kBarDots[g], (g <= (ti.tm_sec % 10)) ? lv_color_hex(0x111611) : lv_color_hex(0x849474));
             }
             snprintf(b, sizeof(b), "%02d", formatHour(ti.tm_hour)); setText(kHH, b);
             snprintf(b, sizeof(b), "%02d", ti.tm_min);  setText(kMM, b);
@@ -1685,6 +1716,13 @@ static void refresh(bool force) {
             setText(kHeading, b);
 
             snprintf(b, sizeof(b), "BAT %d%%%s", bat, chg ? "+" : ""); setText(kBat, b);
+
+            float km = MotionHaptic::getDistanceKm();
+            snprintf(b, sizeof(b), "%.2f KM", km); setText(kDist, b);
+            uint32_t cal = MotionHaptic::getCalories();
+            snprintf(b, sizeof(b), "%lu KCAL", (unsigned long)cal); setText(kKcal, b);
+            uint16_t spm = MotionHaptic::getLearnedCadenceSpm();
+            snprintf(b, sizeof(b), "%u SPM", (unsigned)spm); setText(kCadence, b);
             break;
         }
 
@@ -1725,49 +1763,55 @@ static void refresh(bool force) {
             int mBlock = m / 5;
             int minMod = m % 5;
             for (int i = 0; i < 4; i++) {
-                setBgColorIf(wcDots[i], (minMod >= (i + 1)) ? lv_color_hex(0x00E5FF) : lv_color_hex(0x222A38));
+                setBgColorIf(wcDots[i], (minMod >= (i + 1)) ? lv_color_hex(0x00E5FF) : lv_color_hex(0x202735));
             }
 
-            auto setW = [](int idx, bool on) {
-                setTextColorIf(wcWords[idx], on ? lv_color_hex(0xFFFFFF) : lv_color_hex(0x222A38));
+            bool lit[10][11] = {};
+            auto lightSpan = [&](int r, int c0, int c1) {
+                for (int c = c0; c <= c1; c++) lit[r][c] = true;
             };
 
-            for (int i = 0; i < WC_COUNT; i++) setW(i, false);
-
-            setW(WC_ES, true);
-            setW(WC_IST, true);
+            // "ES IST"
+            lightSpan(0, 0, 1); // ES
+            lightSpan(0, 3, 5); // IST
 
             switch (mBlock) {
-                case 0: setW(WC_UHR, true); break;                                   // :00
-                case 1: setW(WC_FUENF_M, true); setW(WC_NACH, true); break;         // :05
-                case 2: setW(WC_ZEHN_M, true); setW(WC_NACH, true); break;          // :10
-                case 3: setW(WC_VIERTEL, true); setW(WC_NACH, true); break;         // :15
-                case 4: setW(WC_ZEHN_M, true); setW(WC_VOR, true); setW(WC_HALB, true); break; // :20
-                case 5: setW(WC_FUENF_M, true); setW(WC_VOR, true); setW(WC_HALB, true); break; // :25
-                case 6: setW(WC_HALB, true); break;                                 // :30
-                case 7: setW(WC_FUENF_M, true); setW(WC_NACH, true); setW(WC_HALB, true); break;// :35
-                case 8: setW(WC_ZEHN_M, true); setW(WC_NACH, true); setW(WC_HALB, true); break; // :40
-                case 9: setW(WC_VIERTEL, true); setW(WC_VOR, true); break;          // :45
-                case 10: setW(WC_ZEHN_M, true); setW(WC_VOR, true); break;         // :50
-                case 11: setW(WC_FUENF_M, true); setW(WC_VOR, true); break;         // :55
+                case 0: lightSpan(9, 8, 10); break;                                   // :00 UHR
+                case 1: lightSpan(0, 7, 10); lightSpan(3, 5, 8); break;             // :05 FÜNF NACH
+                case 2: lightSpan(1, 0, 3); lightSpan(3, 5, 8); break;              // :10 ZEHN NACH
+                case 3: lightSpan(2, 4, 10); lightSpan(3, 5, 8); break;             // :15 VIERTEL NACH
+                case 4: lightSpan(1, 4, 10); lightSpan(3, 5, 8); break;             // :20 ZWANZIG NACH
+                case 5: lightSpan(0, 7, 10); lightSpan(3, 2, 4); lightSpan(4, 0, 3); break; // :25 FÜNF VOR HALB
+                case 6: lightSpan(4, 0, 3); break;                                  // :30 HALB
+                case 7: lightSpan(0, 7, 10); lightSpan(3, 5, 8); lightSpan(4, 0, 3); break; // :35 FÜNF NACH HALB
+                case 8: lightSpan(1, 4, 10); lightSpan(3, 2, 4); break;             // :40 ZWANZIG VOR
+                case 9: lightSpan(2, 4, 10); lightSpan(3, 2, 4); break;             // :45 VIERTEL VOR
+                case 10: lightSpan(1, 0, 3); lightSpan(3, 2, 4); break;             // :50 ZEHN VOR
+                case 11: lightSpan(0, 7, 10); lightSpan(3, 2, 4); break;            // :55 FÜNF VOR
             }
 
             switch (dispH) {
                 case 1:
-                    setText(wcWords[WC_EINS], (mBlock == 0) ? "EIN" : "EINS");
-                    setW(WC_EINS, true);
+                    if (mBlock == 0) lightSpan(5, 0, 2); // EIN (UHR)
+                    else lightSpan(5, 0, 3);             // EINS
                     break;
-                case 2: setW(WC_ZWEI, true); break;
-                case 3: setW(WC_DREI_H, true); break;
-                case 4: setW(WC_VIER, true); break;
-                case 5: setW(WC_FUENF_H, true); break;
-                case 6: setW(WC_SECHS, true); break;
-                case 7: setW(WC_SIEBEN, true); break;
-                case 8: setW(WC_ACHT, true); break;
-                case 9: setW(WC_NEUN, true); break;
-                case 10: setW(WC_ZEHN_H, true); break;
-                case 11: setW(WC_ELF, true); break;
-                case 12: setW(WC_ZWOELF, true); break;
+                case 2: lightSpan(5, 5, 8); break;       // ZWEI
+                case 3: lightSpan(6, 0, 3); break;       // DREI
+                case 4: lightSpan(6, 6, 9); break;       // VIER
+                case 5: lightSpan(4, 7, 10); break;      // FÜNF
+                case 6: lightSpan(7, 0, 4); break;       // SECHS
+                case 7: lightSpan(8, 0, 5); break;       // SIEBEN
+                case 8: lightSpan(7, 7, 10); break;      // ACHT
+                case 9: lightSpan(9, 3, 6); break;       // NEUN
+                case 10: lightSpan(9, 0, 3); break;      // ZEHN
+                case 11: lightSpan(4, 5, 7); break;      // ELF
+                case 12: lightSpan(8, 6, 10); break;     // ZWÖLF
+            }
+
+            for (int r = 0; r < 10; r++) {
+                for (int c = 0; c < 11; c++) {
+                    setTextColorIf(sWcLetters[r][c], lit[r][c] ? lv_color_hex(0xFFFFFF) : lv_color_hex(0x202735));
+                }
             }
             break;
         }
@@ -1848,6 +1892,7 @@ static void refresh(bool force) {
             snprintf(b, sizeof(b), "%02d:%02d", formatHour(ti.tm_hour), ti.tm_min); setText(ltTime, b);
             snprintf(b, sizeof(b), "%s, %02d. %s", WD_DE_L[ti.tm_wday % 7], ti.tm_mday, MO_DE_L[ti.tm_mon % 12]);
             setText(ltDate, b);
+            setPill(ltModePill, sLifetimeRemainingMode ? "VERBLEIBEND" : "VERBRAUCHT", sLifetimeRemainingMode ? cOk() : accent());
             if (secTick) {
                 int curWk = ti.tm_yday / 7;
                 if (curWk >= 52) curWk = 51;
@@ -1856,20 +1901,47 @@ static void refresh(bool force) {
                     else if (i == curWk) setBgColorIf(ltDots[i], lv_color_hex(0xFFFFFF));
                     else setBgColorIf(ltDots[i], lv_color_hex(0x222A38));
                 }
-                snprintf(b, sizeof(b), "WOCHE %d / 52  •  VERBLIEBEN: %d WOCHEN", curWk + 1, 52 - (curWk + 1));
-                setText(ltStats, b);
 
                 long secOfDay = ti.tm_hour * 3600L + ti.tm_min * 60L + ti.tm_sec;
                 int year = ti.tm_year + 1900;
                 long daysInYear = ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)) ? 366 : 365;
                 long dim = daysInMonth(year, ti.tm_mon);
-                int pct[3];
-                pct[0] = (int)(((int64_t)ti.tm_yday * 86400LL + secOfDay) * 100LL / (daysInYear * 86400LL));
-                pct[1] = (int)(((int64_t)(ti.tm_mday - 1) * 86400LL + secOfDay) * 100LL / (dim * 86400LL));
-                pct[2] = (int)(secOfDay * 100LL / 86400LL);
-                for (int i = 0; i < 3; i++) {
-                    setBar(ltBars[i], pct[i]);
-                    snprintf(b, sizeof(b), "%d%%", pct[i]); setText(ltPct[i], b);
+
+                if (sLifetimeRemainingMode) {
+                    snprintf(b, sizeof(b), "WOCHE %d / 52  •  VERBLEIBEND: %ld TAGE", curWk + 1, daysInYear - ti.tm_yday);
+                } else {
+                    snprintf(b, sizeof(b), "WOCHE %d / 52  •  VERBRAUCHT: %d TAGE", curWk + 1, ti.tm_yday);
+                }
+                setText(ltStats, b);
+
+                int usedPct[4];
+                // 0: LEBEN (Standard 42% bei 35 Jahren / 82 Jahre Erwartung)
+                usedPct[0] = 42;
+                // 1: JAHR
+                usedPct[1] = (int)(((int64_t)ti.tm_yday * 86400LL + secOfDay) * 100LL / (daysInYear * 86400LL));
+                // 2: MONAT
+                usedPct[2] = (int)(((int64_t)(ti.tm_mday - 1) * 86400LL + secOfDay) * 100LL / (dim * 86400LL));
+                // 3: TAG
+                usedPct[3] = (int)(secOfDay * 100LL / 86400LL);
+
+                for (int i = 0; i < 4; i++) {
+                    int val = sLifetimeRemainingMode ? (100 - usedPct[i]) : usedPct[i];
+                    if (val < 0) val = 0;
+                    if (val > 100) val = 100;
+                    setBar(ltBars[i], val);
+                    if (i == 0) {
+                        snprintf(b, sizeof(b), "%d%%%s", val, sLifetimeRemainingMode ? " (~48J)" : " (~34J)");
+                    } else if (i == 1) {
+                        snprintf(b, sizeof(b), "%d%%%s (%ldT)", val, sLifetimeRemainingMode ? " Rest" : "", sLifetimeRemainingMode ? (daysInYear - ti.tm_yday) : ti.tm_yday);
+                    } else if (i == 2) {
+                        snprintf(b, sizeof(b), "%d%%%s (%ldT)", val, sLifetimeRemainingMode ? " Rest" : "", sLifetimeRemainingMode ? (dim - ti.tm_mday) : ti.tm_mday);
+                    } else {
+                        int remH = (int)(86400 - secOfDay) / 3600;
+                        int remM = (int)((86400 - secOfDay) % 3600) / 60;
+                        if (sLifetimeRemainingMode) snprintf(b, sizeof(b), "%d%% (%02dh %02dm)", val, remH, remM);
+                        else snprintf(b, sizeof(b), "%d%% (%02dh %02dm)", val, ti.tm_hour, ti.tm_min);
+                    }
+                    setText(ltPct[i], b);
                 }
             }
             break;
@@ -1915,6 +1987,28 @@ static void refresh(bool force) {
         if (peakVal) snprintf(b, sizeof(b), "Bester Tag: %s (%lu Schritte)", WD_DE_L[(ti.tm_wday + 1 + peakIdx) % 7], (unsigned long)peakVal);
         else snprintf(b, sizeof(b), "Noch keine Schritte gezählt");
         setText(sStPeakLbl, b);
+
+        uint16_t hourly[24];
+        MotionHaptic::getHourlySteps(hourly);
+        uint16_t maxH = 1;
+        int peakH = 0;
+        for (int h = 0; h < 24; h++) {
+            if (hourly[h] > maxH) { maxH = hourly[h]; peakH = h; }
+        }
+        int curHour = ti.tm_hour % 24;
+        for (int h = 0; h < 24; h++) {
+            int bh = (int)((uint32_t)hourly[h] * 50 / maxH);
+            if (bh < 4) bh = 4;
+            if (lv_obj_get_height(sStHourBars[h]) != bh) {
+                lv_obj_set_height(sStHourBars[h], bh);
+                lv_obj_set_y(sStHourBars[h], 96 - bh);
+            }
+            bool isCurrent = (h == curHour);
+            setBgColorIf(sStHourBars[h], isCurrent ? accent() : (hourly[h] > 0 ? cOk() : cStroke()));
+        }
+        if (maxH > 1) snprintf(b, sizeof(b), "Aktivste Stunde: %02d:00 (%u Schritte)", peakH, (unsigned)maxH);
+        else snprintf(b, sizeof(b), "Noch keine Aktivität heute");
+        setText(sStHourPeakLbl, b);
 
         if (spm) snprintf(b, sizeof(b), "Kadenz beim Gehen: %u SPM", (unsigned)spm);
         else snprintf(b, sizeof(b), "Kadenz: noch nicht gelernt");

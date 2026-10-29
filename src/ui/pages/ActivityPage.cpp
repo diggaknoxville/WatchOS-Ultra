@@ -57,7 +57,7 @@ static void refresh(bool) {
         if (online) snprintf(b, sizeof(b), "KOMPASS  %03d° %s", ((int)lroundf(yaw)) % 360, DIRS[dIdx]);
         else snprintf(b, sizeof(b), "KOMPASS  --");
         setText(sCompReadout, b);
-        float rad = (yaw - 90.0f) * (float)M_PI / 180.0f;
+        float rad = (-yaw - 90.0f) * (float)M_PI / 180.0f;
         lv_obj_set_pos(sCompNeedle, 96 + (int)lroundf(cosf(rad) * 88.0f) - 6, 96 + (int)lroundf(sinf(rad) * 88.0f) - 6);
         return;
     }
