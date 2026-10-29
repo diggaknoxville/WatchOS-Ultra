@@ -2699,24 +2699,24 @@ void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double vi
             pos += (size_t)npts * 2;
 
             if (passMode == 0) {
-                // Pass 0: Polygons (Google Maps dark palette)
+                // Pass 0: Polygons (Google Maps dark palette with enhanced vibrancy and crisp shorelines)
                 if (cls == FEAT_FARMLAND) {
-                    drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(32, 40, 30));
-                    for (int k = 0; k + 1 < cnt; k++) drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], rgb565(44, 58, 38), 1);
+                    drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(36, 46, 34));
+                    for (int k = 0; k + 1 < cnt; k++) drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], rgb565(48, 64, 42), 1);
                 } else if (cls == FEAT_FOREST) {
-                    drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(18, 50, 32));
-                    for (int k = 0; k + 1 < cnt; k++) drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], rgb565(28, 76, 48), 1);
+                    drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(20, 56, 36));
+                    for (int k = 0; k + 1 < cnt; k++) drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], rgb565(32, 84, 54), 1);
                 } else if (cls == FEAT_PARK) {
-                    drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(24, 66, 44));
-                    for (int k = 0; k + 1 < cnt; k++) drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], rgb565(38, 96, 62), 1);
+                    drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(30, 74, 52));
+                    for (int k = 0; k + 1 < cnt; k++) drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], rgb565(46, 110, 74), 1);
                 } else if (cls == FEAT_URBAN) {
-                    drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(32, 38, 50));
+                    drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(36, 42, 56));
                 } else if (cls == FEAT_WATER_POLY) {
-                    drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(20, 70, 125));
-                    for (int k = 0; k + 1 < cnt; k++) drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], rgb565(50, 135, 215), 1);
+                    drawFilledPolygon(buf, w, h, polyX, polyY, cnt, rgb565(24, 78, 142));
+                    for (int k = 0; k + 1 < cnt; k++) drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], rgb565(58, 145, 230), 2);
                 } else if (cls == FEAT_BUILDING) {
-                    uint16_t bFill = (zoom >= 15) ? rgb565(40, 48, 62) : rgb565(34, 40, 52);
-                    uint16_t bEdge = (zoom >= 15) ? rgb565(65, 78, 100) : rgb565(52, 62, 80);
+                    uint16_t bFill = (zoom >= 15) ? rgb565(44, 52, 68) : rgb565(36, 42, 56);
+                    uint16_t bEdge = (zoom >= 15) ? rgb565(72, 86, 112) : rgb565(56, 68, 88);
                     drawFilledPolygon(buf, w, h, polyX, polyY, cnt, bFill);
                     if (zoom >= 14) {
                         for (int k = 0; k + 1 < cnt; k++) drawLine(buf, w, h, polyX[k], polyY[k], polyX[k + 1], polyY[k + 1], bEdge, 1);
@@ -2759,7 +2759,7 @@ void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double vi
                 int coreW = 1;
                 switch (cls) {
                     case FEAT_WATER:
-                        coreCol = rgb565(50, 135, 215);
+                        coreCol = rgb565(58, 145, 230);
                         coreW = (zoom >= 13) ? 3 : 2;
                         break;
                     case FEAT_BOUNDARY:
@@ -2770,27 +2770,27 @@ void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double vi
                         coreW = (zoom >= 14) ? 2 : 1;
                         break;
                     case FEAT_PATH:
-                        coreCol = rgb565(76, 175, 80);
+                        coreCol = rgb565(86, 185, 92);
                         coreW = (zoom >= 15) ? 2 : 1;
                         break;
                     case FEAT_RESIDENTIAL:
-                        coreCol = rgb565(190, 202, 218);
+                        coreCol = rgb565(195, 206, 222);
                         coreW = (zoom >= 16) ? 3 : (zoom >= 14) ? 2 : 1;
                         break;
                     case FEAT_TERTIARY:
-                        coreCol = rgb565(215, 226, 238);
+                        coreCol = rgb565(220, 230, 242);
                         coreW = (zoom >= 15) ? 3 : (zoom >= 13) ? 2 : 1;
                         break;
                     case FEAT_SECONDARY:
-                        coreCol = rgb565(232, 240, 250);
+                        coreCol = rgb565(236, 242, 252);
                         coreW = (zoom >= 15) ? 3 : (zoom >= 12) ? 2 : 1;
                         break;
                     case FEAT_PRIMARY:
-                        coreCol = rgb565(255, 205, 55);
+                        coreCol = rgb565(255, 214, 64);
                         coreW = (zoom >= 14) ? 3 : (zoom >= 11) ? 2 : 1;
                         break;
                     case FEAT_MOTORWAY:
-                        coreCol = rgb565(255, 154, 30);
+                        coreCol = rgb565(255, 158, 35);
                         coreW = (zoom >= 13) ? 4 : (zoom >= 9) ? 2 : 1;
                         break;
                     default:
