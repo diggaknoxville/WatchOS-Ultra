@@ -317,8 +317,15 @@ static void debugConsole() {
             }
             case 'G': {
                 int pg = atoi(line + 1);
-                if (pg >= 0 && pg < (int)nav::PG_COUNT) nav::go((nav::PageId)pg);
-                Serial.printf("PAGE %d\n", (int)nav::current());
+                if (pg >= 0 && pg < (int)nav::PG_COUNT) {
+                    if (pg == (int)nav::PG_CONTROL || pg == (int)nav::PG_NOTIFS || !nav::isCarousel((nav::PageId)pg)) {
+                        nav::openApp((nav::PageId)pg);
+                    } else {
+                        nav::go((nav::PageId)pg);
+                    }
+                }
+                Serial.printf("PAGE %d\n", pg);
+                Serial.flush();
                 break;
             }
             case 'F': {
@@ -326,7 +333,8 @@ static void debugConsole() {
                 if (v < 0) v = 0;
                 v %= FACE_COUNT;
                 pages::faceSelect(v);
-                Serial.printf("FACE %d\n", SettingsStorage::get().watchfaceIndex);
+                Serial.printf("FACE %d\n", v);
+                Serial.flush();
                 break;
             }
             case 'T': {
@@ -336,6 +344,7 @@ static void debugConsole() {
                 RtcManager::syncFromEpoch((time_t)ep, (int32_t)tz, zone[0] ? zone : nullptr);
                 RtcManager::noteSyncSource("USB");
                 Serial.printf("TIME_SET %ld tz=%ld zone=%s\n", ep, tz, zone);
+                Serial.flush();
                 break;
             }
             case 'N': {

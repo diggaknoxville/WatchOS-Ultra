@@ -95,9 +95,9 @@ def open_port(port):
     s = serial.Serial()
     s.port = port
     s.baudrate = BAUD
-    s.timeout = 1.0
-    s.dtr = None
-    s.rts = None
+    s.timeout = 2.0
+    s.dtr = True
+    s.rts = False
     s.open()
     s.rts = False
     s.dtr = True
