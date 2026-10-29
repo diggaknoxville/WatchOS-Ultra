@@ -88,8 +88,12 @@ Aufgaben werden sequenziell, autonom und vollständig mit Firmware-Flash und Har
 
 ---
 
-### [ ] P2: Google Maps Cartography Overhaul (Detailgrad & Straßenhierarchie)
-- **Komponente:** `src/NavEngine.cpp`, `src/ui/pages/PositionPage.cpp`
-- **Ziel:** Weitere Optimierung der Vektorkarte nach Google-Maps-Standard (Wasserlinienkontrast, präzise Parkflächen, Straßenbeschriftung).
+### [X] P2: Google Maps Cartography Overhaul (Detailgrad & Straßenhierarchie)
+- **Status:** ERLEDIGT & KOMPILIERT (Commit `5e72ee3`).
+- **Umsetzung:**
+  1. **Wasserlinien & Ufer:** 2-Pixel-Uferkontur in leuchtendem Schimmer-Blau (`#3a91e6` / `0x3C9C`) um tiefblaue Wasserflächen (`#184e8e` / `0x1A71`).
+  2. **Vegetation & Parks:** Sattgrüne Parkflächen (`#1e4a34`) mit klarer Umrisslinie (`#2e6e4a`) und tiefe Waldflächen (`#143824`).
+  3. **Straßenhierarchie:** Autobahnen im Google-Maps-typischen Leucht-Orange (`#ff9e23`), Bundes-/Hauptstraßen in Sonnengelb (`#ffd640`), Kreis- und Landstraßen in klarem Kontrast-Weiß (`#ecf2fc`) und Wohnstraßen in edlem Muted-Slate (`#c3cede`).
+  4. **Gebäude-Schärfe:** Passgenaue 3D-Kantenbeleuchtung (`#485670`) auf dunklem Gebäudekern (`#2c3444`).
 
 
