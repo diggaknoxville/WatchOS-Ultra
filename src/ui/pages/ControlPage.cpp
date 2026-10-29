@@ -78,7 +78,9 @@ static void onToggle(lv_event_t* e) {
             CompanionServer::requestAp(s.wifiApEnabled);
             SettingsStorage::save();
             nav::markDirty(nav::PG_APP_CONNECT);
-            if (s.wifiApEnabled) DisplayEngine::showToast("Hotspot", "Zugangsdaten unter Verbinden", 2200, ICO_WIFI);
+            if (s.wifiApEnabled) {
+                nav::openApp(nav::PG_APP_CONNECT);
+            }
             break;
         case CT_BLE:
             BleCompanion::setEnabled(!BleCompanion::isEnabled());

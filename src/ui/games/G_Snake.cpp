@@ -19,6 +19,7 @@ int dx, dy, ndx, ndy;
 P food;
 lv_obj_t* seg[MAXLEN];
 lv_obj_t* sFood;
+lv_obj_t* sFoodCore;
 uint32_t acc, stepMs;
 uint32_t score;
 bool over;
@@ -28,11 +29,23 @@ void draw() {
         if (i < len) {
             place(seg[i], OX + body[i].x * CS + 1, OY + body[i].y * CS + 1);
             setHidden(seg[i], false);
+            // Dynamic snake color gradient from head (bright cyan/mint) to tail (emerald)
+            if (i == 0) {
+                tint(seg[i], lv_color_hex(0x00FFC2));
+                lv_obj_set_style_shadow_width(seg[i], 6, 0);
+            } else {
+                float frac = (float)i / (float)len;
+                uint8_t r = (uint8_t)(0 * (1 - frac) + 16 * frac);
+                uint8_t g = (uint8_t)(220 * (1 - frac) + 140 * frac);
+                uint8_t b = (uint8_t)(255 * (1 - frac) + 60 * frac);
+                tint(seg[i], lv_color_make(r, g, b));
+                lv_obj_set_style_shadow_width(seg[i], 0, 0);
+            }
         } else {
             setHidden(seg[i], true);
         }
     }
-    place(sFood, OX + food.x * CS + 3, OY + food.y * CS + 3);
+    place(sFood, OX + food.x * CS + 2, OY + food.y * CS + 2);
 }
 
 void placeFood() {
@@ -45,12 +58,17 @@ void placeFood() {
 }
 
 void build(lv_obj_t* area) {
-    rect(area, OX - 4, OY - 4, COLS * CS + 8, ROWS * CS + 8, lv_color_hex(0x222E42), 10);
-    rect(area, OX - 2, OY - 2, COLS * CS + 4, ROWS * CS + 4, lv_color_hex(0x090D14), 8);
+    rect(area, OX - 5, OY - 5, COLS * CS + 10, ROWS * CS + 10, lv_color_hex(0x1B2C46), 12);
+    rect(area, OX - 2, OY - 2, COLS * CS + 4, ROWS * CS + 4, lv_color_hex(0x070B12), 8);
     for (int i = 0; i < MAXLEN; i++) {
-        seg[i] = rect(area, 0, 0, CS - 2, CS - 2, i == 0 ? lv_color_hex(0x69F0AE) : lv_color_hex(0x00C853), 6);
+        seg[i] = rect(area, 0, 0, CS - 2, CS - 2, i == 0 ? lv_color_hex(0x00FFC2) : lv_color_hex(0x00C853), 7);
+        lv_obj_set_style_shadow_color(seg[i], lv_color_hex(0x00FFC2), 0);
     }
-    sFood = rect(area, 0, 0, CS - 4, CS - 4, lv_color_hex(0xFF1744), LV_RADIUS_CIRCLE);
+    sFood = disc(area, 0, 0, CS - 4, lv_color_hex(0xFF2A6D));
+    lv_obj_set_style_shadow_width(sFood, 8, 0);
+    lv_obj_set_style_shadow_color(sFood, lv_color_hex(0xFF2A6D), 0);
+    sFoodCore = disc(sFood, 3, 3, 4, lv_color_white());
+    lv_obj_set_style_bg_opa(sFoodCore, LV_OPA_90, 0);
 }
 
 void start() {

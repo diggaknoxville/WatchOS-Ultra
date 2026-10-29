@@ -35,20 +35,55 @@ Aufgaben werden sequenziell, autonom und vollständig mit Firmware-Flash und Har
 
 ---
 
-## Iteration 3: Geplante nächste Evolutionsschritte
+## Iteration 3: Spiele-Grafik, Wissenschaftlicher Rechner & Zero-Conf Verbinden
 
-### [ ] P1: Spiele-Grafik- & Arcade-Overhaul (Visuelles Redesign aller 9 Games)
-- **Komponente:** `src/ui/games/GamesPage.cpp`, `G_Labyrinth.cpp`, `G_Breakout.cpp`, `G_Snake.cpp`, etc.
-- **Ziel:** Hochwertiger visueller Neon-Arcade-Look mit geschmeidigen Schatten, kontrastreichen Spielfeldern, Glow-Effekten, Partikeln bei Treffern und Highscore-Overlays.
+### [X] P1: Spiele-Grafik- & Arcade-Overhaul (Visuelles Redesign der Games)
+- **Status:** ERLEDIGT & HARDWARE-VERIFIZIERT (Screenshots `shot_verified_games_v3.png`).
+- **Umsetzung:**
+  1. `G_Labyrinth.cpp`: Metallische 3D-Kugel mit Glanzlicht (`sGlint`), Neon-Cyan-Wände mit dynamischem Drop-Shadow (`0x0080FF`), pulsierendes Zielportal und taktiles Haptik-Feedback bei Wandstößen.
+  2. `G_Breakout.cpp`: Neon-Paddel mit Leuchteffekt und abgerundeten Ecken, Ziegelsteine mit Kanten-Highlight und Neon-Glow, metallischer Ball mit Spekular-Reflexion und Wandabprall-Haptik.
+  3. `G_Snake.cpp`: Schlange mit Farbverlauf von Kopf (Neon-Türkis `0x00FFC2` mit Glow) bis Schwanz (Smaragdgrün), leuchtendes Rubin-Futter mit weißem Kern und abgerundete Matrix.
+  4. `G_Balance.cpp`: 3D-Kugel mit Farbverlauf, Glanzpunkt und Haptik.
+  5. `GamesPage.cpp`: Lebendiges Neon-Ordner-Grid mit individuellen Leuchtschatten (`0x00D0FF` etc.) pro Spielkachel.
 
 ---
 
-### [ ] P2: Wissenschaftlicher Taschenrechner mit Formelhierarchie
-- **Komponente:** `src/ui/pages/CalcPage.cpp`
-- **Ziel:** Erweiterung um wissenschaftliche Funktionen (`sin`, `cos`, `tan`, `sqrt`, `^`, `1/x`, `%`), Klammerebenen und Verlaufsband.
+### [X] P2: Wissenschaftlicher Taschenrechner mit Memory-Funktion & Prozentberechnung
+- **Status:** ERLEDIGT & HARDWARE-VERIFIZIERT (Screenshot `shot_verified_calc_v3.png`).
+- **Umsetzung:**
+  1. Vollständige Formelhierarchie mit rekursivem Abstieg: `+`, `-`, `*`, `/`, `^`, `%`, `!`, Klammern `(`, `)`.
+  2. Mathematische Funktionen: `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sqrt`, `ln`, `log`, `abs`, `pi`, `e`, `Ans`.
+  3. Vollwertige Speicherfunktionen (Memory): `MC` (Clear), `MR` (Recall), `M+` (Add), `M-` (Subtract) mit Live-Anzeige des Speicherwerts und `[M]` Badge auf dem Display.
+  4. Postfix-Prozentberechnung (`200 * 15% = 30`).
 
 ---
 
-### [ ] P3: Wi-Fi Hotspot & BLE Pairing-Assistent mit Live-QR-Code
-- **Komponente:** `src/CompanionServer.cpp`, `src/ui/pages/SettingsPage.cpp`
-- **Ziel:** Generierung und Anzeige eines scanbaren QR-Codes (Wi-Fi WPA2 String `WIFI:S:WatchOS-Ultra-AP;T:WPA;P:...;;`) direkt auf dem AMOLED-Display für sofortige Smartphone-Verbindung ohne manuelle Passworteingabe.
+### [X] P3: Wi-Fi Hotspot & BLE Pairing-Assistent mit Live-QR-Code & Zero-Conf
+- **Status:** ERLEDIGT & HARDWARE-VERIFIZIERT (Screenshots `shot_verified_connect_v3.png`, `shot_verified_control_v3.png`).
+- **Umsetzung:**
+  1. BLE-Sicherheit auf nahtloses "Just Works" Bonding ohne PIN-Zwang und ohne Companion-App umgestellt (`mitm = false`, `BLE_HS_IO_NO_INPUT_OUTPUT`). Smartphones (iOS & Android) koppeln sich direkt über die Systemeinstellungen für Mediensteuerung und Benachrichtigungen.
+  2. Direkter Schnellzugriff: Das Aktivieren des Hotspots im Kontrollzentrum oder in den Einstellungen navigiert sofort auf die Verbindungs-Seite mit dem großen, scanbaren QR-Code (`WIFI:T:WPA;S:...;P:...;;`).
+  3. Kontrollzentrum bietet direkte Tasten für Einstellungen ("Optionen") und Power-Management.
+
+---
+
+## Iteration 4: Geplante nächste Evolutionsschritte
+*Frage: "Aber was ist, wenn die Statusleiste des Startbildschirms, die Google-Maps-Kartenqualität und das Standalone-AI-Sync-System noch besser, schneller und umfangreicher wären? Wie sähe das aus?"*
+
+### [ ] P1: Startscreen-Kopfleiste & Funkstandard-Indikatoren (Live Subsystem Telemetrie)
+- **Komponente:** `src/ui/pages/FacePage.cpp`, `src/DisplayEngine.cpp`
+- **Ziel:** Bereinigung redundanter Datums-/Akku-Anzeigen auf den Zifferblättern; Einführung einer konsistenten, mikro-skalierten System-Statusleiste mit echten Live-Symbolen für alle Funkstandards (WLAN AP on/off, BLE verbunden/aktiv/aus, GPS Fix/Suchlauf, LoRa Mesh aktiv/standby, Energiesparmodus, Nicht Stören).
+
+---
+
+### [ ] P2: Google Maps Cartography Overhaul (Detailgrad & Straßenhierarchie)
+- **Komponente:** `src/NavEngine.cpp`, `src/ui/pages/PositionPage.cpp`
+- **Ziel:** Straßenhierarchie mit unterschiedlichen Farbtönen und Strichstärken (Autobahnen, Hauptverkehrsstraßen, Wohnstraßen), Park-/Waldflächengrün (`0x1B3828`), Gewässerflächen (`0x163456`), Gebäudegrundrisse und präzise Maßstabsleiste.
+
+---
+
+### [ ] P3: Standalone AI-Sync & Stale-Warning Banner
+- **Komponente:** `src/AiLimitsStore.cpp`, `src/CompanionServer.cpp`, `src/ui/pages/AiLimitsPage.cpp`
+- **Ziel:** Zentrales, prominentes Banner auf dem Startbildschirm/Limit-Screen bei veralteten AI-Werten (>24h). Unterstützung für direkten Standalone-Sync über bekanntes Heim-WLAN bzw. Web-Portal Verifikation.
+
+

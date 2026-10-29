@@ -20,6 +20,7 @@ bool wallH[ROWS + 1][COLS];       // wall on the top edge of cell (r, c); r == R
 lv_obj_t* objV[ROWS][COLS + 1];
 lv_obj_t* objH[ROWS + 1][COLS];
 lv_obj_t* sBall;
+lv_obj_t* sGlint;
 lv_obj_t* sGoal;
 float bx, by, vx, vy;
 uint32_t sElapsed;
@@ -63,17 +64,37 @@ void showWalls() {
 
 void build(lv_obj_t* area) {
     lv_color_t wc = lv_color_hex(0x00D0FF);
-    rect(area, OX - WT - 2, OY - WT - 2, COLS * CS + 2 * WT + 4, ROWS * CS + 2 * WT + 4, lv_color_hex(0x253248), 10);
-    rect(area, OX - WT, OY - WT, COLS * CS + 2 * WT, ROWS * CS + 2 * WT, lv_color_hex(0x0A0E18), 8);
+    rect(area, OX - WT - 3, OY - WT - 3, COLS * CS + 2 * WT + 6, ROWS * CS + 2 * WT + 6, lv_color_hex(0x1B2C46), 12);
+    rect(area, OX - WT, OY - WT, COLS * CS + 2 * WT, ROWS * CS + 2 * WT, lv_color_hex(0x070B12), 8);
     for (int r = 0; r < ROWS; r++)
-        for (int c = 0; c <= COLS; c++)
+        for (int c = 0; c <= COLS; c++) {
             objV[r][c] = rect(area, OX + c * CS - WT / 2, OY + r * CS - WT / 2, WT, CS + WT, wc, 1);
+            lv_obj_set_style_shadow_width(objV[r][c], 4, 0);
+            lv_obj_set_style_shadow_color(objV[r][c], lv_color_hex(0x0080FF), 0);
+        }
     for (int r = 0; r <= ROWS; r++)
-        for (int c = 0; c < COLS; c++)
+        for (int c = 0; c < COLS; c++) {
             objH[r][c] = rect(area, OX + c * CS - WT / 2, OY + r * CS - WT / 2, CS + WT, WT, wc, 1);
-    disc(area, OX + (COLS - 1) * CS + CS / 2, OY + (ROWS - 1) * CS + CS / 2, 26, lv_color_hex(0x0A361C));
+            lv_obj_set_style_shadow_width(objH[r][c], 4, 0);
+            lv_obj_set_style_shadow_color(objH[r][c], lv_color_hex(0x0080FF), 0);
+        }
+
+    // Start point
+    disc(area, OX + CS / 2, OY + CS / 2, 22, lv_color_hex(0x0B2038));
+    disc(area, OX + CS / 2, OY + CS / 2, 10, lv_color_hex(0x00A0FF));
+
+    // Goal with neon glow
+    disc(area, OX + (COLS - 1) * CS + CS / 2, OY + (ROWS - 1) * CS + CS / 2, 28, lv_color_hex(0x0A361C));
     sGoal = disc(area, OX + (COLS - 1) * CS + CS / 2, OY + (ROWS - 1) * CS + CS / 2, 18, lv_color_hex(0x30D158));
-    sBall = disc(area, 0, 0, BALL, lv_color_hex(0xFFD60A));
+    lv_obj_set_style_shadow_width(sGoal, 8, 0);
+    lv_obj_set_style_shadow_color(sGoal, lv_color_hex(0x30D158), 0);
+
+    // Ball with metallic 3D sphere highlight
+    sBall = disc(area, 0, 0, BALL, lv_color_hex(0xFF9F0A));
+    lv_obj_set_style_shadow_width(sBall, 6, 0);
+    lv_obj_set_style_shadow_color(sBall, lv_color_hex(0xFFD60A), 0);
+    sGlint = disc(sBall, 3, 3, 5, lv_color_white());
+    lv_obj_set_style_bg_opa(sGlint, LV_OPA_80, 0);
 }
 
 void start() {
@@ -100,12 +121,20 @@ void moveX(float dx) {
         float edge = OX + (c + 1) * CS;
         bool wall = false;
         for (int r = r0; r <= r1; r++) wall |= wallV[r][c + 1];
-        if (wall && nx + R > edge) { nx = edge - R; vx = -vx * 0.25f; }
+        if (wall && nx + R > edge) {
+            nx = edge - R;
+            if (fabsf(vx) > 40.0f) MotionHaptic::triggerHaptic(HAPTIC_TICK);
+            vx = -vx * 0.25f;
+        }
     } else if (dx < 0) {
         float edge = OX + c * CS;
         bool wall = false;
         for (int r = r0; r <= r1; r++) wall |= wallV[r][c];
-        if (wall && nx - R < edge) { nx = edge + R; vx = -vx * 0.25f; }
+        if (wall && nx - R < edge) {
+            nx = edge + R;
+            if (fabsf(vx) > 40.0f) MotionHaptic::triggerHaptic(HAPTIC_TICK);
+            vx = -vx * 0.25f;
+        }
     }
     bx = nx;
 }
@@ -122,12 +151,20 @@ void moveY(float dy) {
         float edge = OY + (r + 1) * CS;
         bool wall = false;
         for (int c = c0; c <= c1; c++) wall |= wallH[r + 1][c];
-        if (wall && ny + R > edge) { ny = edge - R; vy = -vy * 0.25f; }
+        if (wall && ny + R > edge) {
+            ny = edge - R;
+            if (fabsf(vy) > 40.0f) MotionHaptic::triggerHaptic(HAPTIC_TICK);
+            vy = -vy * 0.25f;
+        }
     } else if (dy < 0) {
         float edge = OY + r * CS;
         bool wall = false;
         for (int c = c0; c <= c1; c++) wall |= wallH[r][c];
-        if (wall && ny - R < edge) { ny = edge + R; vy = -vy * 0.25f; }
+        if (wall && ny - R < edge) {
+            ny = edge + R;
+            if (fabsf(vy) > 40.0f) MotionHaptic::triggerHaptic(HAPTIC_TICK);
+            vy = -vy * 0.25f;
+        }
     }
     by = ny;
 }

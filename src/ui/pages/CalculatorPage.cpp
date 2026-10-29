@@ -18,6 +18,8 @@ namespace pages {
 static lv_obj_t* sCalcExprLbl = nullptr;
 static lv_obj_t* sCalcResLbl = nullptr;
 static lv_obj_t* sCalcDegRadPill = nullptr;
+static lv_obj_t* sCalcMemBadge = nullptr;
+static lv_obj_t* sCalcMemValLbl = nullptr;
 static lv_obj_t* sCalcGridStandard = nullptr;
 static lv_obj_t* sCalcGridScientific = nullptr;
 static lv_obj_t* sCalcGridMemory = nullptr;
@@ -56,6 +58,8 @@ static double parsePrimary() {
         double val = parseExpression();
         skipWs();
         if (*sParsePtr == ')') sParsePtr++;
+        skipWs();
+        if (*sParsePtr == '%') { sParsePtr++; val *= 0.01; }
         return val;
     }
 
@@ -148,6 +152,11 @@ static double parsePrimary() {
             double f = 1.0;
             for (int i = 2; i <= n; i++) f *= i;
             val = f;
+        }
+        skipWs();
+        if (*sParsePtr == '%') {
+            sParsePtr++;
+            val *= 0.01;
         }
         return val;
     }
@@ -250,6 +259,16 @@ static void updateDisplay(bool evalNow = false) {
             setText(sCalcResLbl, b);
         }
     }
+    if (sCalcMemValLbl) {
+        char mb[32];
+        if (fabs(sMemoryVal) < 1e-12) sMemoryVal = 0.0;
+        if (sMemoryVal == floor(sMemoryVal) && fabs(sMemoryVal) < 1e9) snprintf(mb, sizeof(mb), "%.0f", sMemoryVal);
+        else snprintf(mb, sizeof(mb), "%.6g", sMemoryVal);
+        setText(sCalcMemValLbl, mb);
+    }
+    if (sCalcMemBadge) {
+        setHidden(sCalcMemBadge, fabs(sMemoryVal) < 1e-12);
+    }
 }
 
 static void handleKey(const char* key) {
@@ -298,6 +317,40 @@ static void handleKey(const char* key) {
         else snprintf(b, sizeof(b), "%.6g", sLastAns);
         if (strlen(sExprBuf) + strlen(b) < sizeof(sExprBuf)) strcat(sExprBuf, b);
         updateDisplay();
+        return;
+    }
+    if (strcmp(key, "MC") == 0) {
+        sMemoryVal = 0.0;
+        updateDisplay();
+        haptic(HAPTIC_DOUBLE_CLICK);
+        return;
+    }
+    if (strcmp(key, "MR") == 0) {
+        char b[32];
+        if (sMemoryVal == floor(sMemoryVal) && fabs(sMemoryVal) < 1e9) snprintf(b, sizeof(b), "%.0f", sMemoryVal);
+        else snprintf(b, sizeof(b), "%.6g", sMemoryVal);
+        if (strlen(sExprBuf) + strlen(b) < sizeof(sExprBuf)) strcat(sExprBuf, b);
+        updateDisplay();
+        return;
+    }
+    if (strcmp(key, "M+") == 0) {
+        bool ok = false;
+        double res = sExprBuf[0] ? evaluateFormula(sExprBuf, &ok) : sLastAns;
+        if (ok || sExprBuf[0] == 0) {
+            sMemoryVal += res;
+            updateDisplay();
+            haptic(HAPTIC_SUCCESS);
+        }
+        return;
+    }
+    if (strcmp(key, "M-") == 0) {
+        bool ok = false;
+        double res = sExprBuf[0] ? evaluateFormula(sExprBuf, &ok) : sLastAns;
+        if (ok || sExprBuf[0] == 0) {
+            sMemoryVal -= res;
+            updateDisplay();
+            haptic(HAPTIC_SUCCESS);
+        }
         return;
     }
 
@@ -370,6 +423,10 @@ void buildCalculator(lv_obj_t* scr) {
     lv_obj_set_style_radius(dispCard, 18, 0);
     lv_obj_set_style_pad_hor(dispCard, 16, 0);
     lv_obj_set_style_pad_ver(dispCard, 8, 0);
+
+    sCalcMemBadge = pill(dispCard, "M", lv_color_hex(0x0A84FF));
+    lv_obj_align(sCalcMemBadge, LV_ALIGN_TOP_LEFT, 0, 4);
+    setHidden(sCalcMemBadge, true);
 
     sCalcExprLbl = label(dispCard, F.small, cText3(), "0");
     lv_obj_align(sCalcExprLbl, LV_ALIGN_TOP_RIGHT, 0, 4);
@@ -527,8 +584,8 @@ void buildCalculator(lv_obj_t* scr) {
     lv_obj_t* mHead = caption(memBox, "GESPEICHERTER WERT (M)", accent());
     accReg(mHead, ACC_TEXT);
     lv_obj_align(mHead, LV_ALIGN_TOP_MID, 0, 14);
-    lv_obj_t* mValLbl = label(memBox, F.title, cText(), "0");
-    lv_obj_align(mValLbl, LV_ALIGN_CENTER, 0, 10);
+    sCalcMemValLbl = label(memBox, F.title, cText(), "0");
+    lv_obj_align(sCalcMemValLbl, LV_ALIGN_CENTER, 0, 10);
 
     lv_obj_add_event_cb(sCalcGridMemory, [](lv_event_t*) {}, LV_EVENT_CLICKED, NULL);
 

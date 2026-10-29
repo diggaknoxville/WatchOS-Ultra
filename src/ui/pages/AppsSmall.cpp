@@ -708,7 +708,9 @@ static void onSetToggle(lv_event_t* e) {
             s.wifiApEnabled = !s.wifiApEnabled;
             CompanionServer::requestAp(s.wifiApEnabled);
             nav::markDirty(nav::PG_APP_CONNECT);
-            if (s.wifiApEnabled) DisplayEngine::showToast("Hotspot", "Zugangsdaten unter Verbinden", 2200, ICO_WIFI);
+            if (s.wifiApEnabled) {
+                nav::openApp(nav::PG_APP_CONNECT);
+            }
             break;
         case SR_BLE:    BleCompanion::setEnabled(!BleCompanion::isEnabled()); nav::markDirty(nav::PG_APP_CONNECT); break;
         case SR_GPS:    GpsManager::setEnabled(!GpsManager::isEnabled()); nav::markDirty(nav::PG_POSITION); break;

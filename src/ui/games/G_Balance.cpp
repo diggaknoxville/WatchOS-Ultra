@@ -44,7 +44,11 @@ void build(lv_obj_t* area) {
     sRingIn = disc(area, CX, CY, (int)(2 * R_START) - 8, cBg());
     rect(area, CX - 1, CY - 22, 2, 44, lv_color_hex(0x00E5FF));
     rect(area, CX - 22, CY - 1, 44, 2, lv_color_hex(0x00E5FF));
-    sBall = disc(area, CX, CY, BALL, lv_color_hex(0xFFFFFF));
+    sBall = disc(area, CX, CY, BALL, lv_color_hex(0xFF9F0A));
+    lv_obj_set_style_shadow_width(sBall, 8, 0);
+    lv_obj_set_style_shadow_color(sBall, lv_color_hex(0xFFD60A), 0);
+    lv_obj_t* glint = disc(sBall, 4, 4, 6, lv_color_white());
+    lv_obj_set_style_bg_opa(glint, LV_OPA_80, 0);
     sTime = text(area, F.numS, cText2(), "0,0 s");
     lv_obj_align(sTime, LV_ALIGN_TOP_MID, 0, AREA_Y1 - 2);
 }

@@ -17,6 +17,7 @@ const uint32_t ROWCOL[BRK_ROWS] = {0xFF2A6D, 0xFF7700, 0xFFEA00, 0x05FFA1, 0x00F
 lv_obj_t* sBrick[BRK_ROWS][BRK_COLS];
 lv_obj_t* sPaddle;
 lv_obj_t* sBall;
+lv_obj_t* sBallGlint;
 bool alive[BRK_ROWS][BRK_COLS];
 int left;
 float px, bx, by, vx, vy, speed;
@@ -46,14 +47,37 @@ void serve() {
 }
 
 void build(lv_obj_t* area) {
-    rect(area, AREA_X0 - 4, AREA_Y0 + 2, AREA_W + 8, 2, lv_color_hex(0x00F0FF));
-    rect(area, AREA_X0 - 4, AREA_Y0 + 2, 2, AREA_H, lv_color_hex(0x1B2538));
-    rect(area, AREA_X1 + 2, AREA_Y0 + 2, 2, AREA_H, lv_color_hex(0x1B2538));
-    for (int r = 0; r < BRK_ROWS; r++)
-        for (int c = 0; c < BRK_COLS; c++)
-            sBrick[r][c] = rect(area, OX + c * (BRK_W + BRK_GAP), OY + r * (BRK_H + BRK_GAP), BRK_W, BRK_H, lv_color_hex(ROWCOL[r]), 4);
-    sPaddle = rect(area, 0, PY, PW, PH, lv_color_hex(0xFFFFFF), 5);
-    sBall = disc(area, 0, 0, BALL, lv_color_hex(0xFFFFFF));
+    // Cyberpunk style boundary walls with neon glow
+    rect(area, AREA_X0 - 4, AREA_Y0 + 2, AREA_W + 8, 3, lv_color_hex(0x00F0FF), 1);
+    lv_obj_set_style_shadow_width(area, 6, 0);
+    lv_obj_set_style_shadow_color(area, lv_color_hex(0x00A0FF), 0);
+    rect(area, AREA_X0 - 4, AREA_Y0 + 2, 2, AREA_H, lv_color_hex(0x1B2C46));
+    rect(area, AREA_X1 + 2, AREA_Y0 + 2, 2, AREA_H, lv_color_hex(0x1B2C46));
+
+    for (int r = 0; r < BRK_ROWS; r++) {
+        for (int c = 0; c < BRK_COLS; c++) {
+            sBrick[r][c] = rect(area, OX + c * (BRK_W + BRK_GAP), OY + r * (BRK_H + BRK_GAP), BRK_W, BRK_H, lv_color_hex(ROWCOL[r]), 5);
+            lv_obj_set_style_shadow_width(sBrick[r][c], 4, 0);
+            lv_obj_set_style_shadow_color(sBrick[r][c], lv_color_hex(ROWCOL[r]), 0);
+            lv_obj_set_style_border_width(sBrick[r][c], 1, 0);
+            lv_obj_set_style_border_color(sBrick[r][c], lv_color_white(), 0);
+            lv_obj_set_style_border_opa(sBrick[r][c], LV_OPA_40, 0);
+        }
+    }
+
+    // High-tech rounded paddle with cyan glow
+    sPaddle = rect(area, 0, PY, PW, PH, lv_color_hex(0x00E5FF), 5);
+    lv_obj_set_style_shadow_width(sPaddle, 8, 0);
+    lv_obj_set_style_shadow_color(sPaddle, lv_color_hex(0x00E5FF), 0);
+    lv_obj_set_style_border_width(sPaddle, 1, 0);
+    lv_obj_set_style_border_color(sPaddle, lv_color_white(), 0);
+
+    // Glowing metallic ball with specular glint
+    sBall = disc(area, 0, 0, BALL, lv_color_hex(0xFFD60A));
+    lv_obj_set_style_shadow_width(sBall, 6, 0);
+    lv_obj_set_style_shadow_color(sBall, lv_color_hex(0xFFD60A), 0);
+    sBallGlint = disc(sBall, 2, 2, 4, lv_color_white());
+    lv_obj_set_style_bg_opa(sBallGlint, LV_OPA_90, 0);
 }
 
 void start() {
@@ -88,9 +112,9 @@ void tick(uint32_t dtMs, const Input& in) {
     bx += vx * dt;
     by += vy * dt;
     const float r = BALL / 2.0f;
-    if (bx - r < AREA_X0) { bx = AREA_X0 + r; vx = -vx; }
-    if (bx + r > AREA_X1) { bx = AREA_X1 - r; vx = -vx; }
-    if (by - r < AREA_Y0 + 8) { by = AREA_Y0 + 8 + r; vy = -vy; }
+    if (bx - r < AREA_X0) { bx = AREA_X0 + r; vx = -vx; rumble(HAPTIC_TICK); }
+    if (bx + r > AREA_X1) { bx = AREA_X1 - r; vx = -vx; rumble(HAPTIC_TICK); }
+    if (by - r < AREA_Y0 + 8) { by = AREA_Y0 + 8 + r; vy = -vy; rumble(HAPTIC_TICK); }
 
     // paddle
     if (vy > 0 && by + r >= PY && by + r <= PY + PH + 6 && bx >= px - PW / 2 - r && bx <= px + PW / 2 + r) {

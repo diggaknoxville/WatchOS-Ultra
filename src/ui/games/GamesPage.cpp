@@ -303,8 +303,12 @@ void buildFolder(lv_obj_t* scr) {
         lv_obj_set_style_radius(d, 18, 0);
         lv_obj_set_style_bg_opa(d, LV_OPA_COVER, 0);
         lv_obj_set_style_bg_color(d, lv_color_hex(g.color), 0);
+        lv_obj_set_style_shadow_width(d, 8, 0);
+        lv_obj_set_style_shadow_color(d, lv_color_hex(g.color), 0);
+        lv_obj_set_style_shadow_opa(d, LV_OPA_50, 0);
         lv_obj_set_style_border_width(d, 1, 0);
-        lv_obj_set_style_border_color(d, lv_color_hex(0x3B4A66), 0);
+        lv_obj_set_style_border_color(d, lv_color_white(), 0);
+        lv_obj_set_style_border_opa(d, LV_OPA_30, 0);
         lv_obj_t* ic = label(d, F.icoM, lv_color_white(), g.icon);
         lv_obj_center(ic);
         lv_obj_t* nm = label(t, F.cap, cText(), g.name);

@@ -486,10 +486,10 @@ static bool ensureStack() {
     NimBLEDevice::init(BLE_DEVICE_NAME);
     NimBLEDevice::setPower(ESP_PWR_LVL_P3);      // wrist to phone range; +9 dBm only costs current
 
-    // Standard BLE Security: Passkey Display & Bonding for iOS & Android
+    // Standard BLE Security: Just-Works Bonding for seamless iOS & Android pairing without companion app
     NimBLEDevice::setSecurityPasskey(sPasskey);
-    NimBLEDevice::setSecurityAuth(true /*bond*/, true /*mitm*/, true /*sc*/);
-    NimBLEDevice::setSecurityIOCap(BLE_HS_IO_DISPLAY_ONLY);
+    NimBLEDevice::setSecurityAuth(true /*bond*/, false /*mitm*/, true /*sc*/);
+    NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT);
     NimBLEDevice::setSecurityInitKey(BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID);
     NimBLEDevice::setSecurityRespKey(BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID);
 
