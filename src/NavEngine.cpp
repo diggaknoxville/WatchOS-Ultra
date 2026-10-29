@@ -1971,8 +1971,10 @@ bool NavEngine::startBacktrack() {
 
 bool NavEngine::loadGpxRoute(const char* filename) {
     if (!filename || !filename[0]) return false;
-    NavLock lock;
-    if (!sStat.sdReady) return false;
+    {
+        NavLock lock;
+        if (!sStat.sdReady) return false;
+    }
     if (!NavEngine::lockSd(500)) return false;
 
     char fullPath[64];
@@ -2004,11 +2006,18 @@ bool NavEngine::loadGpxRoute(const char* filename) {
     while (f.available()) {
         size_t l = f.readBytesUntil('\n', line, sizeof(line) - 1);
         line[l] = 0;
-        const char* pLat = strstr(line, "lat=\"");
-        const char* pLon = strstr(line, "lon=\"");
+        // Skip bounds or metadata headers so tags like <bounds minlat="..." minlon="..."> are not mistaken for waypoints
+        if (strstr(line, "<bounds") != nullptr || strstr(line, "<metadata") != nullptr) continue;
+
+        // Look for lat="..." and lon="..." preceded by a space or tab (filters out minlat/maxlat)
+        const char* pLat = strstr(line, " lat=\"");
+        if (!pLat) pLat = strstr(line, "\tlat=\"");
+        const char* pLon = strstr(line, " lon=\"");
+        if (!pLon) pLon = strstr(line, "\tlon=\"");
+
         if (pLat && pLon) {
-            double lat = atof(pLat + 5);
-            double lon = atof(pLon + 5);
+            double lat = atof(pLat + 6);
+            double lon = atof(pLon + 6);
             if (lat != 0.0 && lon != 0.0) {
                 NavRoutePoint pt{(int32_t)llround(lat * 1e5), (int32_t)llround(lon * 1e5)};
                 if (route.empty() ||
@@ -2028,41 +2037,54 @@ bool NavEngine::loadGpxRoute(const char* filename) {
         return false;
     }
 
-    sRoute = route;
-    sStat.activeRoute = true;
-    sStat.routeFailed = false;
-    sStat.routeStraightLine = false;
-    sStat.routingBusy = false;
-    sReq.pending = false;
-    sRouteWaitingForPos = false;
-
-    sStat.destLat = route.back().lat_e5 * 1e-5;
-    sStat.destLon = route.back().lon_e5 * 1e-5;
+    char destName[32];
     const char* base = strrchr(fullPath, '/');
     base = base ? (base + 1) : fullPath;
-    strncpy(sStat.destName, base, sizeof(sStat.destName) - 1);
-    sStat.destName[sizeof(sStat.destName) - 1] = 0;
+    strncpy(destName, base, sizeof(destName) - 1);
+    destName[sizeof(destName) - 1] = 0;
 
     float totalDist = 0.0f;
-    for (size_t i = 0; i + 1 < sRoute.size(); i++) {
-        totalDist += haversineKm(sRoute[i].lat_e5 * 1e-5, sRoute[i].lon_e5 * 1e-5,
-                                 sRoute[i+1].lat_e5 * 1e-5, sRoute[i+1].lon_e5 * 1e-5);
+    for (size_t i = 0; i + 1 < route.size(); i++) {
+        totalDist += haversineKm(route[i].lat_e5 * 1e-5, route[i].lon_e5 * 1e-5,
+                                 route[i+1].lat_e5 * 1e-5, route[i+1].lon_e5 * 1e-5);
     }
-    sStat.totalDistKm = totalDist;
-    sStat.remDistKm = totalDist;
+    size_t routePointsCount = route.size();
 
-    setTurn("FOLGE GPX-ROUTE", ICO_ROUTE);
-    updateTurnByTurnLocked();
+    // Acquire NavLock only for the atomic assignment to internal state
+    {
+        NavLock lock;
+        sRoute = std::move(route);
+        sStat.activeRoute = true;
+        sStat.routeFailed = false;
+        sStat.routeStraightLine = false;
+        sStat.routingBusy = false;
+        sReq.pending = false;
+        sRouteWaitingForPos = false;
+
+        sStat.destLat = sRoute.back().lat_e5 * 1e-5;
+        sStat.destLon = sRoute.back().lon_e5 * 1e-5;
+        strncpy(sStat.destName, destName, sizeof(sStat.destName) - 1);
+        sStat.destName[sizeof(sStat.destName) - 1] = 0;
+
+        sStat.totalDistKm = totalDist;
+        sStat.remDistKm = totalDist;
+
+        setTurn("FOLGE GPX-ROUTE", ICO_ROUTE);
+        updateTurnByTurnLocked();
+    }
+
     nav::markDirty(nav::PG_POSITION);
-    DisplayEngine::showNotification("GPX-Route geladen", sStat.destName, 3500, ICO_ROUTE);
-    Serial.printf("[GPX] Route loaded: %u points, %.2f km from %s\n", (unsigned)route.size(), totalDist, fullPath);
+    DisplayEngine::showNotification("GPX-Route geladen", destName, 3500, ICO_ROUTE);
+    Serial.printf("[GPX] Route loaded: %u points, %.2f km from %s\n", (unsigned)routePointsCount, totalDist, fullPath);
     return true;
 }
 
 int NavEngine::listGpxFiles(char outFiles[][32], int maxFiles) {
     if (!outFiles || maxFiles <= 0) return 0;
-    NavLock lock;
-    if (!sStat.sdReady) return 0;
+    {
+        NavLock lock;
+        if (!sStat.sdReady) return 0;
+    }
     if (!NavEngine::lockSd(300)) return 0;
 
     int count = 0;
