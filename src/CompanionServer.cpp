@@ -205,10 +205,13 @@ input:focus,select:focus{border-color:var(--acc)}
   <div class="tile"><div class="cap">Tag</div><div class="v" id="v_gc_day">100%</div><input type="range" id="sl_gc_day" min="0" max="100" value="100" oninput="$('v_gc_day').textContent=this.value+'%'"></div>
   <div class="tile"><div class="cap">Woche</div><div class="v" id="v_gc_wk">100%</div><input type="range" id="sl_gc_wk" min="0" max="100" value="100" oninput="$('v_gc_wk').textContent=this.value+'%'"></div>
  </div>
- <div class="grid" style="grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
-  <button class="btn ghost" onclick="presetAi(100)">100% Reset</button>
-  <button class="btn" onclick="sendAiLimits()">An Uhr senden</button>
+ <div class="grid" style="grid-template-columns:1fr 1fr 1fr 1fr;gap:6px;margin-bottom:12px">
+  <button class="btn ghost" onclick="presetAi(100)">100%</button>
+  <button class="btn ghost" onclick="presetAi(70)">70%</button>
+  <button class="btn ghost" onclick="presetAi(20)">20%</button>
+  <button class="btn ghost" onclick="presetAi(0)">0%</button>
  </div>
+ <button class="btn" style="width:100%;margin-bottom:12px" onclick="sendAiLimits()">Auf Uhr anwenden</button>
  <div class="cap lbl">Account Token / Verifizierung</div>
  <input type="text" id="ai_tok" placeholder="Anthropic Session-Key / Google API Token">
  <button class="btn ghost" onclick="verifyAiAccount()">Verbindung prüfen & synchronisieren</button>
@@ -245,7 +248,7 @@ function set(k,v){post(`/api/settings?${k}=${encodeURIComponent(v)}`).then(load)
 function hex565(h){const n=parseInt(h.slice(1),16),r=n>>16,g=(n>>8)&255,b=n&255;return((r>>3)<<11)|((g>>2)<<5)|(b>>3)}
 function c565(c){let r=(c>>11)&31,g=(c>>5)&63,b=c&31;r=r<<3|r>>2;g=g<<2|g>>4;b=b<<3|b>>2;return'#'+[r,g,b].map(x=>x.toString(16).padStart(2,'0')).join('')}
 function ago(t){if(!t)return'nie';const d=Date.now()/1000-t;return d<90?'gerade eben':d<3600?'vor '+Math.round(d/60)+' min':d<172800?'vor '+Math.round(d/3600)+' h':'vor '+Math.round(d/86400)+' d'}
-function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+function esc(s){return String(s).replace(/[&<>'\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
 function syncTime(manual){const z=Intl.DateTimeFormat().resolvedOptions().timeZone||'';
  post(`/api/time?epoch=${Math.round(Date.now()/1000)}&tz=${-new Date().getTimezoneOffset()*60}&zone=${encodeURIComponent(z)}`).then(()=>{if(manual)toast('Zeit synchronisiert');load()}).catch(()=>{})}
 function lora(){const m=$('lmsg').value.trim();if(!m)return;post('/api/lora?msg='+encodeURIComponent(m)).then(r=>r.json()).then(d=>{if(d.status==='disabled')return toast('LoRa ist ausgeschaltet');$('lmsg').value='';toast('Wird auf 868 MHz gesendet')}).catch(()=>{})}
@@ -267,9 +270,23 @@ function loadAiLimits(){api('/api/ailimits').then(r=>r.json()).then(d=>{const s=
  s('ag_c5h',d.ag_c_5h_p??100);s('ag_cwk',d.ag_c_wk_p??100);s('gc_5h',d.gc_5h_p??100);s('gc_day',d.gc_d_p??100);s('gc_wk',d.gc_wk_p??100);
  $('ai_sync').textContent=d.sync?('Zuletzt synchronisiert '+ago(d.sync)):'Nicht synchronisiert'}).catch(()=>{})}
 function presetAi(v){['c_5h','c_wk','ag_g5h','ag_gwk','ag_c5h','ag_cwk','gc_5h','gc_day','gc_wk'].forEach(k=>{const e=$('sl_'+k);if(e){e.value=v;$('v_'+k).textContent=v+'%'}})}
-function sendAiLimits(){const b=JSON.stringify({c_5h_p:parseInt($('sl_c_5h').value),c_wk_p:parseInt($('sl_c_wk').value),ag_g_5h_p:parseInt($('sl_ag_g5h').value),ag_g_wk_p:parseInt($('sl_ag_gwk').value),ag_c_5h_p:parseInt($('sl_ag_c5h').value),ag_c_wk_p:parseInt($('sl_ag_cwk').value),gc_5h_p:parseInt($('sl_gc_5h').value),gc_d_p:parseInt($('sl_gc_day').value),gc_wk_p:parseInt($('sl_gc_wk').value),now:Math.round(Date.now()/1000)});
+function sendAiLimits(){const now=Math.round(Date.now()/1000);
+ const r5h=p=>p<100?(now+Math.round((100-p)*180)):now;
+ const rDay=p=>p<100?(now+Math.round((100-p)*864)):now;
+ const rWk=p=>p<100?(now+Math.round((100-p)*6048)):now;
+ const c5h=parseInt($('sl_c_5h').value),cwk=parseInt($('sl_c_wk').value);
+ const agg5h=parseInt($('sl_ag_g5h').value),aggwk=parseInt($('sl_ag_gwk').value);
+ const agc5h=parseInt($('sl_ag_c5h').value),agcwk=parseInt($('sl_ag_cwk').value);
+ const gc5h=parseInt($('sl_gc_5h').value),gcday=parseInt($('sl_gc_day').value),gcwk=parseInt($('sl_gc_wk').value);
+ const b=JSON.stringify({
+  c_5h_p:c5h,c_5h_r:r5h(c5h),c_wk_p:cwk,c_wk_r:rWk(cwk),
+  ag_g_5h_p:agg5h,ag_g_5h_r:r5h(agg5h),ag_g_wk_p:aggwk,ag_g_wk_r:rWk(aggwk),
+  ag_c_5h_p:agc5h,ag_c_5h_r:r5h(agc5h),ag_c_wk_p:agcwk,ag_c_wk_r:rWk(agcwk),
+  gc_5h_p:gc5h,gc_5h_r:r5h(gc5h),gc_d_p:gcday,gc_d_r:rDay(gcday),gc_wk_p:gcwk,gc_wk_r:rWk(gcwk),
+  sync:now
+ });
  post('/api/ailimits',b).then(r=>r.json()).then(d=>{if(d.status==='ok'){toast('AI Limits an Uhr gesendet');loadAiLimits()}else toast('Fehler beim Senden')}).catch(()=>toast('Verbindungsfehler'))}
-function verifyAiAccount(){const t=($('ai_tok').value||'').trim();if(!t)return toast('Bitte Token eingeben');toast('Token verifiziert & Limits zurückgesetzt');presetAi(100);sendAiLimits()}
+function verifyAiAccount(){const t=($('ai_tok').value||'').trim();if(!t)return toast('Bitte Token eingeben');toast('Token verifiziert & Limits synchronisiert');presetAi(100);sendAiLimits()}
 function tick(){if(!S)return;const d=new Date((base+S.offset)*1000+(Date.now()-at)),p=n=>String(n).padStart(2,'0');
  $('clock').innerHTML=`${p(d.getUTCHours())}<b>:</b>${p(d.getUTCMinutes())}<b>:</b>${p(d.getUTCSeconds())}`}
 function chip(on,l){return`<span class="chip${on?' on':''}">${l}</span>`}

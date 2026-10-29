@@ -67,10 +67,11 @@ static uint32_t sLastRefreshMs = 0;
 static const char* FILTER_LABELS[7] = {"STGT", "MESH", "A-D", "E-K", "L-M", "N-S", "T-Z"};
 
 static int computeSpeedAdaptiveZoom(float speedKmh) {
-    if (speedKmh <= 6.5f)  return 15;
-    if (speedKmh <= 22.0f) return 14;
-    if (speedKmh <= 55.0f) return 13;
-    if (speedKmh <= 90.0f) return 11;
+    if (speedKmh <= 2.5f)  return 16;
+    if (speedKmh <= 7.0f)  return 15;
+    if (speedKmh <= 25.0f) return 14;
+    if (speedKmh <= 60.0f) return 13;
+    if (speedKmh <= 100.0f) return 11;
     return 10;
 }
 

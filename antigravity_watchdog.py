@@ -86,6 +86,12 @@ def monitor():
                             file_positions[fpath] = f.tell()
 
                         for line in new_lines:
+                            # Skip editor RPC notifications where the file content itself is echoed
+                            if "textDocument/didOpen" in line or "textDocument/didChange" in line or "textDocument/didSave" in line:
+                                continue
+                            if "antigravity_watchdog" in line:
+                                continue
+
                             if WEEKLY_LIMIT_REGEX.search(line):
                                 print(f"[WATCHDOG] [{fpath.name}] Wochenlimit erkannt: {line.strip()}")
                                 print("[WATCHDOG] Wochenlimit erreicht. Beende Watchdog dauerhaft.")
@@ -127,3 +133,4 @@ if __name__ == "__main__":
         print("[WATCHDOG] Läuft bereits als Hintergrundprozess.")
         sys.exit(0)
     monitor()
+

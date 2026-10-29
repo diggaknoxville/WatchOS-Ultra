@@ -245,9 +245,15 @@ void buildControl(lv_obj_t* scr) {
     lv_obj_set_pos(sInfoLbl, 50, 48);
     lv_obj_set_width(sInfoLbl, CW - 66);
     lv_label_set_long_mode(sInfoLbl, LV_LABEL_LONG_WRAP);
-    // (no Apps / Optionen buttons here: the launcher is one swipe from the face,
-    //  Optionen and Energie live on the SYSTEM tab; the row ran into the home edge)
+    // Buttons under media / info card to directly reach Settings and Power
     const int subBtnW = (CW - 10) / 2;
+    lv_obj_t* btnSet = secondaryButton(sWrapToggles, subBtnW, 40, ICO_SETTINGS, "Optionen");
+    lv_obj_set_pos(btnSet, M, mediaY + 106);
+    lv_obj_add_event_cb(btnSet, [](lv_event_t*) { haptic(HAPTIC_CLICK); nav::openApp(nav::PG_APP_SETTINGS); }, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t* btnPwr = secondaryButton(sWrapToggles, subBtnW, 40, ICO_POWER_SETTINGS_NEW, "Energie");
+    lv_obj_set_pos(btnPwr, M + subBtnW + 10, mediaY + 106);
+    lv_obj_add_event_cb(btnPwr, [](lv_event_t*) { haptic(HAPTIC_CLICK); nav::openApp(nav::PG_APP_POWER); }, LV_EVENT_CLICKED, NULL);
 
     // ===================================================== tab 1: SYSTEM
     sWrapSystem = box(p, SCR_W, SCR_H - GRID_Y);

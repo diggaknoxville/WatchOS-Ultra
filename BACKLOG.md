@@ -7,7 +7,7 @@ Aufgaben sind nach Kritikalität und Nutzen priorisiert.
 
 ### [x] P0: Watchdog-Initialisierung
 - **Status:** Erledigt
-- **Beschreibung:** `antigravity_watchdog.py` erstellt, angepasst für Antigravity/VS-Code-Logs und als autonomer Hintergrundprozess gestartet.
+- **Beschreibung:** `antigravity_watchdog.py` erstellt, angepasst für Antigravity/VS-Code-Logs mit Schutz gegen Selbstbezug/RPC-Echoes und als autonomer Hintergrundprozess gestartet.
 
 ---
 
@@ -17,30 +17,31 @@ Aufgaben sind nach Kritikalität und Nutzen priorisiert.
 
 ---
 
-### [ ] P2: Autonome AI-Limits-Synchronisation & Webportal-Erweiterung
-- **Komponente:** `src/CompanionServer.cpp`, `src/ui/pages/AiLimitsPage.cpp`
-- **Symptom:** Nutzer verlangen Synchronisation auch ohne Smartphone-Companion-App direkt über das integrierte Webportal. Veraltete AI-Limits müssen prominent gewarnt werden.
-- **Ziel:**
-  1. Webportal-UI (`INDEX_HTML`) um einen vollwertigen, interaktiven AI-Quota-Manager erweitern (Schieberegler, Direkt-Reset, automatische 5h/Wochen-Reset-Zeitstempel-Berechnung).
-  2. Prominente, zentrierte Stale-Meldung auf der Uhr (`AiLimitsPage.cpp`), wenn keine Synchronisation stattfand, mit direktem Hinweis/Schaltfläche zum Aktivieren des Hotspots.
+### [x] P2: Autonome AI-Limits-Synchronisation & Webportal-Erweiterung
+- **Status:** Erledigt
+- **Beschreibung:**
+  1. Webportal-UI (`INDEX_HTML`) um vollwertigen AI-Quota-Manager mit Schiebereglern, Presets (100%, 70%, 20%, 0%), Token-Verifizierung und automatischer Berechnung synchroner 5h-, Tages- und Wochen-Reset-Timestamps erweitert.
+  2. Prominente, zentrierte Stale-Meldung auf der Uhr (`AiLimitsPage.cpp`) mit direkter Touch-Aktivierung des Hotspots bei veralteten Quotas oder leerem Zustand.
+  3. `AiLimitsStore::updateFromJson` leitet bei fehlenden oder abgelaufenen Reset-Timestamps realistische Restabklingzeiten proportional zum Verbrauch ab.
 
 ---
 
-### [ ] P3: Navigation & Vektorkarte im Google-Maps-Stil (Cartography Overhaul)
-- **Komponente:** `src/NavEngine.cpp`, `src/ui/pages/PositionPage.cpp`
-- **Symptom:** Kartendarstellung wirkt noch schematisch; Straßenlinien heben sich nicht deutlich vom Hintergrund ab.
-- **Ziel:** Straßen mit zweistufigem Casing (dunkle Außenkante + heller Kern für Autobahnen, Bundesstraßen und Hauptstraßen) zeichnen, Gewässer- und Parkflächen kontrastreich absetzen, Ortsbeschriftungen hierarchisch rendern.
+### [x] P3: Navigation & Vektorkarte im Google-Maps-Stil (Cartography Overhaul)
+- **Status:** Erledigt
+- **Beschreibung:**
+  1. Kartenthema vollständig an Google Maps Dark Mode angepasst: Satter Schieferhintergrund (`#1A1F2A`), dezentes Gitter, kontrastreiche Gewässer (`rgb565(20, 70, 125)` mit Uferlinie) und Park-/Waldflächen.
+  2. Zweistufiges Straßen-Rendering (Casing + Core-Füllung) für Autobahnen (Orange mit Rostcasing), Bundesstraßen (Sonnengelb mit Goldcasing), Stadt- und Wohnstraßen.
+  3. Vollständiger 4-Pixel-Halo um Textbeschriftungen für gestochen scharfe Lesbarkeit.
+  4. Geschwindigkeitsadaptiver Zoom auf 6 Stufen verfeinert (Zoom 16 für stehende/langsame Fußgängernavigation mit Gebäuden und Details).
 
 ---
 
-### [ ] P4: Quick Menu / Control Center Direktabsprung in Einstellungen
-- **Komponente:** `src/ui/pages/ControlPage.cpp`
-- **Symptom:** Im Control Center (Quick Menu) fehlt ein direkter Absprung in die vollständige Einstellungen-App (`nav::openApp(nav::PG_APP_SETTINGS)`).
-- **Ziel:** Im Control Center einen Button für „Einstellungen“ integrieren, der direkt die Einstellungsseite öffnet.
+### [x] P4: Quick Menu / Control Center Direktabsprung in Einstellungen
+- **Status:** Erledigt
+- **Beschreibung:** Im Control Center (`ControlPage.cpp`) unter der Medien-/Statuskarte direkte Buttons für „Optionen“ (`nav::PG_APP_SETTINGS`) und „Energie“ (`nav::PG_APP_POWER`) ergonomisch platziert.
 
 ---
 
-### [ ] P5: Webportal-Sicherheit & XSS-Härtung (REVIEW-2 Finding 8)
-- **Komponente:** `src/CompanionServer.cpp`
-- **Symptom:** `esc()` im Portal-JavaScript maskiert einfache Anführungszeichen `'` nicht, was bei Asset-Namen oder Meldungen zu Attribut-Injection führen kann.
-- **Ziel:** `esc()` um `'` (`&#39;`) erweitern und Eingaben im Webserver strikt validieren.
+### [x] P5: Webportal-Sicherheit & XSS-Härtung (REVIEW-2 Finding 8)
+- **Status:** Erledigt
+- **Beschreibung:** `esc()` im Portal-JavaScript um Maskierung einfacher Anführungszeichen `'` (`&#39;`) erweitert, um Attribut-Ausbrüche bei Asset-Namen oder Statusnachrichten zu unterbinden.

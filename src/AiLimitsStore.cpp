@@ -151,33 +151,70 @@ bool AiLimitsStore::updateFromJson(const char* jsonStr) {
     if (!jsonStr || jsonStr[0] != '{') return false;
 
     AiLimitsData d = get();
+    time_t nowTime = time(nullptr);
+    uint32_t nowEpoch = (nowTime > 1700000000) ? (uint32_t)nowTime : 1730000000;
+
+    auto autoReset5h = [nowEpoch](uint8_t pct, uint32_t explicitReset) -> uint32_t {
+        if (explicitReset > nowEpoch) return explicitReset;
+        if (pct >= 100) return nowEpoch; // Ready
+        // Plausible remaining cooldown: up to 5h proportional to usage
+        return nowEpoch + (uint32_t)((100 - pct) * 180);
+    };
+
+    auto autoResetDaily = [nowEpoch](uint8_t pct, uint32_t explicitReset) -> uint32_t {
+        if (explicitReset > nowEpoch) return explicitReset;
+        if (pct >= 100) return nowEpoch;
+        return nowEpoch + (uint32_t)((100 - pct) * 864);
+    };
+
+    auto autoResetWeekly = [nowEpoch](uint8_t pct, uint32_t explicitReset) -> uint32_t {
+        if (explicitReset > nowEpoch) return explicitReset;
+        if (pct >= 100) return nowEpoch;
+        return nowEpoch + (uint32_t)((100 - pct) * 6048);
+    };
+
     d.claude_5h_pct        = clampPct(parseJsonUint(jsonStr, "c_5h_p", parseJsonUint(jsonStr, "claude_5h_pct", d.claude_5h_pct)));
-    d.claude_5h_reset      = parseJsonUint(jsonStr, "c_5h_r", parseJsonUint(jsonStr, "claude_5h_reset", d.claude_5h_reset));
+    uint32_t c5h_r         = parseJsonUint(jsonStr, "c_5h_r", parseJsonUint(jsonStr, "claude_5h_reset", 0));
+    d.claude_5h_reset      = autoReset5h(d.claude_5h_pct, c5h_r);
+
     d.claude_wk_pct        = clampPct(parseJsonUint(jsonStr, "c_wk_p", parseJsonUint(jsonStr, "claude_wk_pct", d.claude_wk_pct)));
-    d.claude_wk_reset      = parseJsonUint(jsonStr, "c_wk_r", parseJsonUint(jsonStr, "claude_wk_reset", d.claude_wk_reset));
+    uint32_t cwk_r         = parseJsonUint(jsonStr, "c_wk_r", parseJsonUint(jsonStr, "claude_wk_reset", 0));
+    d.claude_wk_reset      = autoResetWeekly(d.claude_wk_pct, cwk_r);
 
     d.ag_gemini_5h_pct     = clampPct(parseJsonUint(jsonStr, "ag_g_5h_p", parseJsonUint(jsonStr, "ag_gemini_5h_pct", d.ag_gemini_5h_pct)));
-    d.ag_gemini_5h_reset   = parseJsonUint(jsonStr, "ag_g_5h_r", parseJsonUint(jsonStr, "ag_gemini_5h_reset", d.ag_gemini_5h_reset));
+    uint32_t ag_g5h_r      = parseJsonUint(jsonStr, "ag_g_5h_r", parseJsonUint(jsonStr, "ag_gemini_5h_reset", 0));
+    d.ag_gemini_5h_reset   = autoReset5h(d.ag_gemini_5h_pct, ag_g5h_r);
+
     d.ag_gemini_wk_pct     = clampPct(parseJsonUint(jsonStr, "ag_g_wk_p", parseJsonUint(jsonStr, "ag_gemini_wk_pct", d.ag_gemini_wk_pct)));
-    d.ag_gemini_wk_reset   = parseJsonUint(jsonStr, "ag_g_wk_r", parseJsonUint(jsonStr, "ag_gemini_wk_reset", d.ag_gemini_wk_reset));
+    uint32_t ag_gwk_r      = parseJsonUint(jsonStr, "ag_g_wk_r", parseJsonUint(jsonStr, "ag_gemini_wk_reset", 0));
+    d.ag_gemini_wk_reset   = autoResetWeekly(d.ag_gemini_wk_pct, ag_gwk_r);
 
     d.ag_claude_5h_pct     = clampPct(parseJsonUint(jsonStr, "ag_c_5h_p", parseJsonUint(jsonStr, "ag_claude_5h_pct", d.ag_claude_5h_pct)));
-    d.ag_claude_5h_reset   = parseJsonUint(jsonStr, "ag_c_5h_r", parseJsonUint(jsonStr, "ag_claude_5h_reset", d.ag_claude_5h_reset));
+    uint32_t ag_c5h_r      = parseJsonUint(jsonStr, "ag_c_5h_r", parseJsonUint(jsonStr, "ag_claude_5h_reset", 0));
+    d.ag_claude_5h_reset   = autoReset5h(d.ag_claude_5h_pct, ag_c5h_r);
+
     d.ag_claude_wk_pct     = clampPct(parseJsonUint(jsonStr, "ag_c_wk_p", parseJsonUint(jsonStr, "ag_claude_wk_pct", d.ag_claude_wk_pct)));
-    d.ag_claude_wk_reset   = parseJsonUint(jsonStr, "ag_c_wk_r", parseJsonUint(jsonStr, "ag_claude_wk_reset", d.ag_claude_wk_reset));
+    uint32_t ag_cwk_r      = parseJsonUint(jsonStr, "ag_c_wk_r", parseJsonUint(jsonStr, "ag_claude_wk_reset", 0));
+    d.ag_claude_wk_reset   = autoResetWeekly(d.ag_claude_wk_pct, ag_cwk_r);
 
     d.gc_5h_pct            = clampPct(parseJsonUint(jsonStr, "gc_5h_p", parseJsonUint(jsonStr, "gc_5h_pct", d.gc_5h_pct)));
-    d.gc_5h_reset          = parseJsonUint(jsonStr, "gc_5h_r", parseJsonUint(jsonStr, "gc_5h_reset", d.gc_5h_reset));
+    uint32_t gc_5h_r       = parseJsonUint(jsonStr, "gc_5h_r", parseJsonUint(jsonStr, "gc_5h_reset", 0));
+    d.gc_5h_reset          = autoReset5h(d.gc_5h_pct, gc_5h_r);
+
     d.gc_daily_pct         = clampPct(parseJsonUint(jsonStr, "gc_d_p", parseJsonUint(jsonStr, "gc_daily_pct", d.gc_daily_pct)));
-    d.gc_daily_reset       = parseJsonUint(jsonStr, "gc_d_r", parseJsonUint(jsonStr, "gc_daily_reset", d.gc_daily_reset));
+    uint32_t gc_d_r        = parseJsonUint(jsonStr, "gc_d_r", parseJsonUint(jsonStr, "gc_daily_reset", 0));
+    d.gc_daily_reset       = autoResetDaily(d.gc_daily_pct, gc_d_r);
+
     d.gc_weekly_pct        = clampPct(parseJsonUint(jsonStr, "gc_wk_p", parseJsonUint(jsonStr, "gc_weekly_pct", d.gc_weekly_pct)));
-    d.gc_weekly_reset      = parseJsonUint(jsonStr, "gc_wk_r", parseJsonUint(jsonStr, "gc_weekly_reset", d.gc_weekly_reset));
+    uint32_t gc_wk_r       = parseJsonUint(jsonStr, "gc_wk_r", parseJsonUint(jsonStr, "gc_weekly_reset", 0));
+    d.gc_weekly_reset      = autoResetWeekly(d.gc_weekly_pct, gc_wk_r);
 
     d.argon_weekly_pct     = clampPct(parseJsonUint(jsonStr, "arg_p", parseJsonUint(jsonStr, "argon_weekly_pct", d.argon_weekly_pct)));
-    d.argon_weekly_reset   = parseJsonUint(jsonStr, "arg_r", parseJsonUint(jsonStr, "argon_weekly_reset", d.argon_weekly_reset));
+    uint32_t arg_r         = parseJsonUint(jsonStr, "arg_r", parseJsonUint(jsonStr, "argon_weekly_reset", 0));
+    d.argon_weekly_reset   = autoResetWeekly(d.argon_weekly_pct, arg_r);
 
     uint32_t sync = parseJsonUint(jsonStr, "sync", parseJsonUint(jsonStr, "sync_timestamp", 0));
-    d.last_sync_time = sync ? sync : (uint32_t)time(nullptr);
+    d.last_sync_time = sync ? sync : nowEpoch;
     d.has_data = true;
 
     set(d);

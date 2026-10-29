@@ -220,8 +220,19 @@ void buildAiLimits(lv_obj_t* scr) {
 
     sSyncTxt = caption(statRow, "OFFLINE", cText3());
 
-    sEmpty = emptyState(p, ICO_SYNC, "Noch nicht synchronisiert", "COMPANION-APP PER BLUETOOTH VERBINDEN");
+    sEmpty = emptyState(p, ICO_SYNC, "Noch nicht synchronisiert", "TIPPT ZUM STARTEN DES HOTSPOTS");
     lv_obj_align(sEmpty, LV_ALIGN_CENTER, 0, 20);
+    pressable(sEmpty);
+    lv_obj_add_event_cb(sEmpty, [](lv_event_t*) {
+        SystemSettings& s = SettingsStorage::get();
+        s.wifiApEnabled = true;
+        SettingsStorage::save();
+        CompanionServer::requestAp(true);
+        DisplayEngine::showToast("Hotspot aktiv", "Handy per WLAN verbinden", 3000, ICO_WIFI);
+        haptic(HAPTIC_CLICK);
+        nav::markDirty(nav::PG_APP_CONNECT);
+        nav::markDirty(nav::PG_CONTROL);
+    }, LV_EVENT_CLICKED, NULL);
 
     // ========================================================================
     // SEKTION 1: ANTHROPIC (CLAUDE PRO)

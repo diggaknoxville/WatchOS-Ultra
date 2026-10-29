@@ -86,3 +86,4 @@ Es vereint modernes Smartwatch-Interaktionsdesign (Apple Human Interface Guideli
 - **Trefferflächen:** Bedienelemente mindestens 44 × 44 pt (88 × 88 px) oder unsichtbar erweitert auf 56 px via `pressable()`.
 - **Ehrliche Telemetrie:** Keine erfundenen Pseudo-Messwerte. Wenn Sensordaten (GNSS, BLE, Stromsensor) fehlen, wird dies transparent deklariert.
 - **Flüssigkeit & Boot-Erlebnis:** 60 fps Animationen; nach dem Boot-Splash direkte Überblendung in das fertige Zifferblatt ohne Flackern oder segmentweisen Neuaufbau.
+
