@@ -182,6 +182,17 @@ Der Screenshot-Empfang prüft die `SNAP w h stride`-Kopfzeile, liest exakt `stri
 
 Signiert Release-Images (braucht `pip install cryptography`). Einmalig `keygen` ausführen, den ausgegebenen öffentlichen Schlüssel in `include/UpdateKey.h` eintragen und den privaten Schlüssel als GitHub-Secret `UPDATE_SIGNING_KEY` hinterlegen. Die CI signiert dann jedes Release mit `v*`-Tag.
 
+### `tools/phone/` (Claude-Limits vom Android-Telefon)
+
+Lesezeichen-Skript für Chrome auf Android. Es liest auf `claude.ai/settings/usage` die Auslastung des angemeldeten Kontos und schickt sie über das USB-C-Kabel an die Uhr (WebUSB, Konsolenbefehl `A`). Zugangsdaten verlassen den Browser nicht.
+
+1. Inhalt von `tools/phone/bookmarklet.txt` als Adresse eines neuen Chrome-Lesezeichens mit dem Namen `Uhr-Limits` speichern (am einfachsten am PC anlegen und synchronisieren).
+2. Uhr per USB-C ans Telefon stecken, in Chrome `claude.ai/settings/usage` öffnen.
+3. In die Adresszeile `Uhr-Limits` tippen und das Lesezeichen antippen. Unten erscheinen die gelesenen Werte.
+4. „An Uhr senden“ antippen und beim ersten Mal die Uhr in der USB-Auswahl freigeben.
+
+Quelltext: `claude-limits.js`; nach Änderungen `python tools/phone/make_bookmarklet.py` ausführen. Die Reset-Zeiten kommen aus der internen Datenquelle der Seite, die sich ändern kann; dann fällt das Skript auf den sichtbaren Text zurück (Wochen-Reset bleibt unbekannt). Für Gemini und Antigravity gibt es keine vergleichbare Seite.
+
 ### `tools/upload_map_sd.py`
 
 Überträgt eine `.knav`-Kartendatei per USB-Seriell auf die microSD-Karte der Uhr (`/kronos/germany.knav`). Aufruf und Optionen: `python tools/upload_map_sd.py --help`.

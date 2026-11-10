@@ -152,34 +152,34 @@ bool AiLimitsStore::updateFromJson(const char* jsonStr) {
 
     AiLimitsData d = get();
     d.claude_5h_pct        = clampPct(parseJsonUint(jsonStr, "c_5h_p", parseJsonUint(jsonStr, "claude_5h_pct", d.claude_5h_pct)));
-    d.claude_5h_reset = parseJsonUint(jsonStr, "c_5h_r", parseJsonUint(jsonStr, "claude_5h_reset", 0));   // 0 = unknown, shown as "--"
+    d.claude_5h_reset = parseJsonUint(jsonStr, "c_5h_r", parseJsonUint(jsonStr, "claude_5h_reset", d.claude_5h_reset));   // absent: keep; 0 = unknown, shown as "--"
 
     d.claude_wk_pct        = clampPct(parseJsonUint(jsonStr, "c_wk_p", parseJsonUint(jsonStr, "claude_wk_pct", d.claude_wk_pct)));
-    d.claude_wk_reset = parseJsonUint(jsonStr, "c_wk_r", parseJsonUint(jsonStr, "claude_wk_reset", 0));   // 0 = unknown, shown as "--"
+    d.claude_wk_reset = parseJsonUint(jsonStr, "c_wk_r", parseJsonUint(jsonStr, "claude_wk_reset", d.claude_wk_reset));   // absent: keep; 0 = unknown, shown as "--"
 
     d.ag_gemini_5h_pct     = clampPct(parseJsonUint(jsonStr, "ag_g_5h_p", parseJsonUint(jsonStr, "ag_gemini_5h_pct", d.ag_gemini_5h_pct)));
-    d.ag_gemini_5h_reset = parseJsonUint(jsonStr, "ag_g_5h_r", parseJsonUint(jsonStr, "ag_gemini_5h_reset", 0));   // 0 = unknown, shown as "--"
+    d.ag_gemini_5h_reset = parseJsonUint(jsonStr, "ag_g_5h_r", parseJsonUint(jsonStr, "ag_gemini_5h_reset", d.ag_gemini_5h_reset));   // absent: keep; 0 = unknown, shown as "--"
 
     d.ag_gemini_wk_pct     = clampPct(parseJsonUint(jsonStr, "ag_g_wk_p", parseJsonUint(jsonStr, "ag_gemini_wk_pct", d.ag_gemini_wk_pct)));
-    d.ag_gemini_wk_reset = parseJsonUint(jsonStr, "ag_g_wk_r", parseJsonUint(jsonStr, "ag_gemini_wk_reset", 0));   // 0 = unknown, shown as "--"
+    d.ag_gemini_wk_reset = parseJsonUint(jsonStr, "ag_g_wk_r", parseJsonUint(jsonStr, "ag_gemini_wk_reset", d.ag_gemini_wk_reset));   // absent: keep; 0 = unknown, shown as "--"
 
     d.ag_claude_5h_pct     = clampPct(parseJsonUint(jsonStr, "ag_c_5h_p", parseJsonUint(jsonStr, "ag_claude_5h_pct", d.ag_claude_5h_pct)));
-    d.ag_claude_5h_reset = parseJsonUint(jsonStr, "ag_c_5h_r", parseJsonUint(jsonStr, "ag_claude_5h_reset", 0));   // 0 = unknown, shown as "--"
+    d.ag_claude_5h_reset = parseJsonUint(jsonStr, "ag_c_5h_r", parseJsonUint(jsonStr, "ag_claude_5h_reset", d.ag_claude_5h_reset));   // absent: keep; 0 = unknown, shown as "--"
 
     d.ag_claude_wk_pct     = clampPct(parseJsonUint(jsonStr, "ag_c_wk_p", parseJsonUint(jsonStr, "ag_claude_wk_pct", d.ag_claude_wk_pct)));
-    d.ag_claude_wk_reset = parseJsonUint(jsonStr, "ag_c_wk_r", parseJsonUint(jsonStr, "ag_claude_wk_reset", 0));   // 0 = unknown, shown as "--"
+    d.ag_claude_wk_reset = parseJsonUint(jsonStr, "ag_c_wk_r", parseJsonUint(jsonStr, "ag_claude_wk_reset", d.ag_claude_wk_reset));   // absent: keep; 0 = unknown, shown as "--"
 
     d.gc_5h_pct            = clampPct(parseJsonUint(jsonStr, "gc_5h_p", parseJsonUint(jsonStr, "gc_5h_pct", d.gc_5h_pct)));
-    d.gc_5h_reset = parseJsonUint(jsonStr, "gc_5h_r", parseJsonUint(jsonStr, "gc_5h_reset", 0));   // 0 = unknown, shown as "--"
+    d.gc_5h_reset = parseJsonUint(jsonStr, "gc_5h_r", parseJsonUint(jsonStr, "gc_5h_reset", d.gc_5h_reset));   // absent: keep; 0 = unknown, shown as "--"
 
     d.gc_daily_pct         = clampPct(parseJsonUint(jsonStr, "gc_d_p", parseJsonUint(jsonStr, "gc_daily_pct", d.gc_daily_pct)));
-    d.gc_daily_reset = parseJsonUint(jsonStr, "gc_d_r", parseJsonUint(jsonStr, "gc_daily_reset", 0));   // 0 = unknown, shown as "--"
+    d.gc_daily_reset = parseJsonUint(jsonStr, "gc_d_r", parseJsonUint(jsonStr, "gc_daily_reset", d.gc_daily_reset));   // absent: keep; 0 = unknown, shown as "--"
 
     d.gc_weekly_pct        = clampPct(parseJsonUint(jsonStr, "gc_wk_p", parseJsonUint(jsonStr, "gc_weekly_pct", d.gc_weekly_pct)));
-    d.gc_weekly_reset = parseJsonUint(jsonStr, "gc_wk_r", parseJsonUint(jsonStr, "gc_weekly_reset", 0));   // 0 = unknown, shown as "--"
+    d.gc_weekly_reset = parseJsonUint(jsonStr, "gc_wk_r", parseJsonUint(jsonStr, "gc_weekly_reset", d.gc_weekly_reset));   // absent: keep; 0 = unknown, shown as "--"
 
     d.argon_weekly_pct     = clampPct(parseJsonUint(jsonStr, "arg_p", parseJsonUint(jsonStr, "argon_weekly_pct", d.argon_weekly_pct)));
-    d.argon_weekly_reset = parseJsonUint(jsonStr, "arg_r", parseJsonUint(jsonStr, "argon_weekly_reset", 0));   // 0 = unknown, shown as "--"
+    d.argon_weekly_reset = parseJsonUint(jsonStr, "arg_r", parseJsonUint(jsonStr, "argon_weekly_reset", d.argon_weekly_reset));   // absent: keep; 0 = unknown, shown as "--"
 
     uint32_t sync = parseJsonUint(jsonStr, "sync", parseJsonUint(jsonStr, "sync_timestamp", 0));
     d.last_sync_time = sync ? sync : (uint32_t)time(nullptr);
