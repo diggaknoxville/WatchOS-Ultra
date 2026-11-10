@@ -36,3 +36,6 @@ screenshots/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# private update signing key (tools/sign_firmware.py keygen)
+*signing_key*.pem

@@ -22,6 +22,8 @@ void buildSettings(lv_obj_t* scr);
 void buildAppMedia(lv_obj_t* scr);
 void buildCalib(lv_obj_t* scr);
 void buildGames(lv_obj_t* scr);
+void buildAlarm(lv_obj_t* scr);        // Wecker + Timer (AlarmPage.cpp)
+void alarmTick();                      // UI task, every loop: fires due alarms / timers
 void buildCalculator(lv_obj_t* scr);        // games folder + game host (src/ui/games)
 
 // watch face helpers used by the engine and the face picker

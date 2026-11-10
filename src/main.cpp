@@ -16,6 +16,7 @@
 #include "AiLimitsStore.h"
 #include "BleCompanion.h"
 #include "UsbMscManager.h"
+#include "Updater.h"
 #include <esp_heap_caps.h>
 
 TaskHandle_t uiTaskHandle = NULL;
@@ -49,6 +50,14 @@ void backgroundTask(void* parameter) {
         RadioLoRa::loop(now);
         NavEngine::loop(now);
         UsbMscManager::loop(now);
+        Updater::loop(now);
+        // stack headroom: the tasks were sized by estimate, this shows the real margin
+        static unsigned long lastStackLog = 0;
+        if (now - lastStackLog > 60000UL) {
+            lastStackLog = now;
+            Serial.printf("[OS] stack free: ui %u B, bg %u B\n", (unsigned)uxTaskGetStackHighWaterMark(uiTaskHandle),
+                          (unsigned)uxTaskGetStackHighWaterMark(NULL));
+        }
         SettingsStorage::loop(now);
         NotificationStore::loop(now);
         RtcManager::periodicMaintenance();
@@ -158,7 +167,8 @@ void setup() {
         {"web",   [] { CompanionServer::init(); }},       // phone web console (hotspot on demand)
         {"ai",    [] { AiLimitsStore::init(); }},         // AI limits persistent cache
         {"usb",   [] { UsbMscManager::init(); }},         // USB mass storage for the SD card
-        {"cal",   [] { BleCompanion::preload(); }},       // cached calendar for the first face render
+        {"cal",   [] { BleCompanion::preload(); }},
+        {"upd",   [] { Updater::init(); }},               // WiFi credentials for the release check       // cached calendar for the first face render
     };
     const int nSteps = sizeof(steps) / sizeof(steps[0]);
     for (int i = 0; i < nSteps; i++) {

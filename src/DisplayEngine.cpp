@@ -17,6 +17,7 @@
 #include "RadioLoRa.h"
 #include "CompanionServer.h"
 #include "AiLimitsStore.h"
+#include "Updater.h"
 #include <LilyGoLib.h>
 #include <SD.h>
 #include "ff.h"
@@ -212,10 +213,24 @@ static void otaAnswer(bool ok, void*) {
     if (!ok) DisplayEngine::showToast("Firmware-Update", "Verworfen", 2000, ICO_UPDATE);
 }
 
+static void updateAnswer(bool ok, void*) { if (ok) Updater::install(); }
+
 static void pollOta(unsigned long now) {
     static unsigned long last = 0;
     if (now - last < 500) return;
     last = now;
+    // a newer release was found: ask once, the version stays available in the settings
+    static bool sUpdAsk = false;
+    if (Updater::takeOffer()) sUpdAsk = true;
+    if (sUpdAsk && !dialogOpen()) {
+        sUpdAsk = false;
+        char umsg[112];
+        snprintf(umsg, sizeof(umsg), "Version %s ist verfügbar (installiert: %s). Download über WLAN, danach Neustart.",
+                 Updater::availableVersion(), OS_VERSION);
+        haptic(HAPTIC_ALERT_SHORT);
+        confirmDialog("Update installieren?", umsg, "Installieren", "Später", updateAnswer, nullptr, false);
+        return;
+    }
     char hash[72] = {0};
     uint32_t size = 0;
     bool pending = CompanionServer::otaPending(hash, sizeof(hash), &size);
@@ -224,8 +239,8 @@ static void pollOta(unsigned long now) {
         strncpy(prefix, hash, 8);
         prefix[8] = 0;
         char msg[96];
-        snprintf(msg, sizeof(msg), "SHA-256 %s...\n%lu KB empfangen. Die Uhr startet danach neu.",
-                 prefix, (unsigned long)((size + 1023) / 1024));
+        snprintf(msg, sizeof(msg), "SHA-256 %s... (%s)\n%lu KB empfangen. Die Uhr startet danach neu.",
+                 prefix, CompanionServer::otaSigned() ? "signiert" : "nicht signiert", (unsigned long)((size + 1023) / 1024));
         sOtaDialogShown = true;
         PowerManager::handleActivity();
         haptic(HAPTIC_ALERT_SHORT);
@@ -407,6 +422,51 @@ static void debugConsole() {
                 }
                 break;
             }
+            case 'V':
+                Serial.printf("VERSION %s\n", OS_VERSION);
+                Serial.flush();
+                break;
+            case 'O': { // O<total_bytes>[,<signature hex>]: firmware image over USB, confirmed on the watch
+                uint32_t total = (uint32_t)strtoul(line + 1, nullptr, 10);
+                uint8_t sig[80];
+                size_t sigLen = 0;
+                const char* hx = strchr(line + 1, ',');
+                for (hx = hx ? hx + 1 : ""; hx[0] && hx[1] && sigLen < sizeof(sig); hx += 2) {
+                    char byte[3] = {hx[0], hx[1], 0};
+                    sig[sigLen++] = (uint8_t)strtoul(byte, nullptr, 16);
+                }
+                uint8_t* cbuf = (uint8_t*)heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
+                if (total == 0 || !cbuf || !CompanionServer::otaBegin("USB")) {
+                    if (cbuf) heap_caps_free(cbuf);
+                    Serial.println("OTA_ERR_BEGIN");
+                    break;
+                }
+                Serial.println("OTA_READY");
+                uint32_t recvd = 0;
+                unsigned long lastByteAt = millis();
+                bool ok = true;
+                while (ok && recvd < total && (millis() - lastByteAt < 5000)) {
+                    uint32_t want = min<uint32_t>(4096, total - recvd);
+                    uint32_t got = 0;
+                    while (got < want && (millis() - lastByteAt < 5000)) {
+                        int avail = Serial.available();
+                        if (avail > 0) {
+                            int rd = Serial.readBytes(cbuf + got, min<int>(avail, want - got));
+                            if (rd > 0) { got += (uint32_t)rd; lastByteAt = millis(); }
+                        } else {
+                            vTaskDelay(1);
+                        }
+                    }
+                    ok = got == want && CompanionServer::otaWrite(cbuf, got);
+                    if (ok) { recvd += got; Serial.println("K"); }
+                }
+                heap_caps_free(cbuf);
+                if (recvd != total) { CompanionServer::otaAbort("usb upload incomplete"); ok = false; }
+                else ok = CompanionServer::otaFinish(sigLen ? sig : nullptr, sigLen, CompanionServer::signingKeyPresent(), false);
+                Serial.printf("OTA_DONE ok=%d recvd=%lu\n", (int)ok, (unsigned long)recvd);
+                Serial.flush();
+                break;
+            }
             case 'U': { // U<total_bytes>: upload /kronos/germany.knav to SD in 4096-byte chunks
                 uint32_t total = (uint32_t)strtoul(line + 1, nullptr, 10);
                 if (total == 0 || !NavEngine::beginSdUpload("/kronos/germany.knav", total)) {
@@ -554,6 +614,7 @@ bool DisplayEngine::init() {
     pages::buildAppMedia(scr);
     pages::buildCalib(scr);
     pages::buildGames(scr);
+    pages::buildAlarm(scr);
     pages::buildCalculator(scr);
 
     buildBanner();
@@ -593,6 +654,13 @@ void DisplayEngine::update(unsigned long now) {
     perfReport(now);
     if (!sReady) return;
     pollInbox();
+    pages::alarmTick();
+    // found while the display was off: the stored notification wakes it, the dialog follows
+    static const char* sUpdSeen = nullptr;
+    if (Updater::state() == Updater::AVAILABLE && sUpdSeen != Updater::availableVersion()) {
+        sUpdSeen = Updater::availableVersion();
+        showNotification("Update verfügbar", String("Version ") + Updater::availableVersion(), 5000, ICO_UPDATE);
+    }
 
     int key = PowerManager::takeKeyEvent();
     if (key) {

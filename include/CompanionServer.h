@@ -29,6 +29,18 @@ public:
     static bool otaPending(char* sha256Hex, size_t hexLen, uint32_t* sizeBytes);
     static void otaConfirm(bool accept);  // thread-safe
 
+    // Image sink shared by the portal upload, the GitHub updater and the USB
+    // console: one image at a time into the inactive OTA slot, SHA-256 over
+    // the stream. otaFinish() checks the ECDSA signature (UpdateKey.h) when one
+    // is given or required, then waits for the confirmation on the watch
+    // (autoConfirm = the user already accepted this very image).
+    static bool otaBegin(const char* source);
+    static bool otaWrite(const uint8_t* data, size_t len);
+    static bool otaFinish(const uint8_t* sig, size_t sigLen, bool requireSig, bool autoConfirm);
+    static void otaAbort(const char* why);
+    static bool otaSigned();              // pending image carried a valid signature
+    static bool signingKeyPresent();
+
 private:
     static WebServer server;
     static DNSServer dnsServer;
@@ -54,6 +66,7 @@ private:
     static void handleApiNotification();
     static void handleApiLoraSend();
     static void handleApiFind();
+    static void handleApiWifi();
     static void handleApiAiLimits();
     static void handleApiCalendar();
     static void handleApiMedia();

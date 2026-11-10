@@ -16,6 +16,9 @@
 #include <esp_random.h>
 #include <esp_ota_ops.h>
 #include <mbedtls/sha256.h>
+#include <mbedtls/pk.h>
+#include "Updater.h"
+#include "UpdateKey.h"
 #include <Update.h>
 #include <Preferences.h>
 
@@ -41,6 +44,7 @@ static const esp_partition_t* sOtaTarget = nullptr;   // slot Update writes into
 static uint32_t sOtaSize = 0;
 static char sOtaHashHex[65] = {0};
 static unsigned long sOtaPendingSince = 0;
+static bool sOtaSigned = false;
 static volatile int8_t sOtaDecision = -1;      // -1 none, 0 reject, 1 accept
 static mbedtls_sha256_context sOtaSha;
 static portMUX_TYPE sOtaMux = portMUX_INITIALIZER_UNLOCKED;
@@ -212,18 +216,19 @@ input:focus,select:focus{border-color:var(--acc)}
   <button class="btn ghost" onclick="presetAi(0)">0%</button>
  </div>
  <button class="btn" style="width:100%;margin-bottom:12px" onclick="sendAiLimits()">Auf Uhr anwenden</button>
- <div class="cap lbl">Account Token / Verifizierung</div>
- <input type="text" id="ai_tok" placeholder="Anthropic Session-Key / Google API Token">
- <button class="btn ghost" onclick="verifyAiAccount()">Verbindung prüfen & synchronisieren</button>
 </div>
 
 <div class="card"><h2>Firmware</h2>
  <div class="cap" id="fwinfo">--</div>
- <div id="ghbox" style="margin-top:10px"></div>
  <input type="file" id="fw" accept=".bin" style="margin-top:12px">
  <div class="prog"><i id="fwbar"></i></div>
  <button class="btn ghost" id="fwbtn" onclick="ota()">Lokale Datei hochladen</button>
  <div class="cap" id="fwstat" style="margin-top:10px">Nach dem Upload muss das Update auf der Uhr bestätigt werden.</div>
+ <div class="cap lbl" style="margin-top:16px">Automatische Updates: WLAN mit Internet</div>
+ <input type="text" id="u_ssid" placeholder="WLAN-Name" maxlength="32">
+ <input type="password" id="u_pass" placeholder="WLAN-Passwort" maxlength="64">
+ <button class="btn ghost" onclick="saveWifi()">WLAN speichern und nach Updates suchen</button>
+ <div class="cap" id="updstat" style="margin-top:8px">--</div>
 </div>
 
 <div class="card"><h2>Karte (SD)</h2>
@@ -262,31 +267,16 @@ function upload(url,file,bar,btn,done){const fd=new FormData();fd.append('file',
  x.onerror=()=>{btn.disabled=false;toast('Upload fehlgeschlagen')};x.send(fd)}
 function ota(){const f=$('fw').files[0];if(!f)return toast('Keine .bin-Datei gewählt');if(!confirm('Firmware "'+f.name+'" ('+Math.round(f.size/1024)+' KB) hochladen? Das Update wird erst nach Bestätigung auf der Uhr aktiviert.'))return;
  $('fwstat').textContent='Lade hoch...';upload('/api/ota/upload',f,$('fwbar'),$('fwbtn'),(st,d)=>{if(st===200&&d.status==='pending'){$('fwstat').textContent='Empfangen ('+Math.round(d.size/1024)+' KB). SHA-256 '+d.sha256.slice(0,8)+'… – jetzt auf der Uhr bestätigen (120 s).';toast('Auf der Uhr bestätigen')}else{$('fwstat').textContent='Fehler: '+(d.error||st);toast('Update abgelehnt')}})}
-function checkGhRelease(){fetch('https://api.github.com/repos/diggaknoxville/WatchOS-Ultra/releases/latest').then(r=>r.json()).then(rel=>{const a=(rel.assets||[]).find(x=>x.name.endsWith('.bin'));if(!a)return;const g=$('ghbox');g.innerHTML='<div style="background:#151c2c;padding:10px;border-radius:8px;border:1px solid var(--acc)"><div style="font-weight:600;color:var(--acc)">GitHub Release '+esc(rel.tag_name)+' verfügbar</div><div class="cap" style="margin:4px 0">'+esc(a.name)+' ('+Math.round(a.size/1024)+' KB)</div><button class="btn" style="width:100%;margin-top:6px" onclick="installGh(\''+esc(a.browser_download_url)+'\',\''+esc(a.name)+'\')">Auf Uhr installieren</button></div>'}).catch(()=>{})}
-function installGh(u,n){$('fwstat').textContent='Lade von GitHub herunter...';fetch(u).then(r=>r.blob()).then(b=>{const f=new File([b],n,{type:'application/octet-stream'});$('fwstat').textContent='Übertrage an Uhr...';upload('/api/ota/upload',f,$('fwbar'),$('fwbtn'),(st,d)=>{if(st===200&&d.status==='pending'){$('fwstat').textContent='Empfangen ('+Math.round(d.size/1024)+' KB). Bitte jetzt auf der Uhr bestätigen.';toast('Auf der Uhr bestätigen')}else{$('fwstat').textContent='Fehler: '+(d.error||st);toast('Update abgelehnt')}})}).catch(e=>{$('fwstat').textContent='Download fehlgeschlagen: '+e;toast('Download-Fehler')})}
+function saveWifi(){post('/api/wifi?check=1',$('u_ssid').value+'\n'+$('u_pass').value).then(r=>r.json()).then(d=>{toast(d.status==='ok'?'Gespeichert. Die Uhr sucht, sobald der Hotspot aus ist.':'WLAN-Daten zu lang');$('u_pass').value='';load()}).catch(()=>{})}
 function mapUp(){const f=$('mapf').files[0];if(!f)return toast('Keine .knav-Datei gewählt');upload('/api/sd/upload',f,$('mapbar'),$('mapbtn'),(st,d)=>toast(st===200&&d.status==='ok'?'Karte gespeichert':'Karten-Upload fehlgeschlagen: '+(d.error||st)))}
 function loadAiLimits(){api('/api/ailimits').then(r=>r.json()).then(d=>{const s=(k,v)=>{const e=$('sl_'+k);if(e){e.value=v;$('v_'+k).textContent=v+'%'}};
  s('c_5h',d.c_5h_p??100);s('c_wk',d.c_wk_p??100);s('ag_g5h',d.ag_g_5h_p??100);s('ag_gwk',d.ag_g_wk_p??100);
  s('ag_c5h',d.ag_c_5h_p??100);s('ag_cwk',d.ag_c_wk_p??100);s('gc_5h',d.gc_5h_p??100);s('gc_day',d.gc_d_p??100);s('gc_wk',d.gc_wk_p??100);
  $('ai_sync').textContent=d.sync?('Zuletzt synchronisiert '+ago(d.sync)):'Nicht synchronisiert'}).catch(()=>{})}
 function presetAi(v){['c_5h','c_wk','ag_g5h','ag_gwk','ag_c5h','ag_cwk','gc_5h','gc_day','gc_wk'].forEach(k=>{const e=$('sl_'+k);if(e){e.value=v;$('v_'+k).textContent=v+'%'}})}
-function sendAiLimits(){const now=Math.round(Date.now()/1000);
- const r5h=p=>p<100?(now+Math.round((100-p)*180)):now;
- const rDay=p=>p<100?(now+Math.round((100-p)*864)):now;
- const rWk=p=>p<100?(now+Math.round((100-p)*6048)):now;
- const c5h=parseInt($('sl_c_5h').value),cwk=parseInt($('sl_c_wk').value);
- const agg5h=parseInt($('sl_ag_g5h').value),aggwk=parseInt($('sl_ag_gwk').value);
- const agc5h=parseInt($('sl_ag_c5h').value),agcwk=parseInt($('sl_ag_cwk').value);
- const gc5h=parseInt($('sl_gc_5h').value),gcday=parseInt($('sl_gc_day').value),gcwk=parseInt($('sl_gc_wk').value);
- const b=JSON.stringify({
-  c_5h_p:c5h,c_5h_r:r5h(c5h),c_wk_p:cwk,c_wk_r:rWk(cwk),
-  ag_g_5h_p:agg5h,ag_g_5h_r:r5h(agg5h),ag_g_wk_p:aggwk,ag_g_wk_r:rWk(aggwk),
-  ag_c_5h_p:agc5h,ag_c_5h_r:r5h(agc5h),ag_c_wk_p:agcwk,ag_c_wk_r:rWk(agcwk),
-  gc_5h_p:gc5h,gc_5h_r:r5h(gc5h),gc_d_p:gcday,gc_d_r:rDay(gcday),gc_wk_p:gcwk,gc_wk_r:rWk(gcwk),
-  sync:now
- });
+function sendAiLimits(){const v=k=>parseInt($('sl_'+k).value);
+ const b=JSON.stringify({c_5h_p:v('c_5h'),c_wk_p:v('c_wk'),ag_g_5h_p:v('ag_g5h'),ag_g_wk_p:v('ag_gwk'),ag_c_5h_p:v('ag_c5h'),ag_c_wk_p:v('ag_cwk'),gc_5h_p:v('gc_5h'),gc_d_p:v('gc_day'),gc_wk_p:v('gc_wk'),sync:Math.round(Date.now()/1000)});
  post('/api/ailimits',b).then(r=>r.json()).then(d=>{if(d.status==='ok'){toast('AI Limits an Uhr gesendet');loadAiLimits()}else toast('Fehler beim Senden')}).catch(()=>toast('Verbindungsfehler'))}
-function verifyAiAccount(){const t=($('ai_tok').value||'').trim();if(!t)return toast('Bitte Token eingeben');toast('Token verifiziert & Limits synchronisiert');presetAi(100);sendAiLimits()}
 function tick(){if(!S)return;const d=new Date((base+S.offset)*1000+(Date.now()-at)),p=n=>String(n).padStart(2,'0');
  $('clock').innerHTML=`${p(d.getUTCHours())}<b>:</b>${p(d.getUTCMinutes())}<b>:</b>${p(d.getUTCSeconds())}`}
 function chip(on,l){return`<span class="chip${on?' on':''}">${l}</span>`}
@@ -315,13 +305,14 @@ function render(){
  else{$('pos').textContent='Noch keine Position';$('posmeta').textContent=g.powered?'Satellitensuche läuft (freie Sicht zum Himmel nötig)':'GPS im Control-Center der Uhr einschalten'}
  $('mtitle').textContent=S.media.title||'--';$('mstate').textContent=S.media.playing?'WIEDERGABE':'PAUSE';$('mstate').className='pill'+(S.media.playing?'':' off');
  $('fwinfo').textContent=`WatchOS Ultra ${S.ver} · Build ${S.build}`+(S.otaPending?' · Update wartet auf Bestätigung':'');
+ $('updstat').textContent='Update-WLAN: '+(S.updSsid||'keins')+' · '+S.updState;
  tick();
 }
 function load(){api('/api/status').then(r=>r.json()).then(d=>{S=d;base=d.epoch;at=Date.now();render();$('conn').className='pill';$('conn').textContent='VERBUNDEN'})
  .catch(()=>{$('conn').className='pill off';$('conn').textContent='OFFLINE'});
  api('/api/inbox').then(r=>r.json()).then(m=>{$('inbox').innerHTML=m.length?m.map(x=>`<div class="msg"><div>${esc(x.text)}</div>${ago(x.at)} · ${x.rssi} dBm · SNR ${x.snr}</div>`).join(''):'Noch keine Pakete'}).catch(()=>{})}
 if(!PIN)askPin();
-setInterval(tick,250);syncTime(0);load();loadAiLimits();setInterval(load,3000);checkGhRelease();
+setInterval(tick,250);syncTime(0);load();loadAiLimits();setInterval(load,3000);
 </script></body></html>)HTML";
 
 // ---------------------------------------------------------------------------
@@ -515,90 +506,132 @@ static void otaReject(const char* why) {
     nav::markDirty(nav::PG_SYSTEM);
 }
 
+bool CompanionServer::signingKeyPresent() { return UPDATE_PUBKEY_PEM[0] != 0; }
+bool CompanionServer::otaSigned() { return sOtaSigned; }
+
+static bool verifySignature(const uint8_t digest[32], const uint8_t* sig, size_t sigLen) {
+    mbedtls_pk_context pk;
+    mbedtls_pk_init(&pk);
+    bool ok = mbedtls_pk_parse_public_key(&pk, (const unsigned char*)UPDATE_PUBKEY_PEM, sizeof(UPDATE_PUBKEY_PEM)) == 0 &&
+              mbedtls_pk_verify(&pk, MBEDTLS_MD_SHA256, digest, 32, sig, sigLen) == 0;
+    mbedtls_pk_free(&pk);
+    return ok;
+}
+
+bool CompanionServer::otaBegin(const char* source) {
+    if (sOtaState != OTA_IDLE) {
+        Serial.println("[OTA] Refused: another image is in progress or awaits confirmation");
+        return false;
+    }
+    const esp_partition_t* next = esp_ota_get_next_update_partition(NULL);
+    if (!next) {
+        Serial.println("[OTA] No OTA partition available");
+        return false;
+    }
+    sOtaMaxSize = next->size;
+    sOtaTarget = next;
+    Serial.printf("[OTA] Start (%s) -> %s (max %lu bytes)\n", source, next->label, (unsigned long)sOtaMaxSize);
+    if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+        Update.printError(Serial);
+        return false;
+    }
+    mbedtls_sha256_init(&sOtaSha);
+    mbedtls_sha256_starts(&sOtaSha, 0);
+    sOtaSize = 0;
+    sOtaSigned = false;
+    sOtaState = OTA_RECEIVING;
+    return true;
+}
+
+bool CompanionServer::otaWrite(const uint8_t* data, size_t len) {
+    if (sOtaState != OTA_RECEIVING) return false;
+    if (sOtaSize + len > sOtaMaxSize || Update.write((uint8_t*)data, len) != len) {
+        if (sOtaSize + len > sOtaMaxSize) Serial.println("[OTA] Image larger than OTA partition");
+        else Update.printError(Serial);
+        otaAbort("write failed");
+        return false;
+    }
+    mbedtls_sha256_update(&sOtaSha, data, len);
+    sOtaSize += len;
+    return true;
+}
+
+void CompanionServer::otaAbort(const char* why) {
+    if (sOtaState == OTA_RECEIVING) mbedtls_sha256_free(&sOtaSha);
+    otaReject(why);
+}
+
+bool CompanionServer::otaFinish(const uint8_t* sig, size_t sigLen, bool requireSig, bool autoConfirm) {
+    if (sOtaState != OTA_RECEIVING) return false;
+    uint8_t digest[32];
+    mbedtls_sha256_finish(&sOtaSha, digest);
+    mbedtls_sha256_free(&sOtaSha);
+    sOtaState = OTA_IDLE;                        // the hash context is gone: otaReject must not free it again
+    bool sigOk = sig && sigLen && signingKeyPresent() && verifySignature(digest, sig, sigLen);
+    if ((requireSig || (sig && sigLen && signingKeyPresent())) && !sigOk) {
+        otaReject("signature invalid");
+        return false;
+    }
+    // Update.end(true) validates the image header and points the boot
+    // partition at the new image but does NOT restart. We immediately put
+    // the boot pointer back on the running image, so a power loss during
+    // the confirmation window never boots the unconfirmed firmware; the
+    // new slot is only activated in otaServiceTimeout() after otaConfirm(true).
+    if (!Update.end(true)) {
+        Update.printError(Serial);
+        otaReject("image invalid");
+        return false;
+    }
+    const esp_partition_t* running = esp_ota_get_running_partition();
+    if (running) esp_ota_set_boot_partition(running);
+    char hex[65];
+    for (int i = 0; i < 32; i++) snprintf(hex + i * 2, 3, "%02x", digest[i]);
+    sOtaSigned = sigOk;
+    sOtaPendingSince = millis();
+    sOtaDecision = autoConfirm ? 1 : -1;
+    portENTER_CRITICAL(&sOtaMux);
+    memcpy(sOtaHashHex, hex, sizeof(sOtaHashHex));
+    sOtaState = OTA_PENDING;
+    portEXIT_CRITICAL(&sOtaMux);
+    Serial.printf("[OTA] Image received: %lu bytes, sha256 %s, %s - %s\n", (unsigned long)sOtaSize, hex,
+                  sigOk ? "signed" : "unsigned", autoConfirm ? "accepted" : "waiting for confirmation");
+    nav::markDirty(nav::PG_SYSTEM);
+    return true;
+}
+
 void CompanionServer::handleApiOtaUploadData() {
     HTTPUpload& upload = server.upload();
     if (upload.status == UPLOAD_FILE_START) {
-        sOtaFailed = false;
         sOtaPinOk = uploadPinOk(server, portalPin);
-        if (!sOtaPinOk) { sOtaFailed = true; return; }
-        if (sOtaState == OTA_PENDING) {
-            Serial.println("[OTA] Upload refused: previous image awaits confirmation");
-            sOtaFailed = true;
-            return;
-        }
-        const esp_partition_t* next = esp_ota_get_next_update_partition(NULL);
-        if (!next) {
-            Serial.println("[OTA] No OTA partition available");
-            sOtaFailed = true;
-            return;
-        }
-        sOtaMaxSize = next->size;
-        sOtaTarget = next;
-        Serial.printf("[OTA] Upload start: %s -> %s (max %lu bytes)\n",
-                      upload.filename.c_str(), next->label, (unsigned long)sOtaMaxSize);
-        if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
-            Update.printError(Serial);
-            sOtaFailed = true;
-            return;
-        }
-        mbedtls_sha256_init(&sOtaSha);
-        mbedtls_sha256_starts(&sOtaSha, 0);
-        sOtaSize = 0;
-        sOtaState = OTA_RECEIVING;
+        sOtaFailed = !sOtaPinOk || !otaBegin("portal");
     } else if (upload.status == UPLOAD_FILE_WRITE) {
-        if (sOtaFailed) return;
-        if (sOtaSize + upload.currentSize > sOtaMaxSize) {
-            Serial.println("[OTA] Image larger than OTA partition, aborting");
-            Update.abort();
-            mbedtls_sha256_free(&sOtaSha);
-            sOtaFailed = true;
-            return;
-        }
-        if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
-            Update.printError(Serial);
-            Update.abort();
-            mbedtls_sha256_free(&sOtaSha);
-            sOtaFailed = true;
-            return;
-        }
-        mbedtls_sha256_update(&sOtaSha, upload.buf, upload.currentSize);
-        sOtaSize += upload.currentSize;
+        if (!sOtaFailed && !otaWrite(upload.buf, upload.currentSize)) sOtaFailed = true;
     } else if (upload.status == UPLOAD_FILE_END) {
-        if (sOtaFailed) return;
-        uint8_t digest[32];
-        mbedtls_sha256_finish(&sOtaSha, digest);
-        mbedtls_sha256_free(&sOtaSha);
-        // Update.end(true) validates the image header and points the boot
-        // partition at the new image but does NOT restart. We immediately put
-        // the boot pointer back on the running image, so a power loss during
-        // the confirmation window never boots the unconfirmed firmware; the
-        // new slot is only activated in otaServiceTimeout() after otaConfirm(true).
-        if (Update.end(true)) {
-            const esp_partition_t* running = esp_ota_get_running_partition();
-            if (running) esp_ota_set_boot_partition(running);
-            char hex[65];
-            for (int i = 0; i < 32; i++) snprintf(hex + i * 2, 3, "%02x", digest[i]);
-            portENTER_CRITICAL(&sOtaMux);
-            memcpy(sOtaHashHex, hex, sizeof(sOtaHashHex));
-            sOtaState = OTA_PENDING;
-            portEXIT_CRITICAL(&sOtaMux);
-            sOtaPendingSince = millis();
-            sOtaDecision = -1;
-            Serial.printf("[OTA] Image received: %lu bytes, sha256 %s - waiting for confirmation\n",
-                          (unsigned long)sOtaSize, hex);
-            nav::markDirty(nav::PG_SYSTEM);
-        } else {
-            Update.printError(Serial);
-            sOtaFailed = true;
-            otaReject("image invalid");
-        }
+        // local upload: PIN + confirmation on the watch; a signature is not required
+        if (!sOtaFailed && !otaFinish(nullptr, 0, false, false)) sOtaFailed = true;
     } else if (upload.status == UPLOAD_FILE_ABORTED) {
-        if (!sOtaFailed && sOtaState == OTA_RECEIVING) {
-            mbedtls_sha256_free(&sOtaSha);
-        }
+        if (!sOtaFailed) otaAbort("upload aborted");
         sOtaFailed = true;
-        otaReject("upload aborted");
     }
+}
+
+void CompanionServer::handleApiWifi() {
+    if (!requirePin()) return;
+    if (!checkJsonBody(160)) return;
+    // body: "<ssid>\n<password>" (kept out of the URL)
+    String body = server.arg("plain");
+    int nl = body.indexOf('\n');
+    String ssid = nl < 0 ? body : body.substring(0, nl);
+    String pass = nl < 0 ? String() : body.substring(nl + 1);
+    ssid.trim();
+    if (ssid.length() > 32 || pass.length() > 64) {
+        server.send(400, "application/json", "{\"error\":\"too_long\"}");
+        return;
+    }
+    Updater::setWifi(ssid.c_str(), pass.c_str());
+    if (server.hasArg("check")) Updater::checkNow();
+    nav::markDirty(nav::PG_APP_SETTINGS);
+    server.send(200, "application/json", "{\"status\":\"ok\"}");
 }
 
 void CompanionServer::handleApiOtaUploadDone() {
@@ -608,7 +641,7 @@ void CompanionServer::handleApiOtaUploadDone() {
         return;
     }
     if (sOtaFailed || sOtaState != OTA_PENDING) {
-        if (sOtaState == OTA_RECEIVING) otaReject("incomplete");
+        if (sOtaState == OTA_RECEIVING) otaAbort("incomplete");
         else sOtaFailed = false;
         server.send(400, "application/json", "{\"status\":\"error\",\"error\":\"rejected\"}");
         return;
@@ -747,6 +780,7 @@ bool CompanionServer::init() {
     server.on("/api/media", HTTP_ANY, handleApiMedia);
     server.on("/api/ota/status", HTTP_GET, handleApiOtaStatus);
     server.on("/api/ota/upload", HTTP_POST, handleApiOtaUploadDone, handleApiOtaUploadData);
+    server.on("/api/wifi", HTTP_POST, handleApiWifi);
     server.on("/api/sd/upload", HTTP_POST, handleApiSdUploadDone, handleApiSdUploadData);
     // captive portal: every unknown URL (OS connectivity checks) -> the app
     server.onNotFound([]() {
@@ -809,7 +843,9 @@ void CompanionServer::handleApiStatus() {
     j += ",\"gps_en\":";      j += s.gpsEnabled ? 1 : 0;
     j += ",\"lora_en\":";     j += s.loraEnabled ? 1 : 0;
     j += ",\"otaPending\":";  j += (sOtaState == OTA_PENDING) ? "true" : "false";
-    j += ",\"media\":{\"playing\":"; j += ms.isPlaying ? "true" : "false";
+    j += ",\"updSsid\":\"";  j += jsonEscape(Updater::ssid());
+    j += "\",\"updState\":\""; j += jsonEscape(Updater::statusText());
+    j += "\",\"media\":{\"playing\":"; j += ms.isPlaying ? "true" : "false";
     j += ",\"title\":\"";     j += jsonEscape(ms.title);
     j += "\",\"artist\":\"";  j += jsonEscape(ms.artist);
     j += "\",\"volume\":";    j += ms.volumePct;
@@ -1074,7 +1110,7 @@ void CompanionServer::handleClient() {
     otaServiceTimeout(now);
 
     int8_t req = apRequest;
-    if (req >= 0) {
+    if (req >= 0 && !(req == 1 && Updater::busy())) {     // the updater owns the radio as a client
         apRequest = -1;
         if (req == 1 && !apRunning) startAp();
         else if (req == 0 && apRunning) stopAp();

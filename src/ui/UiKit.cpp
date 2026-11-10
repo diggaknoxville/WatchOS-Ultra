@@ -35,9 +35,10 @@ void initFonts() {
     F.numM  = lv_tiny_ttf_create_data(orbitron_ttf, orbitron_ttf_len, 30);
     F.numS  = lv_tiny_ttf_create_data(orbitron_ttf, orbitron_ttf_len, 20);
     F.title = lv_tiny_ttf_create_data(rajdhani_ttf, rajdhani_ttf_len, 34);
-    F.body  = lv_tiny_ttf_create_data(rajdhani_ttf, rajdhani_ttf_len, 26);
-    F.small = lv_tiny_ttf_create_data(rajdhani_ttf, rajdhani_ttf_len, 22);   // 11 pt at 2x
-    F.cap   = lv_tiny_ttf_create_data(rajdhani_ttf, rajdhani_ttf_len, 20);   // captions carry information
+    const int big = SettingsStorage::get().largeText ? 2 : 0;                // setting "Größere Schrift"
+    F.body  = lv_tiny_ttf_create_data(rajdhani_ttf, rajdhani_ttf_len, 26 + big);
+    F.small = lv_tiny_ttf_create_data(rajdhani_ttf, rajdhani_ttf_len, 22 + big);   // 11 pt at 2x
+    F.cap   = lv_tiny_ttf_create_data(rajdhani_ttf, rajdhani_ttf_len, 20 + big);   // captions carry information
     F.icon  = &lv_font_montserrat_24;
     F.iconS = &lv_font_montserrat_20;
     F.iconL = &lv_font_montserrat_36;

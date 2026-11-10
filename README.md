@@ -119,8 +119,9 @@ Termine und die AI-Limits-Seite werden von einer Companion-App per BLE (JSON) ge
 
 - **WLAN-AP**: startet nur auf Wunsch (Control Center oder Verbinden) und schaltet sich nach 5 Minuten ohne verbundenes Gerät selbst ab. SSID `WATCHOS-ULTRA-xxxx`, Passwort pro Gerät (10 Zeichen, aus der eFuse-MAC abgeleitet, im NVS gespeichert). Es wird nur auf der Uhr (Connect-Seite) angezeigt und steht nicht im Quelltext.
 - **Portal-PIN**: Sechsstellige PIN, bei jedem AP-Start neu erzeugt und auf der Uhr angezeigt; alle `/api/*`-Aufrufe benötigen sie (`X-Pin`-Header oder `?pin=`). Ein gesetzter `Origin`-Header muss zur AP-Adresse passen, sonst 403.
-- **BLE**: Characteristics verlangen verschlüsselte, authentifizierte Verbindungen; Kopplung per Passkey, der auf der Uhr angezeigt wird. BLE-Schreibzugriffe werden nicht im NimBLE-Host-Task, sondern in der Hintergrundschleife verarbeitet.
-- **OTA**: Upload über `/api/ota/upload` (PIN) in die inaktive Partition mit SHA-256-Berechnung; der Neustart erfolgt erst nach Bestätigung auf der Uhr (Hash-Präfix und Größe werden angezeigt, 120 s Timeout = Ablehnung). Keine Signaturprüfung (kein Secure Boot).
+- **BLE**: Kopplung ohne PIN (Just Works). Schreibzugriffe verlangen eine verschlüsselte Verbindung, also ein gekoppeltes Gerät. BLE-Schreibzugriffe werden nicht im NimBLE-Host-Task, sondern in der Hintergrundschleife verarbeitet.
+- **OTA**: Upload über `/api/ota/upload` (PIN) in die inaktive Partition mit SHA-256-Berechnung; der Neustart erfolgt erst nach Bestätigung auf der Uhr (Hash-Präfix und Größe werden angezeigt, 120 s Timeout = Ablehnung). Der lokale Upload verlangt keine Signatur.
+- **Updates von GitHub**: Die Uhr meldet sich mit dem im Portal hinterlegten WLAN an (nie bei aktivem Hotspot), liest `version.json` des neuesten Releases über HTTPS mit Zertifikatsprüfung und bietet eine neuere Version an. Automatisch sucht sie höchstens einmal täglich und nur am Ladekabel; manuell unter Einstellungen › Update. Enthält `include/UpdateKey.h` einen öffentlichen Schlüssel, werden nur Images mit gültiger ECDSA-P-256-Signatur (`firmware.bin.sig`) installiert. Ohne Schlüssel schützt allein HTTPS. Über USB erledigt das `watchctl.py update`, bestätigt wird auf der Uhr. Kein Secure Boot.
 - **Funk**: Kein automatisches Einschalten von LoRa/WLAN durch Seitenaufrufe; Positions-Beacons nur mit echtem oder kürzlich gespeichertem Fix.
 
 ---
@@ -169,12 +170,17 @@ python tools/watchctl.py tour screenshots/            # alle Zifferblätter und 
 python tools/watchctl.py goto position                 # Seitennamen aus include/ui/Navigator.h
 python tools/watchctl.py face bauhaus
 python tools/watchctl.py notify "Titel" "Text"
+python tools/watchctl.py update                        # neuestes GitHub-Release über USB installieren
 python tools/watchctl.py bench                         # [PERF]-Zeilen: Leerlauf + synthetische Swipes
 python tools/watchctl.py dmabench                      # Dauer eines Vollbild-DMA-Pushs
 python tools/watchctl.py gestures                      # Navigationstest mit synthetischen Gesten
 ```
 
 Der Screenshot-Empfang prüft die `SNAP w h stride`-Kopfzeile, liest exakt `stride·h` Bytes und verifiziert die `END`-Marke; bei Störungen durch Hintergrund-Logs wird wiederholt.
+
+### `tools/sign_firmware.py`
+
+Signiert Release-Images (braucht `pip install cryptography`). Einmalig `keygen` ausführen, den ausgegebenen öffentlichen Schlüssel in `include/UpdateKey.h` eintragen und den privaten Schlüssel als GitHub-Secret `UPDATE_SIGNING_KEY` hinterlegen. Die CI signiert dann jedes Release mit `v*`-Tag.
 
 ### `tools/upload_map_sd.py`
 
@@ -231,8 +237,8 @@ WatchOS-Ultra/
 - Straßen- und Gebäudeebene der Karte nur im Raum Stuttgart; außerhalb Autobahn bis Kreisstraße, Bahn, Gewässer.
 - Nur 24-h-Anzeige, keine 12-h-Uhr.
 - Companion-App (BLE-Kalender, AI-Limits) ist nicht im Repo enthalten.
-- Keine automatisierten Tests; Lade­strom wird nicht gemessen (AXP2101 ohne entsprechenden ADC), Distanz/Kalorien sind Schätzungen.
-- Kein Secure Boot / keine OTA-Signaturprüfung; Schutz ist PIN + Bestätigung auf der Uhr.
+- Tests nur für reine Logik (`pio test -e native`: Versionsvergleich, Astronomie, Rechner-Parser); Lade­strom wird nicht gemessen (AXP2101 ohne entsprechenden ADC), Distanz/Kalorien sind Schätzungen.
+- Kein Secure Boot. Die Signaturprüfung für GitHub-Updates ist erst aktiv, wenn ein Schlüssel in `include/UpdateKey.h` steht.
 
 ---
 

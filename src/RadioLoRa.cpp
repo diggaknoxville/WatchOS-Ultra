@@ -265,6 +265,16 @@ static bool loadChannelsFromSd() {
     return sCustomChannelCount > 0;
 }
 
+static const size_t SD_LOG_MAX = 1024UL * 1024UL;     // per file; logging stops there
+
+// Names come from the air: no quotes, no spreadsheet formula prefix.
+static void csvSafe(const char* in, char* out, size_t n) {
+    size_t o = 0;
+    if (in[0] == '=' || in[0] == '+' || in[0] == '-' || in[0] == '@') out[o++] = '_';
+    for (; *in && o + 1 < n; in++) out[o++] = (*in == '"' || *in == '\n' || *in == '\r') ? '_' : *in;
+    out[o] = 0;
+}
+
 static void logPeerToSd(const LoraPeerNode& pn) {
     if (!NavEngine::status().sdWritable) return;
     if (!NavEngine::lockSd(200)) return;
@@ -274,9 +284,14 @@ static void logPeerToSd(const LoraPeerNode& pn) {
         if (f.size() == 0) {
             f.println("timestamp,nodeId,name,shortName,lat,lon,batPct,rssi,snr");
         }
-        f.printf("%lu,!%08lx,\"%s\",\"%s\",%.6f,%.6f,%u,%.1f,%.1f\n",
-                 (unsigned long)pn.epoch, (unsigned long)pn.nodeId,
-                 pn.name, pn.shortName, pn.lat, pn.lon, pn.batPct, pn.rssi, pn.snr);
+        if (f.size() < SD_LOG_MAX) {
+            char name[48], shortName[16];
+            csvSafe(pn.name, name, sizeof(name));
+            csvSafe(pn.shortName, shortName, sizeof(shortName));
+            f.printf("%lu,!%08lx,\"%s\",\"%s\",%.6f,%.6f,%u,%.1f,%.1f\n",
+                     (unsigned long)pn.epoch, (unsigned long)pn.nodeId,
+                     name, shortName, pn.lat, pn.lon, pn.batPct, pn.rssi, pn.snr);
+        }
         f.close();
     }
     NavEngine::unlockSd();
@@ -287,7 +302,8 @@ static void logMessageToSd(uint32_t fromNode, const char* text, float rssi, floa
     if (!NavEngine::lockSd(200)) return;
     if (!SD.exists("/Meshtastic")) SD.mkdir("/Meshtastic");
     File f = SD.open("/Meshtastic/inbox.log", FILE_APPEND);
-    if (f) {
+    if (f && f.size() >= SD_LOG_MAX) f.close();
+    else if (f) {
         f.printf("[%lu] !%08lx (%.0fdBm/%.1fdB): %s\n",
                  (unsigned long)time(NULL), (unsigned long)fromNode, rssi, snr, text);
         f.close();

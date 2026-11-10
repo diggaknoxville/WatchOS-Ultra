@@ -12,8 +12,8 @@
 
 // System Constants
 #define OS_NAME             "WatchOS Ultra"
-#define OS_VERSION          "1.4.1"
-#define OS_BUILD            "2026.10c"
+#define OS_VERSION          "1.5.0"
+#define OS_BUILD            "2026.11"
 #define AP_SSID_PREFIX      "WATCHOS-ULTRA"
 #define HTTP_PORT           80
 // The WiFi AP password is per-device (CompanionServer::getApPassword()).
@@ -80,5 +80,6 @@ struct SystemSettings {
     // saverRestore remembers what the mode switched off (bit0 BLE, bit1 LoRa,
     // bit2 AOD) so turning it off restores the previous state.
     bool powerSaver;
+    bool largeText;             // UI text two pixels larger (applied at boot)
     uint8_t saverRestore;
 };

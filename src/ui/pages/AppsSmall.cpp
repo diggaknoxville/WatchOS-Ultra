@@ -12,6 +12,8 @@
 #include "GpsManager.h"
 #include "RadioLoRa.h"
 #include "DisplayEngine.h"
+#include "Updater.h"
+#include "UsbMscManager.h"
 #include "Config.h"
 #include <LilyGoLib.h>
 #include <type_traits>
@@ -653,8 +655,8 @@ static const uint16_t TIMEOUT_STEPS[] = {15, 30, 60, 0};        // 0 = Nie
 static const uint32_t GOAL_STEPS[] = {5000, 8000, 10000, 12000, 15000, 20000};
 
 enum SetRow : uint8_t {
-    SR_AOD = 0, SR_WRIST, SR_WIFI, SR_BLE, SR_GPS, SR_LORA, SR_BEACON, SR_SOUND, SR_HAPTIC,   // toggles
-    SR_PHONE_MGR, SR_TIMEOUT, SR_GOAL, SR_TZ, SR_SYNC, SR_TIME_FMT, SR_ABOUT,                 // value rows
+    SR_AOD = 0, SR_WRIST, SR_WIFI, SR_BLE, SR_GPS, SR_LORA, SR_BEACON, SR_SOUND, SR_HAPTIC, SR_AUTOUPD, SR_MSC, SR_BIGTEXT,   // toggles
+    SR_PHONE_MGR, SR_TIMEOUT, SR_GOAL, SR_TZ, SR_SYNC, SR_TIME_FMT, SR_ABOUT, SR_UPDATE,                 // value rows
     SR_COUNT
 };
 static lv_obj_t* sSetRows[SR_COUNT] = {nullptr};
@@ -672,6 +674,9 @@ static bool setRowState(int id) {
         case SR_BEACON: return s.loraBeaconEnabled;
         case SR_SOUND:  return s.soundEnabled;
         case SR_HAPTIC: return s.hapticEnabled;
+        case SR_AUTOUPD: return Updater::autoCheck();
+        case SR_MSC:    return UsbMscManager::isEnabled();
+        case SR_BIGTEXT: return s.largeText;
         default: return false;
     }
 }
@@ -681,7 +686,8 @@ static void refreshSettings(bool) {
     for (int i = 0; i < 6; i++) {
         if (sColorDots[i]) setBorderWidthIf(sColorDots[i], (s.accentColor == ACCENT_PALETTE[i]) ? 3 : 0);
     }
-    for (int i = SR_AOD; i <= SR_HAPTIC; i++) setToggleRow(sSetRows[i], setRowState(i));
+    for (int i = SR_AOD; i <= SR_BIGTEXT; i++) setToggleRow(sSetRows[i], setRowState(i));
+    setValueRow(sSetRows[SR_UPDATE], Updater::statusText());
     setValueRow(sSetRows[SR_PHONE_MGR], BleCompanion::isConnected() ? "Verbunden" : "Verwalten / QR");
     char b[48];
     if (s.autoSleepSec == 0) snprintf(b, sizeof(b), "Nie");
@@ -698,6 +704,13 @@ static void refreshSettings(bool) {
     setValueRow(sSetRows[SR_SYNC], b);
     setValueRow(sSetRows[SR_TIME_FMT], s.timeFormat12h ? "12h (AM/PM)" : "24h");
 }
+
+static void settingsChanged() {
+    refreshSettings(true);
+    nav::markDirty(nav::PG_APP_SETTINGS);        // drops the cached scroll surfaces
+}
+
+static void onUpdateConfirm(bool ok, void*) { if (ok) Updater::install(); }
 
 static void onSetToggle(lv_event_t* e) {
     int id = (int)(intptr_t)lv_event_get_user_data(e);
@@ -719,12 +732,22 @@ static void onSetToggle(lv_event_t* e) {
         case SR_BEACON: s.loraBeaconEnabled = !s.loraBeaconEnabled; break;
         case SR_SOUND:  s.soundEnabled = !s.soundEnabled; if (s.soundEnabled) AudioEngine::playSoundFx(SFX_CHIME); break;
         case SR_HAPTIC: s.hapticEnabled = !s.hapticEnabled; break;
+        case SR_AUTOUPD: Updater::setAutoCheck(!Updater::autoCheck()); break;
+        case SR_MSC:
+            // the PC and the watch must not write the card at the same time
+            UsbMscManager::setEnabled(!UsbMscManager::isEnabled());
+            if (UsbMscManager::isEnabled()) DisplayEngine::showToast("USB-Speicher", "Am PC auswerfen, dann hier ausschalten", 3500, ICO_INFO);
+            break;
+        case SR_BIGTEXT:
+            s.largeText = !s.largeText;
+            DisplayEngine::showToast("Schriftgröße", "Wirkt nach dem Neustart", 2500, ICO_INFO);
+            break;
         default: break;
     }
     SettingsStorage::save();
     nav::markDirty(nav::PG_CONTROL);
     haptic(HAPTIC_TICK);
-    refreshSettings(true);
+    settingsChanged();
 }
 
 static void onFactoryConfirm(bool ok, void*) {
@@ -738,17 +761,13 @@ void buildSettings(lv_obj_t* scr) {
     lv_obj_t* p = pageRoot(scr);
     title(p, "EINSTELLUNGEN");
 
-    lv_obj_t* list = lv_obj_create(p);
-    lv_obj_set_size(list, SCR_W, SCR_H - CONTENT_Y);
-    lv_obj_set_pos(list, 0, CONTENT_Y);
-    lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(list, 0, 0);
-    lv_obj_set_style_radius(list, 0, 0);
+    // fixed viewport + tall list, moved by the composited scroller of the navigator
+    lv_obj_t* view = box(p, SCR_W, SCR_H - CONTENT_Y);
+    lv_obj_set_pos(view, 0, CONTENT_Y);
+    lv_obj_t* list = box(view, SCR_W, LV_SIZE_CONTENT);
+    lv_obj_set_pos(list, 0, 0);
     lv_obj_set_style_pad_hor(list, M, 0);
-    lv_obj_set_style_pad_top(list, 0, 0);
-    lv_obj_set_style_pad_bottom(list, 40, 0);
-    lv_obj_set_scroll_dir(list, LV_DIR_VER);
-    lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_style_pad_bottom(list, 64, 0);
     lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(list, 8, 0);
 
@@ -771,7 +790,7 @@ void buildSettings(lv_obj_t* scr) {
             int idx = (int)(intptr_t)lv_event_get_user_data(e);
             SettingsStorage::get().accentColor = ACCENT_PALETTE[idx];
             SettingsStorage::save();
-            refreshSettings(true);
+            settingsChanged();
             haptic(HAPTIC_TICK);
         }, LV_EVENT_CLICKED, (void*)(intptr_t)i);
         sColorDots[i] = dot;
@@ -787,7 +806,7 @@ void buildSettings(lv_obj_t* scr) {
         SettingsStorage::save();
         nav::markDirty(nav::PG_CONTROL);
         haptic(HAPTIC_TICK);
-        refreshSettings(true);
+        settingsChanged();
     });
 
     // ---- VERBINDUNGEN ----
@@ -815,7 +834,7 @@ void buildSettings(lv_obj_t* scr) {
         SettingsStorage::save();
         nav::markDirty(nav::PG_FACE);
         haptic(HAPTIC_TICK);
-        refreshSettings(true);
+        settingsChanged();
     });
     sSetRows[SR_TZ]   = valueRow(list, -1, ICO_SCHEDULE, "Zeitzone", "--", nullptr);
     sSetRows[SR_SYNC] = valueRow(list, -1, ICO_SYNC, "Letzte Zeitsync", "--", nullptr);
@@ -834,7 +853,27 @@ void buildSettings(lv_obj_t* scr) {
         nav::markDirty(nav::PG_ACTIVITY);
         nav::markDirty(nav::PG_FACE);
         haptic(HAPTIC_TICK);
-        refreshSettings(true);
+        settingsChanged();
+    });
+    sSetRows[SR_BIGTEXT] = toggleRow(list, -1, ICO_EDIT, "Größere Schrift", false, onSetToggle, (void*)(intptr_t)SR_BIGTEXT);
+    sSetRows[SR_MSC] = toggleRow(list, -1, ICO_MEMORY, "USB-Speicher (SD)", false, onSetToggle, (void*)(intptr_t)SR_MSC);
+
+    // ---- UPDATE ----
+    sectionHeader(list, -1, "UPDATE");
+    sSetRows[SR_AUTOUPD] = toggleRow(list, -1, ICO_SYNC, "Automatisch suchen", false, onSetToggle, (void*)(intptr_t)SR_AUTOUPD);
+    sSetRows[SR_UPDATE] = valueRow(list, -1, ICO_UPDATE, "Firmware", "--", [](lv_event_t*) {
+        haptic(HAPTIC_TICK);
+        if (Updater::busy()) return;
+        if (Updater::state() == Updater::AVAILABLE) {
+            char msg[96];
+            snprintf(msg, sizeof(msg), "Version %s laden und installieren? Die Uhr startet danach neu.", Updater::availableVersion());
+            confirmDialog("Update installieren?", msg, "Installieren", "Abbrechen", onUpdateConfirm, nullptr, false);
+        } else if (!Updater::ssid()[0]) {
+            DisplayEngine::showToast("Update", "WLAN im Web-Portal hinterlegen", 3000, ICO_WIFI);
+        } else {
+            Updater::checkNow();
+        }
+        settingsChanged();
     });
     char ver[40];
     snprintf(ver, sizeof(ver), "%s (%s)", OS_VERSION, OS_BUILD);
@@ -857,13 +896,15 @@ void buildSettings(lv_obj_t* scr) {
     lv_obj_t* frIc = lv_obj_get_child(fr, 0);
     if (frIc) lv_obj_set_style_text_color(frIc, cCrit(), 0);
 
-    refreshSettings(true);
+    settingsChanged();
 
     nav::PageDef d;
     d.root = p;
     d.refresh = refreshSettings;
     d.refreshMs = 1000;
     d.ttlMs = 15000;
+    d.scrollView = view;
+    d.scrollContent = list;
     nav::registerPage(nav::PG_APP_SETTINGS, d);
 }
 

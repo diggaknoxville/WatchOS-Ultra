@@ -339,7 +339,7 @@ static bool interactive(Scene& sc, bool horizontal, int x0, int y0) {
 // is then a pure RLE composition: header rows from the glass, viewport rows
 // from the chunks at the current offset. LVGL only gets the final offset.
 static void claimTouch(int x0, int y0);
-static const int SCROLL_CHUNKS = 3;
+static const int SCROLL_CHUNKS = 5;           // content up to 2510 px (settings list)
 static const float SCROLL_TAU = 0.325f;       // s, momentum decay (iOS-like "normal" rate)
 static const float SCROLL_MIN_V = 18.0f;      // px/s, momentum stops below
 static Surface sScrollSurf[SCROLL_CHUNKS];

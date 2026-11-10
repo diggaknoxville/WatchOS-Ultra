@@ -21,7 +21,7 @@
 static const NimBLEUUID ANCS_SERVICE_UUID("7905F431-B5CE-4E99-A40F-4B1E122D00D0");
 static const NimBLEUUID ANCS_NOTIF_SRC_UUID("9FBF120D-6301-42D9-8C58-25E699A21DBD");
 static const NimBLEUUID ANCS_CTRL_PT_UUID("69D1D8F3-45E1-49A8-9821-9BBDFDAAD9D9");
-static const NimBLEUUID ANCS_DATA_SRC_UUID("22EAC6E9-24D6-4BB5-B36ACE7C7BFB");
+static const NimBLEUUID ANCS_DATA_SRC_UUID("22EAC6E9-24D6-4BB5-BE44-B36ACE7C7BFB");
 
 // Bluetooth SIG Alert Notification Service (ANS) UUIDs
 static const NimBLEUUID ANS_SERVICE_UUID((uint16_t)0x1811);
@@ -43,6 +43,7 @@ static volatile bool sAncsDiscoveryPending = false;
 static uint16_t sAncsConnHandle = BLE_HS_CONN_HANDLE_NONE;
 static NimBLERemoteCharacteristic* sAncsCtrlPoint = nullptr;
 static uint32_t sLastAncsUid = 0;
+static volatile bool sAncsReqPending = false;     // attribute request for sLastAncsUid, sent from loop()
 static const char* sLastAncsIcon = ICO_NOTIFICATIONS;
 
 // Native BLE HID Consumer Control (Media Play/Pause, Next, Prev, Vol+, Vol-)
@@ -276,7 +277,8 @@ static void onAncsNotificationSourceNotify(NimBLERemoteCharacteristic* pChar, ui
 
     Serial.printf("[BLE] ANCS Source: event=%u cat=%u uid=%lu\n", (unsigned)eventId, (unsigned)categoryId, (unsigned long)uid);
 
-    if (eventId == 0) { // New notification added
+    // EventFlags bit 2 = PreExisting: iOS replays every old notification on connect
+    if (eventId == 0 && !(pData[1] & 0x04)) { // New notification added
         const char* icon = ICO_NOTIFICATIONS;
         switch (categoryId) {
             case 1: icon = ICO_CALL; break; // Incoming call
@@ -292,14 +294,7 @@ static void onAncsNotificationSourceNotify(NimBLERemoteCharacteristic* pChar, ui
         sLastAncsUid = uid;
         sLastAncsIcon = icon;
 
-        if (sAncsCtrlPoint) {
-            // Request Title (Attr 1, max 40 bytes)
-            uint8_t reqTitle[8] = {0x00, pData[4], pData[5], pData[6], pData[7], 0x01, 0x28, 0x00};
-            sAncsCtrlPoint->writeValue(reqTitle, sizeof(reqTitle), false);
-            // Request Message (Attr 3, max 100 bytes)
-            uint8_t reqMsg[8] = {0x00, pData[4], pData[5], pData[6], pData[7], 0x03, 0x64, 0x00};
-            sAncsCtrlPoint->writeValue(reqMsg, sizeof(reqMsg), false);
-        }
+        sAncsReqPending = true;      // written from loop(): a write with response must not block the host task
     }
 }
 
@@ -396,7 +391,8 @@ class ServerCallbacks : public NimBLEServerCallbacks {
         sConnected = true;
         sCmdSubscribed = false;
         sAncsConnHandle = connInfo.getConnHandle();
-        sAncsDiscoveryPending = true;
+        sAncsCtrlPoint = nullptr;
+        sAncsReqPending = false;
         AiLimitsStore::setBleConnected(true);
         Serial.printf("[BLE] Client connected (connId=%u)\n", connInfo.getConnHandle());
         pServer->updateConnParams(connInfo.getConnHandle(), 24, 40, 0, 400); // 30-50ms interval, 4s timeout
@@ -513,7 +509,7 @@ static bool ensureStack() {
 
     sDataChar = pService->createCharacteristic(
         CHAR_AI_LIMITS_DATA_UUID,
-        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::WRITE_ENC
     );
     sDataChar->setCallbacks(new DataCallbacks());
 
@@ -551,7 +547,7 @@ static bool ensureStack() {
 
         sNewAlertChar = pAnsService->createCharacteristic(
             ANS_CHAR_NEW_ALERT_UUID,
-            NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::NOTIFY
+            NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::WRITE_ENC | NIMBLE_PROPERTY::NOTIFY
         );
         sNewAlertChar->setCallbacks(new AnsAlertCallbacks());
 
@@ -564,7 +560,7 @@ static bool ensureStack() {
 
         NimBLECharacteristic* pAnsCtrl = pAnsService->createCharacteristic(
             ANS_CHAR_CTRL_PT_UUID,
-            NIMBLE_PROPERTY::WRITE
+            NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC
         );
         pAnsCtrl->setCallbacks(new AnsCtrlCallbacks());
     }
@@ -833,6 +829,16 @@ void BleCompanion::loop(unsigned long now) {
                 Serial.println("[BLE] Peer does not host ANCS (Android, PC or unsubscribed)");
             }
         }
+    }
+
+    // ANCS: one request for title (max 40) and message (max 100) of the newest notification.
+    // The control point requires a write with response.
+    if (sAncsReqPending && sConnected && sAncsCtrlPoint) {
+        sAncsReqPending = false;
+        uint32_t uid = sLastAncsUid;
+        uint8_t req[11] = {0x00, (uint8_t)uid, (uint8_t)(uid >> 8), (uint8_t)(uid >> 16), (uint8_t)(uid >> 24),
+                           0x01, 0x28, 0x00, 0x03, 0x64, 0x00};
+        sAncsCtrlPoint->writeValue(req, sizeof(req), true);
     }
 
     // Drain the raw write queue (parsing + NVS happen here, not on the host task)

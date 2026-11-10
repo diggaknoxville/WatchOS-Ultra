@@ -7,6 +7,7 @@
   watchctl.py [--port PORT] goto P                    navigate to page P (name or id)
   watchctl.py [--port PORT] face F                    select watch face F (name or index)
   watchctl.py [--port PORT] notify TITLE BODY         show a notification
+  watchctl.py [--port PORT] update [--file BIN]       install the latest GitHub release over USB (confirm on the watch)
   watchctl.py [--port PORT] bench [--seconds N]       collect [PERF] frame statistics (idle + swipes)
   watchctl.py [--port PORT] dmabench                  time one full-frame DMA push (firmware 'B')
   watchctl.py [--port PORT] gestures                  synthetic swipe/key navigation test
@@ -25,11 +26,14 @@ import re
 import struct
 import sys
 import time
+import urllib.error
+import urllib.request
 
 import serial
 import serial.tools.list_ports
 
 BAUD = 115200
+RELEASE_URL = "https://github.com/diggaknoxville/WatchOS-Ultra/releases/latest/download/"
 ESPRESSIF_VID = 0x303A
 
 # Page ids: must match `enum PageId` in include/ui/Navigator.h (firmware 'G' command).
@@ -42,6 +46,7 @@ PAGES = {
     "app_media": 18, "calib": 19, "app_calib": 19,
     "app_games": 20, "games": 20, "game": 21,
     "app_calc": 22, "calc": 22,
+    "app_alarm": 23, "alarm": 23,
 }
 CAROUSEL = ["launcher", "face", "ailimits", "activity", "agenda", "position", "lora", "system"]
 SHEETS = ["control", "notifs"]
@@ -307,10 +312,56 @@ def cmd_face(s, args):
 
 
 def cmd_aisync(s, args):
-    payload = args.json if args.json else '{"claude_5h":85,"claude_wk":42,"ag_gemini_5h":90,"ag_gemini_wk":35,"ag_claude_5h":65,"ag_claude_wk":28,"gc_5h":78,"gc_weekly":92,"gc_daily":45,"argon_weekly":80}'
+    # example values; keys as parsed by AiLimitsStore::updateFromJson
+    payload = args.json if args.json else ('{"c_5h_p":85,"c_wk_p":42,"ag_g_5h_p":90,"ag_g_wk_p":35,"ag_c_5h_p":65,'
+                                           '"ag_c_wk_p":28,"gc_5h_p":78,"gc_wk_p":92,"gc_d_p":45,"arg_p":80}')
     s.write(f"A{payload}\n".encode())
     line = wait_line(s, "AI_LIMITS_SET", 3.0)
     print(line or "sent")
+
+
+def version_tuple(v):
+    """'v1.4.1' -> (1, 4, 1); missing parts count as 0 (same rule as include/SemVer.h)."""
+    parts = [int(x) for x in re.findall(r"\d+", v)[:3]]
+    return tuple(parts + [0] * (3 - len(parts)))
+
+
+def _fetch(asset):
+    with urllib.request.urlopen(RELEASE_URL + asset, timeout=30) as r:
+        return r.read()
+
+
+def cmd_update(s, args):
+    s.write(b"V\n")
+    running = wait_line(s, "VERSION ", 3.0).split()[1]
+    sig = b""
+    if args.file:
+        image = open(args.file, "rb").read()
+        if os.path.exists(args.file + ".sig"):
+            sig = open(args.file + ".sig", "rb").read()
+    else:
+        import json
+        latest = json.loads(_fetch("version.json"))["version"]
+        print(f"watch: {running}, latest release: {latest}")
+        if version_tuple(latest) <= version_tuple(running) and not args.force:
+            print("up to date")
+            return
+        image = _fetch("firmware.bin")
+        try:
+            sig = _fetch("firmware.bin.sig")
+        except urllib.error.HTTPError:
+            pass                                    # unsigned release; the watch decides whether that is acceptable
+    s.write(f"O{len(image)}{',' + sig.hex() if sig else ''}\n".encode())
+    wait_line(s, "OTA_", 5.0) == "OTA_READY" or sys.exit("watch refused the upload (another update pending?)")
+    for off in range(0, len(image), 4096):
+        s.write(image[off:off + 4096])
+        wait_line(s, "K", 10.0)
+        print(f"\r{min(off + 4096, len(image)) * 100 // len(image)} %", end="", flush=True)
+    done = wait_line(s, "OTA_DONE", 60.0)
+    print("\n" + done)
+    if "ok=1" not in done:
+        sys.exit("watch rejected the image")
+    print("Confirm the update on the watch within 2 minutes.")
 
 
 def cmd_notify(s, args):
@@ -442,6 +493,11 @@ def build_parser():
     p = sub.add_parser("aisync", help="push AI limits JSON over USB")
     p.add_argument("--json", default=None, help="custom JSON payload")
     p.set_defaults(fn=cmd_aisync)
+
+    p = sub.add_parser("update", help="install the latest GitHub release over USB")
+    p.add_argument("--file", help="local firmware.bin instead of the GitHub release (uses FILE.sig if present)")
+    p.add_argument("--force", action="store_true", help="install even if the watch is up to date")
+    p.set_defaults(fn=cmd_update)
 
     p = sub.add_parser("notify", help="show a notification")
     p.add_argument("title")

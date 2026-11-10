@@ -8,6 +8,7 @@
 #include "NavEngine.h"
 #include "AudioEngine.h"
 #include "UsbMscManager.h"
+#include "Updater.h"
 #include "RtcManager.h"
 #include <Preferences.h>
 #include <Wire.h>
@@ -36,7 +37,8 @@ static volatile unsigned long sStateSince = 0;         // millis() of the last s
 static SemaphoreHandle_t sClkMutex = nullptr;
 
 // 24h battery percentage history (persisted in NVS)
-static uint8_t sHourlyBattery[24] = {0};
+static uint8_t sHourlyBattery[24];
+static bool sBatHistDirty = false;
 
 // light sleep: UI task park handshake
 static SemaphoreHandle_t sParkReqSem = nullptr;        // bg -> UI: please park
@@ -143,15 +145,10 @@ bool PowerManager::init() {
     lastActivityTime = millis();
     sStateSince = lastActivityTime;
 
+    memset(sHourlyBattery, 0xFF, sizeof(sHourlyBattery));      // unknown until measured
     Preferences p;
-    if (p.begin("kronos_pwr", false)) {
-        if (p.isKey("hourly_bat")) {
-            p.getBytes("hourly_bat", sHourlyBattery, sizeof(sHourlyBattery));
-        } else {
-            uint8_t cur = (uint8_t)(cachedPercent >= 0 ? cachedPercent : 100);
-            for (int i = 0; i < 24; i++) sHourlyBattery[i] = cur;
-            p.putBytes("hourly_bat", sHourlyBattery, sizeof(sHourlyBattery));
-        }
+    if (p.begin("kronos_pwr", true)) {
+        p.getBytes("hourly_bat", sHourlyBattery, sizeof(sHourlyBattery));
         p.end();
     }
     Serial.printf("[PMU] Battery %d%% (%s)  %.2fV  vbus=%d charging=%d\n",
@@ -281,22 +278,40 @@ void PowerManager::updateTelemetry() {
 
     cachedTemp = instance.pmu.getTemperature();
 
-    // Record hourly battery level
-    struct tm lt;
-    RtcManager::getLocalTimeInfo(&lt);
-    int h = lt.tm_hour % 24;
-    if (sHourlyBattery[h] != (uint8_t)cachedPercent) {
-        sHourlyBattery[h] = (uint8_t)cachedPercent;
-        static uint32_t sLastBatSave = 0;
-        if (millis() - sLastBatSave > 30000) {
-            sLastBatSave = millis();
-            Preferences p;
-            if (p.begin("kronos_pwr", false)) {
-                p.putBytes("hourly_bat", sHourlyBattery, sizeof(sHourlyBattery));
-                p.end();
-            }
+    // Hourly battery level, only with a valid clock (boot runs this before the
+    // RTC is read). Saved from loop(), not here under the I2C lock.
+    if (RtcManager::isTimeValid()) {
+        struct tm lt;
+        RtcManager::getLocalTimeInfo(&lt);
+        int h = lt.tm_hour % 24;
+        if (sHourlyBattery[h] != (uint8_t)cachedPercent) {
+            sHourlyBattery[h] = (uint8_t)cachedPercent;
+            sBatHistDirty = true;
         }
     }
+}
+
+// shortcut: the slots carry no date, so after a day switched off one estimate
+// can be wrong until the slots are rewritten; add a timestamp if that matters.
+float PowerManager::dischargeRatePctPerHour() {
+    if (cachedVbus || !RtcManager::isTimeValid()) return 0.0f;
+    struct tm lt;
+    RtcManager::getLocalTimeInfo(&lt);
+    for (int k = 6; k >= 2; k--) {
+        uint8_t then = sHourlyBattery[(lt.tm_hour - k + 24) % 24];
+        if (then == 0xFF || then <= cachedPercent) continue;
+        // every hour in between must be known and falling, else the watch was charged
+        bool falling = true;
+        uint8_t prev = then;
+        for (int i = k - 1; i >= 1 && falling; i--) {
+            uint8_t v = sHourlyBattery[(lt.tm_hour - i + 24) % 24];
+            falling = v != 0xFF && v <= prev && v >= cachedPercent;
+            prev = v;
+        }
+        // slot h-k holds the level at the end of that hour
+        if (falling) return (float)(then - cachedPercent) / ((k - 1) + lt.tm_min / 60.0f);
+    }
+    return 0.0f;
 }
 
 float PowerManager::getBatteryVoltage() { return cachedVolt; }
@@ -328,6 +343,7 @@ uint32_t PowerManager::cpuMhz() { return getCpuFrequencyMhz(); }
 static uint32_t cpuPolicy(PowerState st) {
     uint32_t mhz = (st == POWER_ACTIVE) ? 240 : (st == POWER_DIM) ? 160 : 80;
     if (CompanionServer::isApActive() && mhz < 160) mhz = 160;          // HTTP + DNS responsiveness
+    if (Updater::busy()) mhz = 240;                                       // TLS handshake + flash writes
     if (UsbMscManager::isMounted() || NavEngine::isRoutingBusy()) mhz = 240;
     return mhz;
 }
@@ -365,7 +381,7 @@ static bool canLightSleep(PowerState st, unsigned long now) {
     if (!DisplayEngine::isReady() || nav::transitioning()) return false;
     if (sTorchOn || PowerManager::isVbusConnected()) return false;   // USB: console / MSC / charging UI
     if (BleCompanion::isStackRunning()) return false;   // controller has no modem sleep in this build
-    if (CompanionServer::isApActive()) return false;
+    if (CompanionServer::isApActive() || Updater::busy()) return false;
     if (GpsManager::isPowered()) return false;          // UART NMEA stream
     if (NavEngine::isRoutingBusy()) return false;
     if (AudioEngine::isBusy()) return false;
@@ -553,6 +569,18 @@ void PowerManager::loop(unsigned long currentMillis) {
             if (currentState != want) setPowerState(want);
         } else if (idleTime > sleepThresholdMs && currentState == POWER_ACTIVE) {
             setPowerState(POWER_DIM);
+        }
+    }
+
+    // ---- battery history to NVS (at most every 5 minutes) ----
+    static unsigned long sLastBatSave = 0;
+    if (sBatHistDirty && currentMillis - sLastBatSave > 300000UL) {
+        sLastBatSave = currentMillis;
+        sBatHistDirty = false;
+        Preferences p;
+        if (p.begin("kronos_pwr", false)) {
+            p.putBytes("hourly_bat", sHourlyBattery, sizeof(sHourlyBattery));
+            p.end();
         }
     }
 

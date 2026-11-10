@@ -58,6 +58,7 @@ void SettingsStorage::init() {
         settings.loraBeaconEnabled = prefs.getBool("lora_bcn", false);
         settings.timeFormat12h = prefs.getBool("tf_12h", false);
         settings.powerSaver = prefs.getBool("pwr_saver", false);
+        settings.largeText = prefs.getBool("big_text", false);
         settings.saverRestore = prefs.getUChar("saver_rs", 0);
         settings.timezoneOffsetSec = prefs.getInt("tz_sec", 7200); // Default UTC+2
         settings.dailyStepGoal = prefs.getUInt("step_goal", 10000);
@@ -103,6 +104,7 @@ void SettingsStorage::flushNow() {
     if (settings.loraBeaconEnabled != sCommitted.loraBeaconEnabled) prefs.putBool("lora_bcn", settings.loraBeaconEnabled);
     if (settings.timeFormat12h != sCommitted.timeFormat12h)         prefs.putBool("tf_12h", settings.timeFormat12h);
     if (settings.powerSaver != sCommitted.powerSaver)         prefs.putBool("pwr_saver", settings.powerSaver);
+    if (settings.largeText != sCommitted.largeText)           prefs.putBool("big_text", settings.largeText);
     if (settings.saverRestore != sCommitted.saverRestore)     prefs.putUChar("saver_rs", settings.saverRestore);
     if (settings.timezoneOffsetSec != sCommitted.timezoneOffsetSec) prefs.putInt("tz_sec", settings.timezoneOffsetSec);
     if (settings.dailyStepGoal != sCommitted.dailyStepGoal)   prefs.putUInt("step_goal", settings.dailyStepGoal);
@@ -135,6 +137,7 @@ void SettingsStorage::resetDefaults() {
     settings.loraBeaconEnabled = false;
     settings.timeFormat12h = false;
     settings.powerSaver = false;
+    settings.largeText = false;
     settings.saverRestore = 0;
     settings.timezoneOffsetSec = 7200;
     settings.dailyStepGoal = 10000;

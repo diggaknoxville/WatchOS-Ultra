@@ -97,3 +97,12 @@ Aufgaben werden sequenziell, autonom und vollständig mit Firmware-Flash und Har
   4. **Gebäude-Schärfe:** Passgenaue 3D-Kantenbeleuchtung (`#485670`) auf dunklem Gebäudekern (`#2c3444`).
 
 
+
+---
+
+### [X] P-1.5.0: Fehlerkorrekturen, Update-System, Wecker (Branch `feature/auto-update`)
+- **Status:** UMGESETZT, CI-GEBAUT, NICHT AUF HARDWARE VERIFIZIERT.
+- **Fehler:** erfundene Reset-Zeiten der AI-Limits entfernt, Schein-Tokenfeld im Portal entfernt, Akku-Stundenverlauf (falsche Stunde beim Boot, Vorbelegung, NVS unter I2C-Sperre), `watchctl aisync`-Schlüssel, Schalter für USB-Speicher, ANCS-UUID.
+- **Sicherheit:** BLE-Schreibzugriffe nur verschlüsselt, LoRa-SD-Log begrenzt und CSV-sicher, GitHub-Update-JavaScript aus dem Portal entfernt.
+- **Neu:** Update-Suche auf GitHub über WLAN (täglich am Ladekabel oder manuell) und über USB (`watchctl.py update`), optionale ECDSA-Signatur, Wecker/Timer-App, gemessene Restlaufzeit, Einstellung „Größere Schrift“, Einstellungsliste auf dem komponierten Scroller, Host-Tests (`pio test -e native`).
+- **Offen:** Light Sleep mit verbundenem Telefon (eigenes sdkconfig nötig), Bestätigung neuer BLE-Kopplungen auf der Uhr, exklusiver SD-Zugriff im USB-Speichermodus.

@@ -26,7 +26,7 @@ Es vereint modernes Smartwatch-Interaktionsdesign (Apple Human Interface Guideli
 ### 2.2 Dual-Core-Task-Topologie
 ```
 ┌────────────────────────────────────────────────────────┐
-│ Core 1: UiCompositor (28 KB Stack, Priorität 2)        │
+│ Core 1: UiCompositor (20 KB Stack, Priorität 2)        │
 │ - LVGL 9.4 Engine                                      │
 │ - RLE Surface Compositor (60 fps, TE-gelockt)          │
 │ - Navigator: Gestenklassifikation, physikalischer Schwung│
@@ -34,7 +34,7 @@ Es vereint modernes Smartwatch-Interaktionsdesign (Apple Human Interface Guideli
 └────────────────────────────────────────────────────────┘
                            ▲ I2C-Mutex / Ringbuffer
 ┌────────────────────────────────────────────────────────┐
-│ Core 0: BgServices (16 KB Stack, Priorität 1)          │
+│ Core 0: BgServices (14 KB Stack, Priorität 1)          │
 │ - CompanionServer: Webportal, Captive AP, OTA, Web-Sync│
 │ - BleCompanion: NimBLE Stack, Media- & Kalender-Queue  │
 │ - PowerManager: Dynamische CPU-Taktskalierung, Schlaf  │
@@ -83,7 +83,7 @@ Es vereint modernes Smartwatch-Interaktionsdesign (Apple Human Interface Guideli
 ## 4. Visuelle & Qualitative Maßstäbe (HIG-Konformität)
 
 - **Barrierefreiheit & Kontrast:** Minimaler Textkontrast von 4.5:1 (Tertiärtext mindestens 5.6:1 auf Schwarz).
-- **Trefferflächen:** Bedienelemente mindestens 44 × 44 pt (88 × 88 px) oder unsichtbar erweitert auf 56 px via `pressable()`.
+- **Trefferflächen:** Bedienelemente mindestens 28 × 28 pt (56 × 56 px); kleinere werden unsichtbar auf 56 px erweitert (`pressable()`).
 - **Ehrliche Telemetrie:** Keine erfundenen Pseudo-Messwerte. Wenn Sensordaten (GNSS, BLE, Stromsensor) fehlen, wird dies transparent deklariert.
 - **Flüssigkeit & Boot-Erlebnis:** 60 fps Animationen; nach dem Boot-Splash direkte Überblendung in das fertige Zifferblatt ohne Flackern oder segmentweisen Neuaufbau.
 

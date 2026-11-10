@@ -52,6 +52,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install platformio==6.2.0
 
+      - name: Host unit tests
+        run: pio test -e native
+
       - name: Compile firmware
         run: pio run -e ${{ env.PIO_ENV }}
 
@@ -71,11 +74,24 @@ jobs:
             .pio/build/${{ env.PIO_ENV }}/firmware.elf
             .pio/build/${{ env.PIO_ENV }}/firmware.map
 
-      - name: Prepare release asset
+      # Fixed asset names: the watch and tools/watchctl.py read
+      # releases/latest/download/{version.json,firmware.bin,firmware.bin.sig}.
+      - name: Prepare release assets
         if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
         run: |
-          cp .pio/build/${{ env.PIO_ENV }}/firmware.bin "watchos-ultra-${GITHUB_REF_NAME}.bin"
-          sha256sum "watchos-ultra-${GITHUB_REF_NAME}.bin" > "watchos-ultra-${GITHUB_REF_NAME}.bin.sha256"
+          mkdir release
+          cp .pio/build/${{ env.PIO_ENV }}/firmware.bin release/firmware.bin
+          cp release/firmware.bin "release/watchos-ultra-${GITHUB_REF_NAME}.bin"
+          (cd release && sha256sum "watchos-ultra-${GITHUB_REF_NAME}.bin" > "watchos-ultra-${GITHUB_REF_NAME}.bin.sha256")
+          printf '{"version":"%s"}\n' "${GITHUB_REF_NAME#v}" > release/version.json
+          if [ -n "$UPDATE_SIGNING_KEY" ]; then
+            pip install cryptography
+            python tools/sign_firmware.py sign release/firmware.bin
+          else
+            echo "::warning::UPDATE_SIGNING_KEY not set, release is unsigned"
+          fi
 
       - name: Create GitHub release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -83,6 +99,4 @@ jobs:
         with:
           name: WatchOS Ultra ${{ github.ref_name }}
           generate_release_notes: true
-          files: |
-            watchos-ultra-${{ github.ref_name }}.bin
-            watchos-ultra-${{ github.ref_name }}.bin.sha256
+          files: release/*

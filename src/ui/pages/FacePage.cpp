@@ -33,6 +33,7 @@
 #include "DisplayEngine.h"
 #include "AiLimitsStore.h"
 #include "Config.h"
+#include "Astro.h"
 #include <sys/time.h>
 #include <math.h>
 
@@ -1485,48 +1486,7 @@ static void buildDayDetail(lv_obj_t* parent) {
 // ============================================================================
 //  ASTRONOMY (for the day detail): sunrise / sunset and moon phase
 // ============================================================================
-// Local UTC offset in seconds (mktime interprets a gmtime() breakdown as local time)
-static long localUtcOffsetSec() {
-    time_t t = time(nullptr);
-    struct tm g;
-    gmtime_r(&t, &g);
-    g.tm_isdst = -1;
-    time_t asLocal = mktime(&g);
-    return (long)(t - asLocal);
-}
-
-// NOAA sunrise equation, zenith 90.833 deg (refraction). Returns false in polar
-// day / night. Minutes are local time of the given day of year.
-static bool sunTimes(double lat, double lon, int yday, long tzSec, int& riseMin, int& setMin) {
-    const double rad = M_PI / 180.0;
-    double gamma = 2.0 * M_PI / 365.0 * (yday + 0.5);
-    double eqTime = 229.18 * (0.000075 + 0.001868 * cos(gamma) - 0.032077 * sin(gamma)
-                              - 0.014615 * cos(2 * gamma) - 0.040849 * sin(2 * gamma));
-    double decl = 0.006918 - 0.399912 * cos(gamma) + 0.070257 * sin(gamma) - 0.006758 * cos(2 * gamma)
-                  + 0.000907 * sin(2 * gamma) - 0.002697 * cos(3 * gamma) + 0.00148 * sin(3 * gamma);
-    double cosHa = (cos(90.833 * rad) / (cos(lat * rad) * cos(decl))) - tan(lat * rad) * tan(decl);
-    if (cosHa < -1.0 || cosHa > 1.0) return false;
-    double ha = acos(cosHa) / rad;                                  // degrees
-    double riseUtc = 720.0 - 4.0 * (lon + ha) - eqTime;             // minutes UTC
-    double setUtc  = 720.0 - 4.0 * (lon - ha) - eqTime;
-    riseMin = (int)lround(riseUtc + tzSec / 60.0);
-    setMin  = (int)lround(setUtc + tzSec / 60.0);
-    while (riseMin < 0) riseMin += 1440;
-    while (setMin < 0) setMin += 1440;
-    riseMin %= 1440;
-    setMin %= 1440;
-    return true;
-}
-
-// Synodic month from the new moon of 2000-01-06 18:14 UTC. Returns the phase
-// age in days (0 = new moon) and the illuminated fraction 0..1.
-static void moonPhase(time_t now, double& ageDays, double& illum) {
-    const double synodic = 29.530588853;
-    double days = ((double)now - 947182440.0) / 86400.0;
-    ageDays = fmod(days, synodic);
-    if (ageDays < 0) ageDays += synodic;
-    illum = (1.0 - cos(2.0 * M_PI * ageDays / synodic)) / 2.0;
-}
+// sunrise / sunset / moon phase: include/Astro.h (host-tested)
 
 // ============================================================================
 //  SHOW / REFRESH LOOP
@@ -2099,7 +2059,11 @@ static void refresh(bool force) {
         // honest: the PMU reports no current, so there is no runtime estimate
         if (chg) snprintf(b, sizeof(b), "Lädt über USB");
         else if (PowerManager::isVbusConnected()) snprintf(b, sizeof(b), "USB-Versorgung, Akku voll");
-        else snprintf(b, sizeof(b), "Keine Restlaufzeit-Messung");
+        else {
+            float rate = PowerManager::dischargeRatePctPerHour();
+            if (rate > 0.05f) snprintf(b, sizeof(b), "Noch ca. %d h (%.1f %%/h gemessen)", (int)(bat / rate), rate);
+            else snprintf(b, sizeof(b), "Restlaufzeit: noch keine Messung");
+        }
         setText(sBtEst, b);
         snprintf(b, sizeof(b), "%.2f V Akkuspannung", PowerManager::getBatteryVoltage());
         setText(sBtRateLbl, b);
@@ -2117,6 +2081,14 @@ static void refresh(bool force) {
         for (int h = 0; h < 24; h++) {
             if (sBtHourBars[h]) {
                 int val = hourlyBat[h];
+                if (val == 0xFF) {                              // hour not recorded
+                    if (lv_obj_get_height(sBtHourBars[h]) != 3) {
+                        lv_obj_set_height(sBtHourBars[h], 3);
+                        lv_obj_set_y(sBtHourBars[h], 97);
+                    }
+                    setBgColorIf(sBtHourBars[h], cStroke());
+                    continue;
+                }
                 if (val < minBat) minBat = val;
                 if (val > maxBat) maxBat = val;
                 int bh = (int)(val * 50 / 100);
@@ -2129,7 +2101,8 @@ static void refresh(bool force) {
                 setBgColorIf(sBtHourBars[h], isCur ? accent() : (val > 20 ? cOk() : cWarn()));
             }
         }
-        snprintf(b, sizeof(b), "24h-Spanne: %d%% .. %d%% (Aktuell %d%% um %02d:00)", minBat, maxBat, bat, curH);
+        if (maxBat < minBat) snprintf(b, sizeof(b), "Noch keine Stundenwerte aufgezeichnet");
+        else snprintf(b, sizeof(b), "24h-Spanne: %d%% .. %d%% (Aktuell %d%% um %02d:00)", minBat, maxBat, bat, curH);
         setText(sBtHourTrendLbl, b);
     }
 
@@ -2157,7 +2130,7 @@ static void refresh(bool force) {
             if (st.posSource != POS_SRC_DEFAULT) { lat = st.curLat; lon = st.curLon; havePos = true; }
         }
         int riseMin = 0, setMin = 0;
-        if (havePos && sunTimes(lat, lon, ti.tm_yday, localUtcOffsetSec(), riseMin, setMin)) {
+        if (havePos && astro::sunTimes(lat, lon, ti.tm_yday, astro::localUtcOffsetSec(), riseMin, setMin)) {
             int lightMin = setMin - riseMin;
             if (lightMin < 0) lightMin += 1440;
             int nowMin = secOfDay / 60;
@@ -2178,7 +2151,7 @@ static void refresh(bool force) {
 
         // moon + meteorological season
         double age, illum;
-        moonPhase(secs, age, illum);
+        astro::moonPhase(secs, age, illum);
         const char* ph = age < 1.0 ? "Neumond" : age < 7.4 ? "Zunehmende Sichel" : age < 8.4 ? "Erstes Viertel"
                        : age < 14.8 ? "Zunehmender Mond" : age < 15.8 ? "Vollmond" : age < 22.1 ? "Abnehmender Mond"
                        : age < 23.1 ? "Letztes Viertel" : age < 28.5 ? "Abnehmende Sichel" : "Neumond";

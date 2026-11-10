@@ -44,7 +44,8 @@ public:
 
     static float getBatteryVoltage();
     static int getBatteryPercent();      // 0..100; AXP2101 fuel gauge, voltage curve as fallback
-    static void getHourlyBattery(uint8_t out[24]); // 24-hour discharge history with NVS persistence
+    static void getHourlyBattery(uint8_t out[24]); // last level per hour of day; 0xFF = not recorded
+    static float dischargeRatePctPerHour();        // measured over the last hours on battery; 0 = unknown
     static bool isBatteryConnected();    // false if the fuel gauge reports no battery
     static bool isCharging();
     static bool isVbusConnected();
