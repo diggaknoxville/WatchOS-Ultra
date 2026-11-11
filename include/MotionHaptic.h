@@ -58,7 +58,16 @@ public:
     static bool isSleeping();
 
     static void resetSteps();                  // also re-arms the daily goal notification
-    static float getDistanceKm();              // steps * 0.75 m (fixed stride, no user profile)
+    static float getDistanceKm();              // steps * stride (0.75 m walking / 1.0 m running until learned from GPS)
+    // Called by GpsManager for every accepted live fix (background task):
+    // learns the stride from walked GPS distance and sums the ascent.
+    static void onGpsFix(double lat, double lon, float altM, float speedKmh, float hdop, unsigned long now);
+    static float getStrideM(bool running);
+    static bool isStrideLearned();             // at least one GPS segment went into the stride
+    static uint16_t getLiveCadenceSpm();       // 0 unless walking / running right now
+    static uint32_t getAscentM();              // today, from GPS altitude (5 m hysteresis)
+    static uint16_t getCyclingMin();           // today, time the sensor hub reported cycling
+    static void getHistory14(uint32_t out[14]); // oldest .. today
     static uint32_t getCalories();             // steps * 0.042 kcal (rough estimate, no user profile)
     static void getHistory(uint32_t out[7]);   // oldest .. today
     static void getHourlySteps(uint16_t out[24]); // 24h step distribution

@@ -9,6 +9,7 @@
 #include "MapFormat.h"
 #include "GpsManager.h"
 #include "RadioLoRa.h"
+#include "MotionHaptic.h"
 #include "RtcManager.h"
 #include "ui/Icons.h"
 #include "ui/Navigator.h"
@@ -132,6 +133,7 @@ static bool sRouteWaitingForPos = false;    // request accepted without a positi
 
 // --- GPX ---------------------------------------------------------------------
 static std::vector<NavRoutePoint> sGpxTrail;
+static std::vector<uint8_t> sTrailSpd;     // km/h per trail point (colour of the drawn track)
 static unsigned long sLastGpxMs = 0;
 static char sGpxOpenPath[40] = "";          // file with an open <trkseg>, "" = none
 static char sGpxOpenDay[12] = "";           // local date (YYYY-MM-DD) that file belongs to
@@ -1269,12 +1271,26 @@ static void deferredBootStep() {
 // =============================================================================
 static void updateCurrentPositionLocked() {
     sStat.posAgeSec = 0;
+    sStat.posAccM = 0.0f;
     if (GpsManager::hasFix()) {
         sStat.posSource = POS_SRC_GPS_LIVE;
         snprintf(sStat.posSourceTag, sizeof(sStat.posSourceTag), "3D GPS (%u SAT)", (unsigned)GpsManager::satellites());
         sStat.curLat = GpsManager::latitude();
         sStat.curLon = GpsManager::longitude();
-        sStat.headingDeg = GpsManager::courseDeg();
+        // the GPS course is only meaningful while moving; standing, the wrist orientation is used
+        sStat.headingDeg = GpsManager::speedKmh() > 3.0f ? GpsManager::courseDeg() : MotionHaptic::getHeadingDeg();
+        sStat.posAccM = GpsManager::accuracyM();
+        return;
+    }
+    double eLat, eLon;
+    float eErr;
+    if (GpsManager::estimated(eLat, eLon, eErr)) {
+        sStat.posSource = POS_SRC_ESTIMATED;
+        strncpy(sStat.posSourceTag, "KOPPELNAV. (SCHRITTE)", sizeof(sStat.posSourceTag));
+        sStat.curLat = eLat;
+        sStat.curLon = eLon;
+        sStat.headingDeg = MotionHaptic::getHeadingDeg();
+        sStat.posAccM = eErr;
         return;
     }
     if (GpsManager::hasLastFix()) {
@@ -1690,7 +1706,8 @@ static void gpxWriteCloseLocked() {
 }
 
 static void gpxLogPointLocked(unsigned long now) {
-    if (!sStat.gpxRecording || sStat.posSource != POS_SRC_GPS_LIVE) return;
+    // The on-screen track grows with every live fix; the SD file only while recording.
+    if (sStat.posSource != POS_SRC_GPS_LIVE) return;
     if (now - sLastGpxMs < 5000) return;
     sLastGpxMs = now;
 
@@ -1700,10 +1717,13 @@ static void gpxLogPointLocked(unsigned long now) {
         abs(sGpxTrail.back().lon_e5 - pt.lon_e5) <= 8) {
         return;
     }
-    if (sGpxTrail.size() < 2000) sGpxTrail.push_back(pt);
+    if (sGpxTrail.size() < 2000) {
+        sGpxTrail.push_back(pt);
+        sTrailSpd.push_back((uint8_t)constrain(GpsManager::speedKmh(), 0.0f, 250.0f));
+    }
     sStat.gpxPoints = (uint32_t)sGpxTrail.size();
 
-    if (!(sStat.sdReady && sStat.sdWritable)) return;
+    if (!sStat.gpxRecording || !(sStat.sdReady && sStat.sdWritable)) return;
 
     struct tm ti{};
     RtcManager::getLocalTimeInfo(&ti);
@@ -2121,6 +2141,7 @@ int NavEngine::listGpxFiles(char outFiles[][32], int maxFiles) {
 void NavEngine::clearTrail() {
     NavLock lock;
     sGpxTrail.clear();
+    sTrailSpd.clear();
     sStat.gpxPoints = 0;
 }
 
@@ -2936,8 +2957,11 @@ void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double vi
 
     // 5. GPX breadcrumb trail
     if (sGpxTrail.size() >= 2) {
-        uint16_t gpxCol = rgb565(255, 200, 30);
         for (size_t i = 0; i + 1 < sGpxTrail.size(); i++) {
+            // colour by speed: standing blue, walking green, running / cycling yellow, faster orange
+            uint8_t v = i < sTrailSpd.size() ? sTrailSpd[i] : 10;
+            uint16_t gpxCol = v < 3 ? rgb565(90, 170, 255) : v < 7 ? rgb565(48, 209, 88) :
+                              v < 20 ? rgb565(255, 200, 30) : rgb565(255, 110, 50);
             int x0, y0, x1, y1;
             project(sGpxTrail[i].lat_e5 * 1e-5, sGpxTrail[i].lon_e5 * 1e-5, x0, y0);
             project(sGpxTrail[i + 1].lat_e5 * 1e-5, sGpxTrail[i + 1].lon_e5 * 1e-5, x1, y1);
@@ -3032,28 +3056,50 @@ void NavEngine::renderMap(uint16_t* buf, int w, int h, double viewLat, double vi
         int ux, uy;
         project(sStat.curLat, sStat.curLon, ux, uy);
         if (ux >= -12 && ux < w + 12 && uy >= -12 && uy < h + 12) {
-            uint16_t myCol = (sStat.posSource == POS_SRC_GPS_LIVE)  ? rgb565(48, 209, 88) :
+            const bool live = sStat.posSource == POS_SRC_GPS_LIVE;
+            const bool est = sStat.posSource == POS_SRC_ESTIMATED;
+            uint16_t myCol = live ? rgb565(48, 209, 88) :
+                             est ? rgb565(255, 159, 10) :
                              (sStat.posSource == POS_SRC_LORA_MESH) ? rgb565(191, 90, 242) :
-                                                                      rgb565(10, 132, 255);
-            // Dynamic heading direction cone when moving or heading-up active
-            float spd = GpsManager::speedKmh();
-            float myHeading = (sStat.headingDeg >= 0.0f) ? sStat.headingDeg : headingDeg;
-            if (spd > 1.5f || rotate) {
-                float arrowAngle = rotate ? (myHeading - headingDeg) : myHeading;
-                float rad = arrowAngle * 0.0174533f;
-                int tipX = ux + (int)(sinf(rad) * 18.0f);
-                int tipY = uy - (int)(cosf(rad) * 18.0f);
-                int wing1X = ux + (int)(sinf(rad + 2.5f) * 11.0f);
-                int wing1Y = uy - (int)(cosf(rad + 2.5f) * 11.0f);
-                int wing2X = ux + (int)(sinf(rad - 2.5f) * 11.0f);
-                int wing2Y = uy - (int)(cosf(rad - 2.5f) * 11.0f);
-                drawLine(buf, w, h, tipX, tipY, wing1X, wing1Y, myCol, 2);
-                drawLine(buf, w, h, tipX, tipY, wing2X, wing2Y, myCol, 2);
-                drawLine(buf, w, h, wing1X, wing1Y, wing2X, wing2Y, myCol, 1);
+                                                                      rgb565(142, 142, 147);   // stored fix: grey
+            // uncertainty circle, once it is larger than the marker itself
+            if (sStat.posAccM > 0.0f) {
+                int rPx = (int)(sStat.posAccM / (lonPerPx * cosLat * 111320.0));
+                if (rPx > 14 && rPx < w) {
+                    uint16_t accCol = est ? rgb565(140, 90, 10) : rgb565(30, 110, 50);
+                    drawRing(buf, w, h, ux, uy, rPx, accCol);
+                    drawRing(buf, w, h, ux, uy, rPx - 1, accCol);
+                }
             }
-            drawRing(buf, w, h, ux, uy, 12, myCol);
-            drawFilledCircle(buf, w, h, ux, uy, 5, myCol);
-            drawRing(buf, w, h, ux, uy, 6, rgb565(255, 255, 255));
+            // heading cone while moving or heading-up (live / estimated positions only)
+            float spd = GpsManager::speedKmh();
+            float myHeading = sStat.headingDeg;
+            if ((live || est) && (spd > 1.5f || rotate || est)) {
+                float rad = (rotate ? (myHeading - headingDeg) : myHeading) * 0.0174533f;
+                int tipX = ux + (int)(sinf(rad) * 20.0f);
+                int tipY = uy - (int)(cosf(rad) * 20.0f);
+                for (int k = -6; k <= 6; k++) {              // filled wedge: fan of lines to the base
+                    float br = rad + 3.14159f + k * 0.11f;
+                    drawLine(buf, w, h, tipX, tipY, tipX + (int)(sinf(br) * 14.0f), tipY - (int)(cosf(br) * 14.0f), myCol, 1);
+                }
+            }
+            if (live || est) {
+                drawRing(buf, w, h, ux, uy, 12, myCol);
+                drawFilledCircle(buf, w, h, ux, uy, 5, myCol);
+                drawRing(buf, w, h, ux, uy, 6, rgb565(255, 255, 255));
+            } else {
+                // not live: hollow marker with the age of the position next to it
+                drawRing(buf, w, h, ux, uy, 9, myCol);
+                drawRing(buf, w, h, ux, uy, 8, myCol);
+                drawFilledCircle(buf, w, h, ux, uy, 3, myCol);
+                if (sStat.posAgeSec) {
+                    char age[16];
+                    if (sStat.posAgeSec < 3600) snprintf(age, sizeof(age), "VOR %lu MIN", (unsigned long)(sStat.posAgeSec / 60));
+                    else if (sStat.posAgeSec < 172800) snprintf(age, sizeof(age), "VOR %lu H", (unsigned long)(sStat.posAgeSec / 3600));
+                    else snprintf(age, sizeof(age), "VOR %lu T", (unsigned long)(sStat.posAgeSec / 86400));
+                    drawMapText(buf, w, h, ux + 14, uy - 4, age, myCol, rgb565(0, 0, 0));
+                }
+            }
         }
     }
 

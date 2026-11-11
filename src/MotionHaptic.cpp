@@ -1,4 +1,5 @@
 #include "MotionHaptic.h"
+#include "GeoMath.h"
 #include "SettingsStorage.h"
 #include "PowerManager.h"
 #include "RtcManager.h"
@@ -19,7 +20,20 @@ static uint32_t stepsToday = 0;
 static uint32_t filteredFalseSteps = 0;
 static uint16_t learnedCadenceSpm = 106; // EMA of the wearer's walking cadence (steps/min), see header
 static uint16_t cadenceSamples = 0;    // number of EMA updates; the window is used from 20 on
-static uint32_t history[6] = {0};      // completed days, oldest first
+static uint32_t history[13] = {0};     // completed days, oldest first
+static float sDistTodayM = 0.0f;       // sum of committed steps * stride at that time
+static float sStrideWalkM = 0.75f, sStrideRunM = 1.00f;   // defaults until learned from GPS
+static uint16_t sStrideSamples = 0;
+static uint16_t sLiveSpm = 0;
+static float sAscentTodayM = 0.0f;
+static uint32_t sCyclingSecToday = 0;
+static geo::ClimbTracker sClimb;
+// GPS segment for stride learning
+static bool sSegActive = false;
+static double sSegLat = 0, sSegLon = 0;
+static float sSegDistM = 0;
+static uint32_t sSegSteps0 = 0, sSegRunSteps = 0;
+static unsigned long sSegLastMs = 0;
 static uint16_t sHourlySteps[24] = {0}; // 24h step distribution
 static bool goalNotified = false;
 static bool dirty = false;
@@ -103,6 +117,12 @@ static void persist() {
     p.putBytes("hist", history, sizeof(history));
     p.putBytes("hourly", sHourlySteps, sizeof(sHourlySteps));
     p.putBool("goal", goalNotified);
+    p.putFloat("dist", sDistTodayM);
+    p.putFloat("st_w", sStrideWalkM);
+    p.putFloat("st_r", sStrideRunM);
+    p.putUShort("st_n", sStrideSamples);
+    p.putFloat("asc", sAscentTodayM);
+    p.putUInt("cyc", sCyclingSecToday);
     p.end();
     if (lifetimePending) { SettingsStorage::addSteps(lifetimePending); lifetimePending = 0; }
     dirty = false;
@@ -127,15 +147,19 @@ static void rolloverIfNeeded() {
     if (dayKey != 0) {
         long gap = (long)(today - keyToDays(dayKey));
         if (gap < 1) gap = 1;
-        for (long i = 0; i < gap && i < 7; i++) {
+        for (long i = 0; i < gap && i < 14; i++) {
             memmove(history, history + 1, sizeof(history) - sizeof(history[0]));
-            history[5] = (i == 0) ? stepsToday : 0;
+            history[12] = (i == 0) ? stepsToday : 0;
         }
     }
     Serial.printf("[FIT] new day %lu (previous day %lu steps, %lu filtered)\n",
                   (unsigned long)key, (unsigned long)stepsToday, (unsigned long)filteredFalseSteps);
     dayKey = key;
     stepsToday = 0;
+    sDistTodayM = 0.0f;
+    sAscentTodayM = 0.0f;
+    sCyclingSecToday = 0;
+    sSegActive = false;
     memset(sHourlySteps, 0, sizeof(sHourlySteps));
     filteredFalseSteps = 0;
     goalNotified = false;
@@ -200,8 +224,17 @@ bool MotionHaptic::init() {
         sRollZero = p.getFloat("r0", 0.0f);
         sPitchZero = p.getFloat("p0", 0.0f);
         sYawZero = p.getFloat("y0", 0.0f);
-        p.getBytes("hist", history, sizeof(history));
+        // 13 days since 1.6; an older 6-day blob fills the newest slots
+        size_t histLen = p.getBytesLength("hist");
+        if (histLen == sizeof(history)) p.getBytes("hist", history, sizeof(history));
+        else if (histLen == 6 * sizeof(uint32_t)) p.getBytes("hist", history + 7, histLen);
         p.getBytes("hourly", sHourlySteps, sizeof(sHourlySteps));
+        sDistTodayM = p.getFloat("dist", stepsToday * 0.75f);
+        sStrideWalkM = p.getFloat("st_w", 0.75f);
+        sStrideRunM = p.getFloat("st_r", 1.00f);
+        sStrideSamples = p.getUShort("st_n", 0);
+        sAscentTodayM = p.getFloat("asc", 0.0f);
+        sCyclingSecToday = p.getUInt("cyc", 0);
         goalNotified = p.getBool("goal", false);
         p.end();
     }
@@ -226,9 +259,11 @@ bool MotionHaptic::init() {
     return drvReady || sensorOnline;
 }
 
-static void commitVerifiedSteps(uint32_t count, unsigned long now) {
+static void commitVerifiedSteps(uint32_t count, unsigned long now, bool running = false) {
     if (count == 0) return;
     stepsToday += count;
+    sDistTodayM += count * (running ? sStrideRunM : sStrideWalkM);
+    if (running) sSegRunSteps += count;
     lifetimePending += count;
     struct tm lt;
     RtcManager::getLocalTimeInfo(&lt);
@@ -337,25 +372,30 @@ void MotionHaptic::updateMotion(unsigned long now) {
             //  - isolated 1-2 step spike with tilting and no rhythm so far
             const bool wristWaving = (sWristJitterDeg > 24.0f && !sBhiWalking && !sBhiRunning) ||
                                      (sBhiTilting && !sBhiWalking && delta <= 2 && sRhythmicStreak == 0);
+            // Road vibration and handlebar shocks look like steps: none are
+            // counted while the sensor hub reports a vehicle or cycling.
+            const bool riding = (sBhiVehicle || sBhiCycling) && !sBhiWalking && !sBhiRunning;
 
-            if (wristWaving || !plausibleCadence) {
+            if (wristWaving || !plausibleCadence || riding) {
                 // Reject buffered & current steps as hand motion
                 filteredFalseSteps += delta + sBufferedSteps;
                 sBufferedSteps = 0;
                 sRhythmicStreak = 0;
-                sActState = ACT_HAND_MOTION;
+                sActState = !riding ? ACT_HAND_MOTION : sBhiCycling ? ACT_CYCLING : ACT_VEHICLE;
                 dirty = true;
                 nav::markDirty(nav::PG_ACTIVITY);
             } else if (inBout) {
                 // Active walking bout: commit immediately, adapt the learned cadence
-                commitVerifiedSteps(sBufferedSteps + delta, now);
+                const bool running = (!boutStart && msPerStep < 430.0f) || sBhiRunning;
+                commitVerifiedSteps(sBufferedSteps + delta, now, running);
                 sBufferedSteps = 0;
+                if (!boutStart) sLiveSpm = (uint16_t)lroundf(60000.0f / msPerStep);
                 if (!boutStart && !sBhiRunning && msPerStep >= 320.0f && msPerStep <= 1000.0f) {
                     const float instSpm = 60000.0f / msPerStep;
                     learnedCadenceSpm = (uint16_t)lroundf(learnedCadenceSpm * 0.90f + instSpm * 0.10f);
                     if (cadenceSamples < 60000) cadenceSamples++;
                 }
-                sActState = ((!boutStart && msPerStep < 430.0f) || sBhiRunning) ? ACT_RUNNING : ACT_WALKING;
+                sActState = running ? ACT_RUNNING : ACT_WALKING;
             } else {
                 // New bout: require 4 buffered steps or 3 rhythmic batches before committing
                 sBufferedSteps += delta;
@@ -371,12 +411,24 @@ void MotionHaptic::updateMotion(unsigned long now) {
 
     // Expire buffered steps if no follow-up steps arrived within 4.5 seconds (isolated arm movement)
     if (sBufferedSteps > 0 && (now - sLastStepBatchMs > 4500)) {
-        filteredFalseSteps += sBufferedSteps;
+        if (sBhiWalking && sWristJitterDeg < 12.0f) {
+            // a few steps across the room: the sensor hub saw walking and the wrist was calm, so they count
+            commitVerifiedSteps(sBufferedSteps, now);
+        } else {
+            filteredFalseSteps += sBufferedSteps;
+            sActState = ACT_HAND_MOTION;
+        }
         sBufferedSteps = 0;
         sRhythmicStreak = 0;
-        sActState = ACT_HAND_MOTION;
         dirty = true;
         nav::markDirty(nav::PG_ACTIVITY);
+    }
+
+    // cycling time of the day (the sensor hub classifies it, no steps are counted meanwhile)
+    static unsigned long sLastCycTick = 0;
+    if (now - sLastCycTick >= 1000) {
+        sLastCycTick = now;
+        if (sBhiCycling && !sSleeping) { sCyclingSecToday++; dirty = true; }
     }
 
     // 3. Smart Sleep / bedtime classifier
@@ -477,6 +529,8 @@ const char* MotionHaptic::getActivityLabel() {
 
 void MotionHaptic::resetSteps() {
     stepsToday = 0;
+    sDistTodayM = 0.0f;
+    sSegActive = false;
     filteredFalseSteps = 0;
     sBufferedSteps = 0;
     sRhythmicStreak = 0;
@@ -486,15 +540,70 @@ void MotionHaptic::resetSteps() {
     nav::markDirty(nav::PG_FACE);
 }
 
-// Approximations without a user profile: a fixed 0.75 m stride and
-// ~0.042 kcal per step (about a 70 kg person walking). Shown as estimates.
-float MotionHaptic::getDistanceKm() { return (stepsToday * 0.75f) / 1000.0f; }
+// Distance = committed steps * stride. The stride starts at 0.75 m (walking) /
+// 1.0 m (running) and is learned from GPS, see onGpsFix(). Energy stays a rough
+// estimate without a user profile (~0.042 kcal per step, about a 70 kg person).
+float MotionHaptic::getDistanceKm() { return sDistTodayM / 1000.0f; }
+float MotionHaptic::getStrideM(bool running) { return running ? sStrideRunM : sStrideWalkM; }
+bool MotionHaptic::isStrideLearned() { return sStrideSamples > 0; }
+uint16_t MotionHaptic::getLiveCadenceSpm() {
+    return (sActState == ACT_WALKING || sActState == ACT_RUNNING) && millis() - sLastConfirmedWalkMs < 5000 ? sLiveSpm : 0;
+}
+uint32_t MotionHaptic::getAscentM() { return (uint32_t)sAscentTodayM; }
+uint16_t MotionHaptic::getCyclingMin() { return (uint16_t)(sCyclingSecToday / 60); }
+
+void MotionHaptic::onGpsFix(double lat, double lon, float altM, float speedKmh, float hdop, unsigned long now) {
+    const bool gap = now - sSegLastMs > 5000;
+    sSegLastMs = now;
+    if (hdop > 2.5f) { sSegActive = false; sClimb.valid = false; return; }
+
+    // ascent: only while moving, a standing receiver drifts in height
+    if (gap) sClimb.valid = false;
+    if (speedKmh > 1.5f) {
+        float before = sClimb.ascent;
+        sClimb.update(altM);
+        if (sClimb.ascent > before) { sAscentTodayM += sClimb.ascent - before; dirty = true; }
+    }
+
+    // stride: GPS distance over >= 80 steps of uninterrupted walking or running
+    const bool moving = sActState == ACT_WALKING || sActState == ACT_RUNNING;
+    if (!moving || !sSegActive || gap) {
+        sSegActive = moving;
+        sSegLat = lat; sSegLon = lon;
+        sSegDistM = 0;
+        sSegSteps0 = stepsToday;
+        sSegRunSteps = 0;
+        return;
+    }
+    sSegDistM += (float)geo::haversineM(sSegLat, sSegLon, lat, lon);
+    sSegLat = lat; sSegLon = lon;
+    uint32_t n = stepsToday - sSegSteps0;
+    if (n < 80) return;
+    const bool running = sSegRunSteps * 2 > n;
+    float stride = geo::strideFromSegment(sSegDistM, n, running);
+    if (stride > 0.0f) {
+        float& target = running ? sStrideRunM : sStrideWalkM;
+        float alpha = sStrideSamples < 5 ? 0.4f : 0.15f;         // settle quickly, then average
+        target += alpha * (stride - target);
+        if (sStrideSamples < 60000) sStrideSamples++;
+        dirty = true;
+        Serial.printf("[FIT] stride sample %.2f m (%s, %lu steps / %.0f m) -> %.2f m\n", stride,
+                      running ? "run" : "walk", (unsigned long)n, sSegDistM, target);
+    }
+    sSegActive = false;
+}
+
 uint32_t MotionHaptic::getCalories() { return (uint32_t)(stepsToday * 0.042f); }
 bool MotionHaptic::isSensorOnline() { return sensorOnline; }
 
 void MotionHaptic::getHistory(uint32_t out[7]) {
-    for (int i = 0; i < 6; i++) out[i] = history[i];
+    for (int i = 0; i < 6; i++) out[i] = history[7 + i];
     out[6] = stepsToday;
+}
+
+void MotionHaptic::getHistory14(uint32_t out[14]) {
+    for (int i = 0; i < 13; i++) out[i] = history[i];
+    out[13] = stepsToday;
 }
 
 void MotionHaptic::getHourlySteps(uint16_t out[24]) {

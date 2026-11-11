@@ -84,14 +84,16 @@ Karussell (horizontal wischen), Reihenfolge wie in `include/ui/Navigator.h`:
 
 ### Aktivität
 
-BHI260AP-Schrittzähler mit Plausibilitätsprüfung der Kadenz (Handbewegungen werden herausgefiltert), Hardware-Aktivitätserkennung (Gehen, Laufen, Rad, Fahrzeug), Schlaferkennung (unterdrückt Wrist-Wake), 7-Tage-Verlauf, Tagesziel. Distanz (0,75 m Schrittlänge) und Kalorien (0,042 kcal/Schritt) sind Schätzwerte ohne Nutzerprofil.
+BHI260AP-Schrittzähler mit Plausibilitätsprüfung der Kadenz (Handbewegungen werden herausgefiltert), Hardware-Aktivitätserkennung (Gehen, Laufen, Rad, Fahrzeug), Schlaferkennung (unterdrückt Wrist-Wake), 14-Tage-Verlauf mit Wochenvergleich, Tagesziel. Im Fahrzeug und auf dem Rad werden keine Schritte gezählt; die Radzeit wird getrennt erfasst. Die Schrittlänge startet bei 0,75 m (Gehen) und 1,0 m (Laufen) und wird bei Live-GPS aus der gelaufenen Strecke gelernt. Höhenmeter kommen aus der GPS-Höhe (5 m Hysterese). Ein Zähltest im Verlauf-Tab zeigt, wie viele mitgezählte Schritte ankommen und wie viele der Filter verwirft. Kalorien (0,042 kcal/Schritt) bleiben ein Schätzwert ohne Nutzerprofil.
 
 ### Position & Karten
 
-- u-blox-GNSS mit Fix-Filter (≥ 4 Satelliten, HDOP < 5), Satellitenliste, Zeitdisziplinierung der RTC aus GNSS-Zeit.
+- u-blox-GNSS mit Fix-Filter (≥ 4 Satelliten, HDOP < 5), Satellitenliste, Zeitdisziplinierung der RTC aus GNSS-Zeit. Die Position wird geglättet (stark im Stand, leicht in Bewegung), einzelne Ausreißer werden verworfen (`include/GeoMath.h`).
+- Koppelnavigation: Fällt der Fix aus, läuft die Position bis zu 3 Minuten aus Schritten, Schrittlänge und der am GPS-Kurs ausgerichteten Handgelenk-Richtung weiter. Sie ist als geschätzt markiert, wird nie gespeichert und nicht per Funk gesendet.
+- Karte: Unsicherheitskreis um die Position, gefüllter Richtungskegel (GPS-Kurs ab 3 km/h, sonst Lage der Uhr), gelaufene Spur nach Tempo eingefärbt, gespeicherte Positionen grau mit Altersangabe.
 - Offline-Karte `/kronos/germany.knav` auf der microSD (Format in `include/MapFormat.h`): Autobahn bis Kreisstraße, Bahn, Gewässer deutschlandweit; Straßen-/Gebäudeebene nur im Raum Stuttgart. Erzeugt mit `tools/build_germany_map.cpp` aus einem OSM-PBF-Extrakt, Übertragung mit `tools/upload_map_sd.py` oder über das Portal.
 - Routing (Auto/Fußgänger) auf einem rasterbasierten Graphen aus der Kartendatei, Turn-by-Turn-Hinweise; ohne Route wird ehrlich eine Luftlinie angezeigt (`LUFTLINIE`), keine erfundenen Abbiegehinweise.
-- Positionsquelle mit Priorität: GNSS-Fix > eigener gespeicherter Fix > Mesh-Peer (< 30 min alt, als solcher gekennzeichnet) > „KEINE POSITION“.
+- Positionsquelle mit Priorität: GNSS-Fix > Koppelnavigation > eigener gespeicherter Fix > Mesh-Peer (< 30 min alt, als solcher gekennzeichnet) > „KEINE POSITION“.
 - GPX-Aufzeichnung auf die SD-Karte, nur bei echtem GNSS-Fix.
 
 ### LoRa / Meshtastic
@@ -248,7 +250,7 @@ WatchOS-Ultra/
 - Straßen- und Gebäudeebene der Karte nur im Raum Stuttgart; außerhalb Autobahn bis Kreisstraße, Bahn, Gewässer.
 - Nur 24-h-Anzeige, keine 12-h-Uhr.
 - Companion-App (BLE-Kalender, AI-Limits) ist nicht im Repo enthalten.
-- Tests nur für reine Logik (`pio test -e native`: Versionsvergleich, Astronomie, Rechner-Parser); Lade­strom wird nicht gemessen (AXP2101 ohne entsprechenden ADC), Distanz/Kalorien sind Schätzungen.
+- Tests nur für reine Logik (`pio test -e native`: Versionsvergleich, Astronomie, Rechner-Parser, Positionsfilter); Lade­strom wird nicht gemessen (AXP2101 ohne entsprechenden ADC), Distanz/Kalorien sind Schätzungen.
 - Kein Secure Boot. Die Signaturprüfung für GitHub-Updates ist erst aktiv, wenn ein Schlüssel in `include/UpdateKey.h` steht.
 
 ---

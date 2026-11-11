@@ -42,6 +42,7 @@ enum PosSource : uint8_t {
     POS_SRC_LORA_MESH = 1,  // position of a nearby mesh peer (< 30 min old)
     POS_SRC_SAVED_FIX = 2,  // own last stored GNSS fix
     POS_SRC_DEFAULT   = 3,  // no position at all
+    POS_SRC_ESTIMATED = 4,  // live fix lost < 3 min ago: dead reckoning from steps and heading
 };
 
 struct NavPlace {
@@ -99,6 +100,7 @@ struct NavStatus {
     bool placesReady;         // place table resident in PSRAM (searchPlaces works without SD)
     uint8_t mapLoadPct;       // 0..100 progress of the background table loading
     uint32_t posAgeSec;       // age of a saved / mesh position, 0 for live GPS or unknown
+    float posAccM;            // uncertainty radius of a live or estimated position, 0 = unknown
 };
 
 class NavEngine {

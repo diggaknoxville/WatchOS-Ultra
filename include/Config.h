@@ -12,7 +12,7 @@
 
 // System Constants
 #define OS_NAME             "WatchOS Ultra"
-#define OS_VERSION          "1.5.0"
+#define OS_VERSION          "1.6.0"
 #define OS_BUILD            "2026.11"
 #define AP_SSID_PREFIX      "WATCHOS-ULTRA"
 #define HTTP_PORT           80

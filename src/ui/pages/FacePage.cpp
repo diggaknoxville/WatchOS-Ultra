@@ -1287,7 +1287,7 @@ static void buildStepsDetail(lv_obj_t* parent) {
     lv_obj_set_pos(l4, 16, 12);
     sStMetabLbl = label(c4, F.body, cText(), "Energie: --");
     lv_obj_set_pos(sStMetabLbl, 16, 36);
-    sStDistLbl = caption(c4, "Distanz: -- (0,75 m je Schritt)", cText2());
+    sStDistLbl = caption(c4, "Distanz: --", cText2());
     lv_obj_set_pos(sStDistLbl, 16, 68);
 
     // Buttons
@@ -2044,7 +2044,8 @@ static void refresh(bool force) {
         setText(sStActiveLbl, b);
         snprintf(b, sizeof(b), "Energie: etwa %lu kcal", (unsigned long)kcal);
         setText(sStMetabLbl, b);
-        snprintf(b, sizeof(b), "Distanz: %.2f km (0,75 m je Schritt)", km);
+        snprintf(b, sizeof(b), "Distanz: %.2f km (%.2f m je Schritt, %s)", km, MotionHaptic::getStrideM(false),
+                 MotionHaptic::isStrideLearned() ? "per GPS gelernt" : "Standardwert");
         setText(sStDistLbl, b);
     }
 

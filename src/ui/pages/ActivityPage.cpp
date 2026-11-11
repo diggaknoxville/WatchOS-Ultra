@@ -27,6 +27,10 @@ static lv_obj_t *aHistPeakLbl = nullptr, *aHistGoalQuoteLbl = nullptr, *aHistCad
 
 static lv_obj_t *sLvlRingOuter, *sLvlRingInner, *sLvlBubble, *sLvlReadout, *sCompReadout, *sCompNeedle;
 static int sTab = 0;
+static lv_obj_t *aHistTodayLbl = nullptr, *aHistTestLbl = nullptr;
+// Counting test: walk a counted number of steps and compare (tap the card to start / stop)
+static bool sTestRunning = false, sTestDone = false;
+static uint32_t sTestSteps0 = 0, sTestFilt0 = 0, sTestSteps = 0, sTestFilt = 0;
 
 static int barGap() { return (CW - 40 - 7 * BAR_W) / 6; }
 
@@ -76,7 +80,8 @@ static void refresh(bool) {
         if (hist[i] >= goal) goalMetDays++;
     }
     uint32_t avgSteps = total7 / 7;
-    float avgKm = (float)avgSteps * 0.00075f;
+    const float strideKm = MotionHaptic::getStrideM(false) / 1000.0f;
+    float avgKm = (float)avgSteps * strideKm;
     uint32_t avgKcal = (uint32_t)(avgSteps * 0.045f);
 
     struct tm lt;
@@ -89,7 +94,7 @@ static void refresh(bool) {
         setText(aHistAvgStepsLbl, b);
         snprintf(b, sizeof(b), "ca. %.1f km · ca. %lu kcal täglich", avgKm, (unsigned long)avgKcal);
         setText(aHistAvgMetaLbl, b);
-        float totKm = (float)total7 * 0.00075f;
+        float totKm = (float)total7 * strideKm;
         snprintf(b, sizeof(b), "7-Tage-Summe: %lu Schritte (%.1f km)", (unsigned long)total7, totKm);
         setText(aHistTotalLbl, b);
 
@@ -99,13 +104,34 @@ static void refresh(bool) {
         snprintf(b, sizeof(b), "Zielerreichung: %d von 7 Tagen (%d%% Quote)", goalMetDays, goalMetDays * 100 / 7);
         setText(aHistGoalQuoteLbl, b);
 
-        uint16_t spm = MotionHaptic::getLearnedCadenceSpm();
-        if (spm) snprintf(b, sizeof(b), "Kadenz beim Gehen: %u SPM (gelernt)", (unsigned)spm);
-        else snprintf(b, sizeof(b), "Kadenz: noch nicht gelernt");
+        snprintf(b, sizeof(b), "%u SPM · Schritt %.2f m %s", (unsigned)MotionHaptic::getLearnedCadenceSpm(),
+                 MotionHaptic::getStrideM(false), MotionHaptic::isStrideLearned() ? "(GPS)" : "(Standard)");
         setText(aHistCadenceLbl, b);
-        // only seven days are stored: a week-over-week trend would be invented
-        snprintf(b, sizeof(b), "Trend: Vorwoche wird nicht gespeichert");
+
+        // week over week, only when the previous week has enough recorded days
+        uint32_t h14[14];
+        MotionHaptic::getHistory14(h14);
+        uint32_t prev = 0;
+        int prevDays = 0;
+        for (int i = 0; i < 7; i++) { prev += h14[i]; if (h14[i]) prevDays++; }
+        if (prevDays >= 4 && prev) snprintf(b, sizeof(b), "Trend: %+d %% zur Vorwoche", (int)(((int64_t)total7 - prev) * 100 / prev));
+        else snprintf(b, sizeof(b), "Trend: Vorwoche noch unvollständig");
         setText(aHistTrendLbl, b);
+
+        snprintf(b, sizeof(b), "Heute: %lu Hm Aufstieg · Rad %u min", (unsigned long)MotionHaptic::getAscentM(),
+                 (unsigned)MotionHaptic::getCyclingMin());
+        setText(aHistTodayLbl, b);
+
+        if (sTestRunning) {
+            sTestSteps = steps - sTestSteps0;
+            sTestFilt = MotionHaptic::getFilteredFalseSteps() - sTestFilt0;
+            snprintf(b, sizeof(b), "Zähltest läuft: %lu gezählt · %lu verworfen", (unsigned long)sTestSteps, (unsigned long)sTestFilt);
+        } else if (sTestDone) {
+            snprintf(b, sizeof(b), "Zähltest: %lu gezählt · %lu verworfen", (unsigned long)sTestSteps, (unsigned long)sTestFilt);
+        } else {
+            snprintf(b, sizeof(b), "Zähltest: tippen, Schritte mitzählen, tippen");
+        }
+        setText(aHistTestLbl, b);
         return;
     }
 
@@ -118,13 +144,15 @@ static void refresh(bool) {
     snprintf(b, sizeof(b), "%lu", (unsigned long)goal);                  setText(aGoal, b);
 
     ActivityState st = MotionHaptic::getActivityState();
-    lv_color_t stCol = (st == ACT_WALKING || st == ACT_RUNNING) ? cOk() :
+    lv_color_t stCol = (st == ACT_WALKING || st == ACT_RUNNING || st == ACT_CYCLING) ? cOk() :
                        (st == ACT_HAND_MOTION) ? cWarn() :
                        (st == ACT_SLEEPING) ? lv_color_hex(0x5E5CE6) : cText2();
     setPill(aStatePill, online ? MotionHaptic::getActivityLabel() : "KEIN SENSOR", online ? stCol : cCrit());
 
-    snprintf(b, sizeof(b), "%u SPM · %lu filter", (unsigned)MotionHaptic::getLearnedCadenceSpm(),
-             (unsigned long)MotionHaptic::getFilteredFalseSteps());
+    uint16_t liveSpm = MotionHaptic::getLiveCadenceSpm();
+    if (liveSpm) snprintf(b, sizeof(b), "%u SPM jetzt", (unsigned)liveSpm);
+    else snprintf(b, sizeof(b), "Ø %u SPM · %lu gefiltert", (unsigned)MotionHaptic::getLearnedCadenceSpm(),
+                  (unsigned long)MotionHaptic::getFilteredFalseSteps());
     setText(aLearnLbl, b);
 
     uint32_t peak = goal;
@@ -243,7 +271,7 @@ void buildActivity(lv_obj_t* scr) {
     lv_obj_set_pos(aHistTotalLbl, 16, 88);
 
     // Card 3: Dynamik & Kadenz-Trend
-    lv_obj_t* hc3 = card(aHistWrap, CW, 94);
+    lv_obj_t* hc3 = card(aHistWrap, CW, 146);
     lv_obj_set_pos(hc3, M, 240);
     lv_obj_t* hcap3 = caption(hc3, "KADENZ & TREND", cText3());
     lv_obj_set_pos(hcap3, 16, 12);
@@ -251,6 +279,23 @@ void buildActivity(lv_obj_t* scr) {
     lv_obj_set_pos(aHistCadenceLbl, 16, 34);
     aHistTrendLbl = caption(hc3, "", cText2());
     lv_obj_set_pos(aHistTrendLbl, 16, 62);
+    aHistTodayLbl = caption(hc3, "", cText2());
+    lv_obj_set_pos(aHistTodayLbl, 16, 86);
+    aHistTestLbl = caption(hc3, "", accent());
+    accReg(aHistTestLbl, ACC_TEXT);
+    lv_obj_set_pos(aHistTestLbl, 16, 112);
+    lv_obj_add_flag(hc3, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(hc3, [](lv_event_t*) {
+        haptic(HAPTIC_CLICK);
+        sTestRunning = !sTestRunning;
+        if (sTestRunning) {
+            sTestSteps0 = MotionHaptic::getStepsToday();
+            sTestFilt0 = MotionHaptic::getFilteredFalseSteps();
+        } else {
+            sTestDone = true;
+        }
+        refresh(true);
+    }, LV_EVENT_CLICKED, NULL);
 
     // ---- view 1: bubble level & compass ----
     aLevelWrap = box(p, SCR_W, SCR_H - CONTENT_Y);

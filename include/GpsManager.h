@@ -38,6 +38,10 @@ public:
     static float speedKmh();
     static float courseDeg();
     static float hdop();
+    static float accuracyM();                // rough 1-sigma radius of the live fix (HDOP * 5 m), 0 without fix
+    // Dead reckoning while a live fix is lost for 3 s .. 3 min: last fix advanced
+    // by counted steps along the GPS-aligned wrist heading. Never persisted.
+    static bool estimated(double& lat, double& lon, float& errM);
     static bool hasLastFix();                // persisted position available
     static time_t lastFixEpoch();
     static time_t lastTimeSyncEpoch();

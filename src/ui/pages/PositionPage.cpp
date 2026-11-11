@@ -8,6 +8,7 @@
 #include "RadioLoRa.h"
 #include "DisplayEngine.h"
 #include <esp_heap_caps.h>
+#include "GeoMath.h"
 #include <math.h>
 
 #ifndef M_PI
@@ -106,6 +107,15 @@ static void updateScaleBar(double lat) {
     setText(sScaleLbl, b);
 }
 
+// Map rotation: GPS course while moving (stable), wrist orientation while
+// standing; low-passed so the map turns smoothly instead of twitching.
+static float sSmoothHd = 0.0f;
+static float mapHeading() {
+    float target = GpsManager::speedKmh() > 3.0f ? GpsManager::courseDeg() : MotionHaptic::getHeadingDeg();
+    sSmoothHd = geo::smoothAngle(sSmoothHd, target, 0.35f);
+    return sSmoothHd;
+}
+
 // one software render per refresh frame at most (never from touch events)
 static void redrawCanvas(const NavStatus& st) {
     if (!sMapBuf || !sMapImg) return;
@@ -118,7 +128,7 @@ static void redrawCanvas(const NavStatus& st) {
     double lon = sManualPan ? sViewLon : st.curLon;
     sViewLat = lat;
     sViewLon = lon;
-    float hd = sHeadingUp ? MotionHaptic::getHeadingDeg() : 0.0f;
+    float hd = sHeadingUp ? sSmoothHd : 0.0f;
     NavEngine::renderMap(sMapBuf, MAP_W, MAP_H, lat, lon, sZoom, hd);
     sLastRenderedHeading = hd;
     if (sManualPan) {
@@ -312,6 +322,7 @@ static void refresh(bool force) {
     setPill(sGpsPill, !en ? "GPS AUS" : fix ? "GPS FIX" : "GPS SUCHT", !en ? cText2() : fix ? cOk() : cWarn());
     lv_color_t srcCol = (st.posSource == POS_SRC_GPS_LIVE) ? cOk() :
                         (st.posSource == POS_SRC_LORA_MESH) ? cMesh() :
+                        (st.posSource == POS_SRC_ESTIMATED) ? cInfo() :
                         (st.posSource == POS_SRC_SAVED_FIX) ? cWarn() : cCrit();
     char sp[40];
     if (st.posSource != POS_SRC_GPS_LIVE && st.posSource != POS_SRC_DEFAULT && st.posAgeSec) {
@@ -337,8 +348,8 @@ static void refresh(bool force) {
         sMapNeedsRedraw = true;
     }
     if (sHeadingUp) {
-        float curHd = MotionHaptic::getHeadingDeg();
-        if (fabsf(curHd - sLastRenderedHeading) > 3.0f) {
+        float curHd = mapHeading();
+        if (fabsf(fmodf(curHd - sLastRenderedHeading + 540.0f, 360.0f) - 180.0f) > 3.0f) {
             sMapNeedsRedraw = true;
         }
     }
@@ -380,7 +391,8 @@ static void refresh(bool force) {
         if (st.posSource == POS_SRC_DEFAULT) snprintf(b, sizeof(b), "Keine Position bekannt");
         else snprintf(b, sizeof(b), "%.4f° %c  %.4f° %c", fabs(st.curLat), st.curLat < 0 ? 'S' : 'N', fabs(st.curLon), st.curLon < 0 ? 'W' : 'O');
         setText(sCoordLbl, b);
-        if (fix) snprintf(b, sizeof(b), "%u SAT · %.0f m · %.1f km/h", (unsigned)GpsManager::satellites(), GpsManager::altitudeM(), GpsManager::speedKmh());
+        if (fix) snprintf(b, sizeof(b), "%u SAT ±%.0f m · Höhe %.0f m · %.1f km/h", (unsigned)GpsManager::satellites(), st.posAccM, GpsManager::altitudeM(), GpsManager::speedKmh());
+        else if (st.posSource == POS_SRC_ESTIMATED) snprintf(b, sizeof(b), "Geschätzt aus Schritten ±%.0f m", st.posAccM);
         else if (en) snprintf(b, sizeof(b), "%u SAT · Suche seit %lu s", (unsigned)GpsManager::satellites(), (unsigned long)GpsManager::searchSeconds());
         else snprintf(b, sizeof(b), "GPS ist aus");
         setText(sMetaLbl, b);

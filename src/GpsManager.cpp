@@ -2,6 +2,8 @@
 #include "RtcManager.h"
 #include "PowerManager.h"
 #include "SettingsStorage.h"
+#include "MotionHaptic.h"
+#include "GeoMath.h"
 #include "ui/Navigator.h"
 #include <LilyGoLib.h>
 #include <Preferences.h>
@@ -30,6 +32,40 @@ static time_t sFixEpoch = 0;
 static time_t sTimeSyncEpoch = 0;
 static bool sHaveLast = false;
 static unsigned long sLastTrustedMs = 0;   // millis() of the last trusted live fix
+static geo::PosFilter sFilter;
+static float sAccM = 0.0f;
+
+// ---- dead reckoning ----
+static const unsigned long DR_MAX_MS = 180000UL;
+static bool sEstActive = false;
+static double sEstLat = 0.0, sEstLon = 0.0;
+static float sEstErrM = 0.0f;
+static uint32_t sDrSteps = 0;
+static float sHdgOffset = 0.0f;            // GPS course minus wrist heading, taken while walking with a fix
+static bool sHdgOffsetValid = false;
+
+static void deadReckon(unsigned long now) {
+    unsigned long lost = now - sLastTrustedMs;
+    if (!sLastTrustedMs || !sHdgOffsetValid || lost < 3000 || lost > DR_MAX_MS) {
+        if (sEstActive) nav::markDirty(nav::PG_POSITION);
+        sEstActive = false;
+        return;
+    }
+    uint32_t steps = MotionHaptic::getStepsToday();
+    if (!sEstActive) {
+        sEstActive = true;
+        sEstLat = sLat;
+        sEstLon = sLon;
+        sEstErrM = sAccM + 5.0f;
+        nav::markDirty(nav::PG_POSITION);
+    }
+    if (steps > sDrSteps) {
+        float d = (steps - sDrSteps) * MotionHaptic::getStrideM(MotionHaptic::getActivityState() == ACT_RUNNING);
+        geo::advance(sEstLat, sEstLon, MotionHaptic::getHeadingDeg() + sHdgOffset, d);
+        sEstErrM += d * 0.2f;              // heading and stride error grow with the distance
+    }
+    sDrSteps = steps;
+}
 
 static constexpr uint8_t MAX_SATS_VIEW = 20;
 static GpsSatInfo sSatsView[MAX_SATS_VIEW];
@@ -287,16 +323,32 @@ void GpsManager::loop(unsigned long now) {
     bool trusted = g.location.isValid() && g.location.age() < 2000 &&
                    g.satellites.isValid() && g.satellites.value() >= 4 &&
                    g.hdop.isValid() && g.hdop.hdop() > 0 && g.hdop.hdop() < 5.0;
-    if (!trusted) return;
+    if (!trusted) { deadReckon(now); return; }
 
+    const bool fresh = g.location.isUpdated();   // lat() below clears the flag
     double lat = g.location.lat();
     double lon = g.location.lng();
     if (lat == 0.0 && lon == 0.0) return;   // null island = no real solution
-    sLat = lat;
-    sLon = lon;
     if (g.altitude.isValid()) sAlt = (float)g.altitude.meters();
-    sHaveLast = true;
     sLastTrustedMs = now;
+    sEstActive = false;
+    sDrSteps = MotionHaptic::getStepsToday();
+    if (fresh || !sHaveLast) {
+        const float spd = g.speed.isValid() ? (float)g.speed.kmph() : 0.0f;
+        const float hd = (float)g.hdop.hdop();
+        // smoothed position; a single far-off fix is dropped (see GeoMath.h)
+        if (sFilter.update(lat, lon, hd, spd, now)) {
+            sLat = sFilter.lat;
+            sLon = sFilter.lon;
+            sHaveLast = true;
+            sAccM = fmaxf(3.0f, hd * 5.0f);
+            MotionHaptic::onGpsFix(sLat, sLon, sAlt, spd, hd, now);
+            if (spd > 3.0f && g.course.isValid()) {
+                sHdgOffset = (float)g.course.deg() - MotionHaptic::getHeadingDeg();
+                sHdgOffsetValid = true;
+            }
+        }
+    }
 
     // --- discipline the RTC from satellite UTC ---
     if (g.date.isValid() && g.time.isValid() && g.time.age() <= 1500 && g.date.year() >= 2025) {
@@ -342,6 +394,14 @@ float GpsManager::altitudeM()  { return sHaveLast ? sAlt : 0.0f; }
 float GpsManager::speedKmh()   { return (sPowered && hasFix() && instance.gps.speed.isValid()) ? instance.gps.speed.kmph() : 0; }
 float GpsManager::courseDeg()  { return (sPowered && hasFix() && instance.gps.course.isValid()) ? instance.gps.course.deg() : 0; }
 float GpsManager::hdop()       { return (sPowered && instance.gps.hdop.isValid()) ? instance.gps.hdop.hdop() : 99.9f; }
+float GpsManager::accuracyM()  { return hasFix() ? sAccM : 0.0f; }
+bool GpsManager::estimated(double& lat, double& lon, float& errM) {
+    if (!sEstActive || !sPowered || millis() - sLastTrustedMs > DR_MAX_MS) return false;
+    lat = sEstLat;
+    lon = sEstLon;
+    errM = sEstErrM;
+    return true;
+}
 bool GpsManager::hasLastFix()  { return sHaveLast; }
 time_t GpsManager::lastFixEpoch() { return sFixEpoch; }
 time_t GpsManager::lastTimeSyncEpoch() { return sTimeSyncEpoch; }
